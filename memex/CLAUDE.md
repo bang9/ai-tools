@@ -110,8 +110,8 @@ Sources use `"project:path"` format:
 - `path` — relative to project root (e.g., `internal/auth/handler.go`)
 
 Examples:
-- `ai-tools:memex/internal/memex/store.go`
-- `myapp:cmd/server/main.go`
+- `ai-tools:memex/src/store.ts`
+- `myapp:src/auth/handler.ts`
 
 ## Type Taxonomy
 
@@ -147,5 +147,5 @@ curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/memex/install.s
 
 Or build locally:
 ```bash
-make build-cli
+cd memex && pnpm install && pnpm run build
 ```

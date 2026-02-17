@@ -45,10 +45,8 @@ curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/memex/install.s
 
 ```bash
 cd memex
-make build        # build CLI + MCP server
-make build-cli    # CLI only
-make build-mcp    # MCP server only
-make cross        # cross-compile for all platforms
+pnpm install
+pnpm run build    # builds CLI + MCP server to dist/
 ```
 
 ## CLI Commands
@@ -61,7 +59,7 @@ memex delete  <id>
 memex search  [--tag <tag>] [--source <key>] [--query <text>] [--type <type>] [--status <status>]
 memex context <id> [--depth <n>]
 memex list    [--type <type>] [--status <status>]
-memex config  [--api-key <key>] [--embedding <true|false>]
+memex config  set <key> <value> | get <key>
 ```
 
 ### Note Types
@@ -84,17 +82,23 @@ memex config  [--api-key <key>] [--embedding <true|false>]
 ## Configuration
 
 ```bash
-memex config --api-key sk-ant-xxx    # Set Anthropic API key for LLM enrichment
-memex config --embedding true        # Enable local embedding generation
+memex config set embedding_enabled true    # Enable local embedding generation
 ```
 
 Settings are stored in `~/.memex/config.json`.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `api_key` | Anthropic API key for enrichment | (none) |
 | `embedding_enabled` | Generate local embeddings for similarity search | `false` |
-| `model` | Model for enrichment | `claude-haiku-4-5-20251001` |
+
+### Authentication (for LLM Enrichment)
+
+LLM enrichment uses the Claude Agent SDK. Auth is passed via environment variables:
+
+- **`CLAUDE_CODE_OAUTH_TOKEN`** — OAuth token from `claude setup-token` (works when running as MCP server inside Claude Code)
+- **`ANTHROPIC_API_KEY`** — Standard API key from [console.anthropic.com](https://console.anthropic.com)
+
+If neither is set, enrichment is disabled but all other features (CRUD, search, graph) work normally.
 
 ## Data Storage
 
