@@ -157,6 +157,7 @@ export class Store {
   setConfig(key: string, value: string): void {
     const cfg = this.getConfig();
     switch (key) {
+      case "auth_token": cfg.auth_token = value; break;
       case "api_key": cfg.api_key = value; break;
       case "embedding_enabled": cfg.embedding_enabled = value === "true"; break;
       case "model": cfg.model = value; break;

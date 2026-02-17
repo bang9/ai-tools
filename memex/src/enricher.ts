@@ -109,17 +109,36 @@ export class Enricher {
 // --- Agent SDK Client ---
 
 export class AgentSDKClient implements LLMClient {
+  private authToken?: string;
+  private apiKey?: string;
+
+  constructor(authToken?: string, apiKey?: string) {
+    this.authToken = authToken;
+    this.apiKey = apiKey;
+  }
+
   async analyze(note: Note, candidates: Note[]): Promise<EnrichmentResult> {
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
     const prompt = buildEnrichmentPrompt(note, candidates);
 
     // Strip CLAUDECODE env to avoid "nested session" error when
     // the MCP server (spawned by Claude Code) calls the Agent SDK.
-    // CLAUDE_CODE_OAUTH_TOKEN is inherited from the parent process env.
     const env: Record<string, string | undefined> = { ...process.env };
     delete env.CLAUDECODE;
+
+    // Auth priority:
+    // 1. process.env (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)
+    // 2. config.auth_token → CLAUDE_CODE_OAUTH_TOKEN
+    // 3. config.api_key → ANTHROPIC_API_KEY
     if (!env.CLAUDE_CODE_OAUTH_TOKEN && !env.ANTHROPIC_API_KEY) {
-      console.error("enricher: no auth token found (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)");
+      if (this.authToken) {
+        env.CLAUDE_CODE_OAUTH_TOKEN = this.authToken;
+      } else if (this.apiKey) {
+        env.ANTHROPIC_API_KEY = this.apiKey;
+      }
+    }
+    if (!env.CLAUDE_CODE_OAUTH_TOKEN && !env.ANTHROPIC_API_KEY) {
+      console.error("enricher: no auth found. Set via: memex config set auth_token <token> or memex config set api_key <key>");
       return { relations: [], superseded: [] };
     }
 

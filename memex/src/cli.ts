@@ -15,10 +15,19 @@ Usage:
   memex config set <key> <value>
   memex config get [key]
 
+Config keys:
+  auth_token         OAuth token from 'claude setup-token' (for Agent SDK enrichment)
+  api_key            Anthropic API key from console.anthropic.com (alternative auth)
+  embedding_enabled  Enable local embedding generation (true/false, default: false)
+  model              Model for enrichment (default: claude-haiku-4-5-20251001)
+
+Auth priority: env vars (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY) > auth_token > api_key
+
 Examples:
   echo "gRPC chosen for type safety" | memex add --type decision --tag architecture --source ai-tools:src/mcp.ts
   memex search --tag architecture
   memex context "ai-tools:src/"
+  memex config set auth_token sk-ant-oat01-xxxxx
   memex list
 `;
 
@@ -134,6 +143,7 @@ function doConfig() {
     if (!key) { console.log(JSON.stringify(store.getConfig(), null, 2)); return; }
     const cfg = store.getConfig();
     switch (key) {
+      case "auth_token": console.log(cfg.auth_token ? cfg.auth_token.slice(0, 12) + "..." : "(not set)"); break;
       case "api_key": console.log(cfg.api_key ? cfg.api_key.slice(0, 8) + "..." : "(not set)"); break;
       case "embedding_enabled": console.log(cfg.embedding_enabled); break;
       case "model": console.log(cfg.model); break;

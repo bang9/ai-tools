@@ -26,6 +26,7 @@ export interface Relation {
 }
 
 export interface Config {
+  auth_token?: string;
   api_key?: string;
   embedding_enabled: boolean;
   model: string;

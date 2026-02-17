@@ -82,23 +82,29 @@ memex config  set <key> <value> | get <key>
 ## Configuration
 
 ```bash
-memex config set embedding_enabled true    # Enable local embedding generation
+memex config set auth_token sk-ant-oat01-xxxxx   # OAuth token for enrichment
+memex config set api_key sk-ant-api03-xxxxx       # Or use an Anthropic API key
+memex config set embedding_enabled true           # Enable local embeddings
 ```
 
 Settings are stored in `~/.memex/config.json`.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
+| `auth_token` | OAuth token from `claude setup-token` (for Agent SDK enrichment) | (none) |
+| `api_key` | Anthropic API key from [console.anthropic.com](https://console.anthropic.com) | (none) |
 | `embedding_enabled` | Generate local embeddings for similarity search | `false` |
+| `model` | Model for LLM enrichment | `claude-haiku-4-5-20251001` |
 
 ### Authentication (for LLM Enrichment)
 
-LLM enrichment uses the Claude Agent SDK. Auth is passed via environment variables:
+LLM enrichment uses the Claude Agent SDK to auto-discover relations between notes. Auth is resolved in priority order:
 
-- **`CLAUDE_CODE_OAUTH_TOKEN`** — OAuth token from `claude setup-token` (works when running as MCP server inside Claude Code)
-- **`ANTHROPIC_API_KEY`** — Standard API key from [console.anthropic.com](https://console.anthropic.com)
+1. **Environment variables** — `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (auto-passed when running as MCP server inside Claude Code)
+2. **`auth_token`** — OAuth token set via `memex config set auth_token <token>` (get one with `claude setup-token`)
+3. **`api_key`** — Anthropic API key set via `memex config set api_key <key>`
 
-If neither is set, enrichment is disabled but all other features (CRUD, search, graph) work normally.
+If none are set, enrichment is disabled but all other features (CRUD, search, graph) work normally.
 
 ## Data Storage
 

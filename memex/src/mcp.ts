@@ -19,7 +19,7 @@ const cfg = store.getConfig();
 
 let enricher: Enricher;
 try {
-  const client = new AgentSDKClient();
+  const client = new AgentSDKClient(cfg.auth_token, cfg.api_key);
   enricher = new Enricher(store, client);
   console.error("memex: enrichment enabled (Agent SDK)");
 } catch {

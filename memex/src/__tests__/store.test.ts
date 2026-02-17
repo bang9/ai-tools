@@ -261,12 +261,12 @@ describe("Config", () => {
 
   it("set and get", () => {
     const { store } = newTestStore();
-    store.setConfig("api_key", "test-key");
+    store.setConfig("auth_token", "test-token");
     store.setConfig("embedding_enabled", "true");
     store.setConfig("model", "claude-sonnet-4-5-20250929");
 
     const cfg = store.getConfig();
-    assert.equal(cfg.api_key, "test-key");
+    assert.equal(cfg.auth_token, "test-token");
     assert.equal(cfg.embedding_enabled, true);
     assert.equal(cfg.model, "claude-sonnet-4-5-20250929");
   });
