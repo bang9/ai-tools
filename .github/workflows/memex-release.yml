@@ -1,0 +1,48 @@
+name: "memex: Release"
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build binaries
+        run: |
+          cd memex
+          mkdir -p dist
+          GOOS=darwin GOARCH=arm64 go build -o dist/memex-darwin-arm64 ./cmd/memex
+          GOOS=darwin GOARCH=amd64 go build -o dist/memex-darwin-amd64 ./cmd/memex
+          GOOS=linux GOARCH=amd64 go build -o dist/memex-linux-amd64 ./cmd/memex
+          GOOS=windows GOARCH=amd64 go build -o dist/memex-windows-amd64.exe ./cmd/memex
+          GOOS=darwin GOARCH=arm64 go build -o dist/memex-mcp-darwin-arm64 ./cmd/memex-mcp
+          GOOS=darwin GOARCH=amd64 go build -o dist/memex-mcp-darwin-amd64 ./cmd/memex-mcp
+          GOOS=linux GOARCH=amd64 go build -o dist/memex-mcp-linux-amd64 ./cmd/memex-mcp
+          GOOS=windows GOARCH=amd64 go build -o dist/memex-mcp-windows-amd64.exe ./cmd/memex-mcp
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            memex/dist/memex-darwin-arm64
+            memex/dist/memex-darwin-amd64
+            memex/dist/memex-linux-amd64
+            memex/dist/memex-windows-amd64.exe
+            memex/dist/memex-mcp-darwin-arm64
+            memex/dist/memex-mcp-darwin-amd64
+            memex/dist/memex-mcp-linux-amd64
+            memex/dist/memex-mcp-windows-amd64.exe
+          generate_release_notes: true

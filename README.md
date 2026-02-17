@@ -23,6 +23,25 @@ curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/redit/install.s
 /plugin install redit
 ```
 
+### [memex](./memex)
+
+A local knowledge graph for AI — automatically stores, connects, and retrieves knowledge across conversations.
+
+#### Installation
+
+**CLI**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/memex/install.sh | bash
+```
+
+**MCP Server & Skill** (via Claude Code Plugin)
+
+```bash
+/plugin marketplace add bang9/ai-tools
+/plugin install memex
+```
+
 ## License
 
 MIT

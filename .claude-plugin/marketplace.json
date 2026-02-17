@@ -21,6 +21,19 @@
       "license": "MIT",
       "keywords": ["remote", "edit", "cache", "confluence", "notion", "document"],
       "category": "productivity"
+    },
+    {
+      "name": "memex",
+      "source": "./memex",
+      "description": "Local Knowledge Graph for AI — stores, connects, and retrieves knowledge across conversations",
+      "version": "1.0.0",
+      "author": {
+        "name": "Airen Kang"
+      },
+      "repository": "https://github.com/bang9/ai-tools",
+      "license": "MIT",
+      "keywords": ["knowledge", "graph", "memory", "search", "notes"],
+      "category": "productivity"
     }
   ]
 }

@@ -2,6 +2,9 @@
 redit/redit
 redit/bin/
 redit/dist/
+memex/memex
+memex/bin/
+memex/dist/
 
 # Local files
 blog-post.md
@@ -32,3 +35,4 @@ Thumbs.db
 
 # Local data
 ~/.redit/
+~/.memex/

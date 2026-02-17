@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "memex": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/memex-mcp",
+      "env": {
+        "MEMEX_HOME": "${HOME}/.memex",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
+}
