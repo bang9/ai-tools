@@ -30,7 +30,6 @@ export interface Config {
   api_key?: string;
   embedding_enabled: boolean;
   model: string;
-  hook_min_turns?: number;
 }
 
 export function defaultConfig(): Config {
@@ -64,10 +63,24 @@ export interface NoteSummary {
   status: string;
 }
 
-export interface EnrichmentResult {
-  relations: Relation[];
-  superseded?: string[];
+export interface NoteCandidate {
+  content: string;
+  tags: string[];
+  sources: Source[];
+  type: string;
 }
+
+export const SIMILARITY_THRESHOLDS = {
+  SUPERSEDE: 0.9,
+  UPDATE: 0.7,
+  RELATE: 0.4,
+} as const;
+
+export type RoutingDecision =
+  | { action: "supersede"; existingId: string; similarity: number }
+  | { action: "update"; existingId: string; similarity: number }
+  | { action: "add_related"; existingId: string; similarity: number }
+  | { action: "add_independent" };
 
 export interface SearchParams {
   tag?: string;

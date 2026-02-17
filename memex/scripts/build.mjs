@@ -17,14 +17,6 @@ await esbuild.build({
   outfile: "dist/mcp.js",
 });
 
-// CLI
-await esbuild.build({
-  ...shared,
-  entryPoints: ["src/cli.ts"],
-  outfile: "dist/cli.js",
-  banner: { js: "#!/usr/bin/env node\n" + shared.banner.js },
-});
-
 // Hook entry point (Stop hook)
 await esbuild.build({
   ...shared,
@@ -39,6 +31,9 @@ await esbuild.build({
     "src/__tests__/store.test.ts",
     "src/__tests__/collector.test.ts",
     "src/__tests__/analyzer.test.ts",
+    "src/__tests__/mcp.test.ts",
+    "src/__tests__/embedder.test.ts",
+    "src/__tests__/routing.test.ts",
   ],
   outdir: "dist/__tests__",
   outExtension: { ".js": ".test.js" },

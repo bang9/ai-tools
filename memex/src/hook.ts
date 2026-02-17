@@ -1,6 +1,8 @@
 import { Store } from "./store.js";
 import { extractNewTurns, readCursor, writeCursor, totalLines, buildSessionSummary } from "./collector.js";
 import { analyzeSession } from "./analyzer.js";
+import { computeEmbedding, routeByEmbedding } from "./embedder.js";
+import type { NoteCandidate, Source } from "./types.js";
 
 interface HookInput {
   session_id: string;
@@ -41,10 +43,8 @@ async function main(): Promise<void> {
   const newTurns = extractNewTurns(transcript_path, cursor);
   const userAssistantTurns = newTurns.filter((t) => t.role === "user" || t.role === "assistant");
 
-  // Check minimum turns threshold
-  const minTurns = cfg.hook_min_turns ?? 3;
-  if (userAssistantTurns.length < minTurns) {
-    // Not enough new turns — update cursor and exit
+  if (userAssistantTurns.length === 0) {
+    // No new turns — update cursor and exit
     writeCursor(store.getBaseDir(), session_id, total);
     process.exit(0);
   }
@@ -52,51 +52,116 @@ async function main(): Promise<void> {
   // Build session summary for context
   const sessionSummary = buildSessionSummary(transcript_path, 50);
 
-  // Get existing notes for dedup/supersession
-  const existingNotes = store.list();
-
-  // Run analysis
+  // Run analysis (no existing notes needed — embedding handles routing)
   const result = await analyzeSession(
     userAssistantTurns,
     sessionSummary,
-    existingNotes,
     cwd,
     cfg.auth_token,
     cfg.api_key,
     cfg.model,
   );
 
-  // Apply results
-  for (const note of result.notes_to_add) {
-    const id = store.add({
-      content: note.content,
-      tags: note.tags,
-      sources: note.sources,
-      status: note.status || "open",
-    });
-    console.error(`hook: added note ${id}`);
-  }
-
-  for (const update of result.notes_to_update) {
-    try {
-      store.update(update.id, update.changes);
-      console.error(`hook: updated note ${update.id}`);
-    } catch (err) {
-      console.error(`hook: failed to update ${update.id}:`, err);
-    }
-  }
-
-  for (const sid of result.notes_to_supersede) {
-    try {
-      store.updateStatus(sid, "superseded");
-      console.error(`hook: superseded note ${sid}`);
-    } catch (err) {
-      console.error(`hook: failed to supersede ${sid}:`, err);
-    }
+  // Apply results via embedding-based routing
+  for (const candidate of result.notes) {
+    await applyCandidate(store, candidate, cfg.embedding_enabled);
   }
 
   // Update cursor
   writeCursor(store.getBaseDir(), session_id, total);
+}
+
+async function applyCandidate(
+  store: Store,
+  candidate: NoteCandidate,
+  embeddingEnabled: boolean,
+): Promise<void> {
+  if (!embeddingEnabled) {
+    // Fallback: add all candidates independently (no dedup)
+    const id = store.add({
+      content: candidate.content,
+      type: candidate.type,
+      tags: candidate.tags,
+      sources: candidate.sources,
+    });
+    console.error(`hook: added note ${id} (embedding disabled)`);
+    return;
+  }
+
+  const embedding = await computeEmbedding(candidate.content);
+  const existingEmbeddings = store.allEmbeddings();
+  const decision = routeByEmbedding(embedding, existingEmbeddings);
+
+  switch (decision.action) {
+    case "supersede": {
+      // Mark existing as superseded, add new note with supersedes relation
+      store.updateStatus(decision.existingId, "superseded");
+      const id = store.add({
+        content: candidate.content,
+        type: candidate.type,
+        tags: candidate.tags,
+        sources: candidate.sources,
+        relations: [{ target_id: decision.existingId, type: "supersedes" }],
+      });
+      store.setEmbedding(id, embedding);
+      console.error(`hook: superseded ${decision.existingId} → added ${id} (sim=${decision.similarity.toFixed(3)})`);
+      break;
+    }
+
+    case "update": {
+      // Update existing note: replace content, merge tags/sources
+      const existing = store.get(decision.existingId);
+      const mergedTags = [...new Set([...existing.tags, ...candidate.tags])];
+      const mergedSources = mergeSources(existing.sources, candidate.sources);
+      store.update(decision.existingId, {
+        content: candidate.content,
+        tags: mergedTags,
+        sources: mergedSources,
+      });
+      store.setEmbedding(decision.existingId, embedding);
+      console.error(`hook: updated ${decision.existingId} (sim=${decision.similarity.toFixed(3)})`);
+      break;
+    }
+
+    case "add_related": {
+      // Add new note with relates_to relation
+      const id = store.add({
+        content: candidate.content,
+        type: candidate.type,
+        tags: candidate.tags,
+        sources: candidate.sources,
+        relations: [{ target_id: decision.existingId, type: "relates_to" }],
+      });
+      store.setEmbedding(id, embedding);
+      console.error(`hook: added ${id} related to ${decision.existingId} (sim=${decision.similarity.toFixed(3)})`);
+      break;
+    }
+
+    case "add_independent": {
+      const id = store.add({
+        content: candidate.content,
+        type: candidate.type,
+        tags: candidate.tags,
+        sources: candidate.sources,
+      });
+      store.setEmbedding(id, embedding);
+      console.error(`hook: added ${id} (independent)`);
+      break;
+    }
+  }
+}
+
+function mergeSources(existing: Source[], incoming: Source[]): Source[] {
+  const keys = new Set(existing.map((s) => `${s.project}:${s.path}`));
+  const merged = [...existing];
+  for (const src of incoming) {
+    const key = `${src.project}:${src.path}`;
+    if (!keys.has(key)) {
+      merged.push(src);
+      keys.add(key);
+    }
+  }
+  return merged;
 }
 
 function readStdin(): Promise<string> {

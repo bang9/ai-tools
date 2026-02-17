@@ -1,5 +1,7 @@
 import { Store } from "./store.js";
 import { cosineSimilarity } from "./search.js";
+import { SIMILARITY_THRESHOLDS } from "./types.js";
+import type { RoutingDecision } from "./types.js";
 
 // Lazy-loaded sentence-transformer pipeline
 let extractor: any = null;
@@ -20,7 +22,7 @@ async function getExtractor(): Promise<any> {
   }
 }
 
-async function computeEmbedding(text: string): Promise<number[]> {
+export async function computeEmbedding(text: string): Promise<number[]> {
   const ext = await getExtractor();
   if (ext) {
     const output = await ext(text, { pooling: "mean", normalize: true });
@@ -29,6 +31,48 @@ async function computeEmbedding(text: string): Promise<number[]> {
   // Fallback to BoW if model unavailable
   return bowEmbedding(text);
 }
+
+// --- Routing functions (pure, no Store dependency) ---
+
+export interface SimilarityMatch {
+  id: string;
+  similarity: number;
+}
+
+export function findBestMatch(
+  candidateEmbedding: number[],
+  existingEmbeddings: Record<string, number[]>,
+): SimilarityMatch | null {
+  let best: SimilarityMatch | null = null;
+  for (const [id, emb] of Object.entries(existingEmbeddings)) {
+    const sim = cosineSimilarity(candidateEmbedding, emb);
+    if (!best || sim > best.similarity) {
+      best = { id, similarity: sim };
+    }
+  }
+  return best;
+}
+
+export function routeByEmbedding(
+  candidateEmbedding: number[],
+  existingEmbeddings: Record<string, number[]>,
+): RoutingDecision {
+  const best = findBestMatch(candidateEmbedding, existingEmbeddings);
+  if (!best) return { action: "add_independent" };
+
+  if (best.similarity >= SIMILARITY_THRESHOLDS.SUPERSEDE) {
+    return { action: "supersede", existingId: best.id, similarity: best.similarity };
+  }
+  if (best.similarity >= SIMILARITY_THRESHOLDS.UPDATE) {
+    return { action: "update", existingId: best.id, similarity: best.similarity };
+  }
+  if (best.similarity >= SIMILARITY_THRESHOLDS.RELATE) {
+    return { action: "add_related", existingId: best.id, similarity: best.similarity };
+  }
+  return { action: "add_independent" };
+}
+
+// --- Embedder class ---
 
 export class Embedder {
   private queue: string[] = [];
@@ -91,7 +135,7 @@ export class Embedder {
 
 // --- BoW fallback ---
 
-function bowEmbedding(text: string): number[] {
+export function bowEmbedding(text: string): number[] {
   const tokens = text.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
   const vec = new Float32Array(384);
 

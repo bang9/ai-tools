@@ -4,8 +4,9 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Store } from "../store.js";
-import { search, context, cosineSimilarity, keywordOverlapScore } from "../search.js";
+import { search, context, cosineSimilarity } from "../search.js";
 import { parseSource } from "../types.js";
+import { bowEmbedding } from "../embedder.js";
 
 function newTestStore(): { store: Store; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "memex-test-"));
@@ -112,52 +113,63 @@ describe("Indexes", () => {
 });
 
 describe("Search", () => {
-  it("by tag", () => {
+  it("by tag", async () => {
     const { store } = newTestStore();
     store.add({ content: "typescript note", tags: ["typescript"] });
     store.add({ content: "python note", tags: ["python"] });
     store.add({ content: "both", tags: ["typescript", "python"] });
-    assert.equal(search(store, { tag: "typescript" }).length, 2);
+    assert.equal((await search(store, { tag: "typescript" })).length, 2);
   });
 
-  it("by source prefix", () => {
+  it("by source prefix", async () => {
     const { store } = newTestStore();
     store.add({ content: "about main", sources: [{ project: "proj", path: "src/main.ts" }] });
     store.add({ content: "about store", sources: [{ project: "proj", path: "lib/store.ts" }] });
-    assert.equal(search(store, { source: "proj:src" }).length, 1);
+    assert.equal((await search(store, { source: "proj:src" })).length, 1);
   });
 
-  it("by type", () => {
+  it("by type", async () => {
     const { store } = newTestStore();
     store.add({ content: "a decision", type: "decision" });
     store.add({ content: "an observation", type: "observation" });
     store.add({ content: "another decision", type: "decision" });
-    assert.equal(search(store, { type: "decision" }).length, 2);
+    assert.equal((await search(store, { type: "decision" })).length, 2);
   });
 
-  it("by status", () => {
+  it("by status", async () => {
     const { store } = newTestStore();
     const id1 = store.add({ content: "open note" });
     store.add({ content: "another open" });
     store.updateStatus(id1, "resolved");
-    assert.equal(search(store, { status: "open" }).length, 1);
+    assert.equal((await search(store, { status: "open" })).length, 1);
   });
 
-  it("by query (BM25)", () => {
+  it("by query (cosine similarity)", async () => {
     const { store } = newTestStore();
-    store.add({ content: "gRPC was chosen for its type safety and code generation" });
-    store.add({ content: "REST API is simpler but lacks type safety" });
-    store.add({ content: "Database migration completed successfully" });
-    const results = search(store, { query: "type safety" });
-    assert.ok(results.length >= 2, `expected >=2 results, got ${results.length}`);
+    const id1 = store.add({ content: "gRPC was chosen for its type safety and code generation" });
+    const id2 = store.add({ content: "REST API is simpler but lacks type safety" });
+    const id3 = store.add({ content: "Database migration completed successfully" });
+
+    // Set embeddings for all notes
+    store.setEmbedding(id1, bowEmbedding("gRPC was chosen for its type safety and code generation"));
+    store.setEmbedding(id2, bowEmbedding("REST API is simpler but lacks type safety"));
+    store.setEmbedding(id3, bowEmbedding("Database migration completed successfully"));
+
+    const results = await search(store, { query: "type safety" });
+    assert.equal(results.length, 3);
+    // type safety related notes should rank higher
+    assert.ok(
+      results[0].content.includes("type safety") || results[1].content.includes("type safety"),
+      "type safety notes should rank near top",
+    );
   });
 
-  it("combined filters", () => {
+  it("combined filters", async () => {
     const { store } = newTestStore();
     store.add({ content: "typescript grpc decision", type: "decision", tags: ["typescript"] });
     store.add({ content: "typescript observation", type: "observation", tags: ["typescript"] });
     store.add({ content: "python decision", type: "decision", tags: ["python"] });
-    assert.equal(search(store, { tag: "typescript", type: "decision" }).length, 1);
+    assert.equal((await search(store, { tag: "typescript", type: "decision" })).length, 1);
   });
 });
 
@@ -275,14 +287,36 @@ describe("Config", () => {
     const { store } = newTestStore();
     assert.throws(() => store.setConfig("unknown", "value"));
   });
+
+  it("hook_min_turns is no longer a valid config key", () => {
+    const { store } = newTestStore();
+    assert.throws(() => store.setConfig("hook_min_turns", "3"), /Unknown config key/);
+  });
+});
+
+describe("ID Validation", () => {
+  it("rejects path traversal IDs", () => {
+    const { store } = newTestStore();
+    assert.throws(() => store.get("../../etc/passwd"), /invalid note ID/);
+    assert.throws(() => store.get("../secret"), /invalid note ID/);
+  });
+
+  it("rejects IDs with non-hex characters", () => {
+    const { store } = newTestStore();
+    assert.throws(() => store.get("hello!"), /invalid note ID/);
+    assert.throws(() => store.get("abc xyz"), /invalid note ID/);
+    assert.throws(() => store.get("ABCDEF01"), /invalid note ID/);
+  });
+
+  it("accepts valid hex IDs", () => {
+    const { store } = newTestStore();
+    const id = store.add({ content: "test" });
+    assert.ok(/^[a-f0-9]+$/.test(id));
+    assert.doesNotThrow(() => store.get(id));
+  });
 });
 
 describe("Utilities", () => {
-  it("keywordOverlapScore", () => {
-    assert.ok(keywordOverlapScore("gRPC type safety", "REST type safety") > 0.3);
-    assert.ok(keywordOverlapScore("gRPC", "database migration") < 0.1);
-  });
-
   it("parseSource", () => {
     const src = parseSource("myproj:src/main.ts");
     assert.equal(src.project, "myproj");

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, existsSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, existsSync, renameSync, chmodSync } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { homedir } from "os";
@@ -161,10 +161,9 @@ export class Store {
       case "api_key": cfg.api_key = value; break;
       case "embedding_enabled": cfg.embedding_enabled = value === "true"; break;
       case "model": cfg.model = value; break;
-      case "hook_min_turns": cfg.hook_min_turns = parseInt(value, 10) || 3; break;
       default: throw new Error(`Unknown config key: ${key}`);
     }
-    atomicWrite(join(this.baseDir, "config.json"), JSON.stringify(cfg, null, 2));
+    atomicWrite(join(this.baseDir, "config.json"), JSON.stringify(cfg, null, 2), 0o600);
   }
 
   // --- Index accessors (copies for read-only use) ---
@@ -177,6 +176,9 @@ export class Store {
   // --- Internal ---
 
   private notePath(id: string): string {
+    if (!/^[a-f0-9]+$/.test(id)) {
+      throw new Error(`invalid note ID: ${id}`);
+    }
     return join(this.baseDir, "notes", `${id}.json`);
   }
 
@@ -265,8 +267,8 @@ function generateID(): string {
   return randomBytes(4).toString("hex");
 }
 
-function atomicWrite(path: string, data: string): void {
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, data);
+function atomicWrite(path: string, data: string, mode?: number): void {
+  const tmp = path + "." + randomBytes(4).toString("hex") + ".tmp";
+  writeFileSync(tmp, data, mode != null ? { mode } : undefined);
   renameSync(tmp, path);
 }

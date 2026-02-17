@@ -1,9 +1,8 @@
-import { readdirSync, readFileSync, existsSync } from "fs";
-import { join } from "path";
 import type { Note, NoteWithRelations, SearchParams, Relation } from "./types.js";
 import { Store } from "./store.js";
+import { computeEmbedding } from "./embedder.js";
 
-export function search(store: Store, params: SearchParams): Note[] {
+export async function search(store: Store, params: SearchParams): Promise<Note[]> {
   const tags = store.tagsIndex();
   const sources = store.sourcesIndex();
 
@@ -60,9 +59,25 @@ export function search(store: Store, params: SearchParams): Note[] {
     candidates = candidates.filter((n) => n.status === params.status);
   }
 
-  // Rank by query
+  // Rank by semantic similarity
   if (params.query) {
-    candidates = bm25Rank(candidates, params.query);
+    const queryEmb = await computeEmbedding(params.query);
+    const allEmbs = store.allEmbeddings();
+
+    const scored: { note: Note; score: number }[] = [];
+    for (const note of candidates) {
+      const emb = allEmbs[note.id];
+      if (emb) {
+        const sim = cosineSimilarity(queryEmb, emb);
+        scored.push({ note, score: sim });
+      } else {
+        // Notes without embeddings get score 0 (migration safety)
+        scored.push({ note, score: 0 });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    candidates = scored.map((s) => s.note);
   }
 
   return candidates;
@@ -142,58 +157,6 @@ export function context(store: Store, source: string, maxHops = 3): NoteWithRela
   return results;
 }
 
-// --- BM25+ Ranking ---
-
-function bm25Rank(notes: Note[], query: string): Note[] {
-  const queryTerms = tokenize(query);
-  if (queryTerms.length === 0) return notes;
-
-  // Document frequencies
-  const df = new Map<string, number>();
-  for (const note of notes) {
-    const terms = new Set(tokenize(note.content));
-    for (const t of terms) df.set(t, (df.get(t) ?? 0) + 1);
-  }
-
-  // Average document length
-  let totalLen = 0;
-  for (const note of notes) totalLen += tokenize(note.content).length;
-  const avgDL = totalLen / Math.max(notes.length, 1);
-
-  const N = notes.length;
-  const k1 = 1.2;
-  const b = 0.75;
-
-  const scored: { note: Note; score: number }[] = [];
-
-  for (const note of notes) {
-    const docTerms = tokenize(note.content);
-    const tf = new Map<string, number>();
-    for (const t of docTerms) tf.set(t, (tf.get(t) ?? 0) + 1);
-
-    const dl = docTerms.length;
-    let score = 0;
-
-    for (const qt of queryTerms) {
-      const termTf = tf.get(qt) ?? 0;
-      if (termTf === 0) continue;
-      const termDf = df.get(qt) ?? 0;
-      const idf = Math.log(1 + (N - termDf + 0.5) / (termDf + 0.5));
-      const tfNorm = (termTf * (k1 + 1)) / (termTf + k1 * (1 - b + b * dl / avgDL));
-      score += idf * tfNorm;
-    }
-
-    if (score > 0) scored.push({ note, score });
-  }
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored.map((s) => s.note);
-}
-
-function tokenize(text: string): string[] {
-  return text.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
-}
-
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length || a.length === 0) return 0;
   let dot = 0, normA = 0, normB = 0;
@@ -204,14 +167,4 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   }
   if (normA === 0 || normB === 0) return 0;
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-export function keywordOverlapScore(a: string, b: string): number {
-  const tokensA = new Set(tokenize(a));
-  const tokensB = new Set(tokenize(b));
-  if (tokensA.size === 0 || tokensB.size === 0) return 0;
-  let overlap = 0;
-  for (const t of tokensA) if (tokensB.has(t)) overlap++;
-  const union = tokensA.size + tokensB.size - overlap;
-  return union === 0 ? 0 : overlap / union;
 }

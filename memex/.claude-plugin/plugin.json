@@ -8,7 +8,6 @@
   },
   "repository": "https://github.com/bang9/ai-tools",
   "keywords": ["knowledge", "graph", "memory", "search", "notes"],
-  "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "hooks": {
     "SessionStart": [

@@ -1,35 +1,17 @@
 import type { Turn } from "./collector.js";
-import type { NoteSummary, Source } from "./types.js";
+import type { NoteCandidate, Source } from "./types.js";
 
 // --- Output types ---
 
-export interface NoteToAdd {
-  content: string;
-  tags: string[];
-  sources: Source[];
-  status: string;
-}
-
-export interface NoteToUpdate {
-  id: string;
-  changes: {
-    content?: string;
-    status?: string;
-    tags?: string[];
-  };
-}
-
 export interface AnalysisResult {
-  notes_to_add: NoteToAdd[];
-  notes_to_update: NoteToUpdate[];
-  notes_to_supersede: string[];
+  notes: NoteCandidate[];
 }
 
 // JSON Schema for structured output
 export const analysisSchema = {
   type: "object",
   properties: {
-    notes_to_add: {
+    notes: {
       type: "array",
       items: {
         type: "object",
@@ -47,35 +29,13 @@ export const analysisSchema = {
               required: ["project", "path"],
             },
           },
-          status: { type: "string" },
+          type: { type: "string" },
         },
-        required: ["content", "tags", "sources", "status"],
+        required: ["content", "tags", "sources", "type"],
       },
-    },
-    notes_to_update: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          changes: {
-            type: "object",
-            properties: {
-              content: { type: "string" },
-              status: { type: "string" },
-              tags: { type: "array", items: { type: "string" } },
-            },
-          },
-        },
-        required: ["id", "changes"],
-      },
-    },
-    notes_to_supersede: {
-      type: "array",
-      items: { type: "string" },
     },
   },
-  required: ["notes_to_add", "notes_to_update", "notes_to_supersede"],
+  required: ["notes"],
 };
 
 // --- Prompt builder ---
@@ -83,7 +43,6 @@ export const analysisSchema = {
 export function buildAnalysisPrompt(
   newTurns: Turn[],
   sessionSummary: string,
-  existingNotes: NoteSummary[],
   cwd: string,
 ): string {
   let prompt = `You are a knowledge extraction agent for a developer's local knowledge graph.
@@ -102,9 +61,8 @@ Analyze the conversation turns below and extract knowledge worth persisting acro
 - Be specific — include the "why", not just the "what"
 - Use tags for categorization (e.g., "architecture", "auth", "performance")
 - Set sources to the relevant file paths discussed (project from cwd basename)
-- Check existing notes to avoid duplicates — update or supersede instead
-- If a new insight contradicts or replaces an existing note, add it to notes_to_supersede
-- Status should be "open" for most new notes
+- Status is not your concern — just extract the knowledge content
+- Do NOT worry about deduplication — that is handled downstream by embeddings
 
 ## Working directory: ${cwd}
 
@@ -118,16 +76,9 @@ ${sessionSummary}
     prompt += `[${turn.role}] ${turn.text}\n\n`;
   }
 
-  if (existingNotes.length > 0) {
-    prompt += "\n## Existing notes (check for duplicates/supersession):\n";
-    for (const note of existingNotes) {
-      prompt += `- ID: ${note.id} | Type: ${note.type} | Tags: ${note.tags.join(", ")} | Status: ${note.status} | ${note.preview}\n`;
-    }
-  }
-
   prompt += `
 ## Instructions:
-Return the extracted knowledge. If nothing worth persisting is found, return empty arrays.
+Return the extracted knowledge. If nothing worth persisting is found, return an empty notes array.
 `;
 
   return prompt;
@@ -138,7 +89,6 @@ Return the extracted knowledge. If nothing worth persisting is found, return emp
 export async function analyzeSession(
   newTurns: Turn[],
   sessionSummary: string,
-  existingNotes: NoteSummary[],
   cwd: string,
   authToken?: string,
   apiKey?: string,
@@ -146,7 +96,7 @@ export async function analyzeSession(
 ): Promise<AnalysisResult> {
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
 
-  const prompt = buildAnalysisPrompt(newTurns, sessionSummary, existingNotes, cwd);
+  const prompt = buildAnalysisPrompt(newTurns, sessionSummary, cwd);
 
   // Strip CLAUDECODE env to avoid nested session error
   const env: Record<string, string | undefined> = { ...process.env };
@@ -202,14 +152,12 @@ export async function analyzeSession(
 }
 
 function emptyResult(): AnalysisResult {
-  return { notes_to_add: [], notes_to_update: [], notes_to_supersede: [] };
+  return { notes: [] };
 }
 
 function validateResult(output: unknown): AnalysisResult {
   const result = output as AnalysisResult;
   return {
-    notes_to_add: Array.isArray(result.notes_to_add) ? result.notes_to_add : [],
-    notes_to_update: Array.isArray(result.notes_to_update) ? result.notes_to_update : [],
-    notes_to_supersede: Array.isArray(result.notes_to_supersede) ? result.notes_to_supersede : [],
+    notes: Array.isArray(result.notes) ? result.notes : [],
   };
 }

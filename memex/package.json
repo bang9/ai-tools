@@ -4,9 +4,6 @@
   "description": "Local Knowledge Graph for AI",
   "type": "module",
   "main": "dist/mcp.js",
-  "bin": {
-    "memex": "dist/cli.js"
-  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test dist/__tests__/*.test.js",
