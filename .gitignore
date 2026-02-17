@@ -2,9 +2,8 @@
 redit/redit
 redit/bin/
 redit/dist/
-memex/memex
-memex/bin/
 memex/dist/
+memex/node_modules/
 
 # Local files
 blog-post.md

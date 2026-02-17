@@ -1,0 +1,33 @@
+{
+  "name": "@bang9/memex",
+  "version": "1.0.0",
+  "description": "Local Knowledge Graph for AI",
+  "type": "module",
+  "main": "dist/mcp.js",
+  "bin": {
+    "memex": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test dist/__tests__/*.test.js",
+    "pretest": "pnpm build",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  },
+  "files": [
+    "dist/"
+  ],
+  "author": "Airen Kang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bang9/ai-tools.git",
+    "directory": "memex"
+  }
+}
