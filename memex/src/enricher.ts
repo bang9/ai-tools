@@ -115,8 +115,13 @@ export class AgentSDKClient implements LLMClient {
 
     // Strip CLAUDECODE env to avoid "nested session" error when
     // the MCP server (spawned by Claude Code) calls the Agent SDK.
+    // CLAUDE_CODE_OAUTH_TOKEN is inherited from the parent process env.
     const env: Record<string, string | undefined> = { ...process.env };
     delete env.CLAUDECODE;
+    if (!env.CLAUDE_CODE_OAUTH_TOKEN && !env.ANTHROPIC_API_KEY) {
+      console.error("enricher: no auth token found (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)");
+      return { relations: [], superseded: [] };
+    }
 
     let resultText = "";
     for await (const message of query({

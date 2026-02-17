@@ -4,7 +4,9 @@
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp.js"],
       "env": {
-        "MEMEX_HOME": "${HOME}/.memex"
+        "MEMEX_HOME": "${HOME}/.memex",
+        "CLAUDE_CODE_OAUTH_TOKEN": "${CLAUDE_CODE_OAUTH_TOKEN}",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
       }
     }
   }
