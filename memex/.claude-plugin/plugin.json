@@ -21,6 +21,19 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hook.js",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
     ]
   }
 }

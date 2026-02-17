@@ -256,7 +256,7 @@ describe("Config", () => {
     const { store } = newTestStore();
     const cfg = store.getConfig();
     assert.equal(cfg.model, "claude-haiku-4-5-20251001");
-    assert.equal(cfg.embedding_enabled, false);
+    assert.equal(cfg.embedding_enabled, true);
   });
 
   it("set and get", () => {

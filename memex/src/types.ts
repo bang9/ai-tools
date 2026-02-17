@@ -30,11 +30,12 @@ export interface Config {
   api_key?: string;
   embedding_enabled: boolean;
   model: string;
+  hook_min_turns?: number;
 }
 
 export function defaultConfig(): Config {
   return {
-    embedding_enabled: false,
+    embedding_enabled: true,
     model: "claude-haiku-4-5-20251001",
   };
 }

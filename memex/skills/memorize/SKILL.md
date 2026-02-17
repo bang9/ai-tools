@@ -1,6 +1,6 @@
 ---
 name: memorize
-description: Persist important knowledge from the current conversation into the knowledge graph. Use this to capture decisions, patterns, risks, and other insights so future sessions can build on them.
+description: Manually persist knowledge from the current conversation into the knowledge graph. Supplements the automatic hook-based collection when you want immediate or explicit control over what gets stored.
 argument-hint: "[topic]"
 user-invocable: true
 allowed-tools: mcp__memex__add, mcp__memex__get, mcp__memex__update, mcp__memex__delete, mcp__memex__search, mcp__memex__context, mcp__memex__list
@@ -8,11 +8,9 @@ allowed-tools: mcp__memex__add, mcp__memex__get, mcp__memex__update, mcp__memex_
 
 # Memorize Workflow
 
-You are helping the user persist important knowledge from the current conversation into the memex knowledge graph.
+You are helping the user manually persist knowledge from the current conversation into the memex knowledge graph.
 
-## Overview
-
-memex stores atomic knowledge units (notes) with types, tags, source citations, and relations. This skill guides you through extracting and storing knowledge so it persists across sessions.
+> **Note**: memex automatically collects knowledge via a Stop hook after each turn. This skill is for cases where you want immediate or explicit control — e.g., capturing something the hook might miss, or storing knowledge before the session ends.
 
 ## Step 1: Review Conversation
 
@@ -42,9 +40,8 @@ If a duplicate exists, consider updating it instead of creating a new note.
 
 For each knowledge unit, determine:
 
-- **type** — decision, question, pattern, risk, observation, or todo
 - **content** — clear, specific description including the "why"
-- **tags** — categorization tags (prefer existing tags)
+- **tags** — categorization tags (prefer existing tags; include type-like tags e.g., "decision", "pattern")
 - **sources** — file paths in `{project, path}` format
 - **status** — open (default), resolved, or superseded
 
@@ -55,8 +52,7 @@ Add each knowledge unit:
 ```
 mcp__memex__add(
   content="Specific description of the knowledge...",
-  type="decision",
-  tags=["tag1", "tag2"],
+  tags=["decision", "auth", "api"],
   sources=[{project: "project-name", path: "src/relative/path.ts"}]
 )
 ```
@@ -69,13 +65,13 @@ After storing, search for related existing notes:
 mcp__memex__search(tag="<shared-tag>")
 ```
 
-If connections are found, note them for the user. The LLM enricher will automatically discover and create relations if configured.
+If connections are found, note them for the user. The LLM enricher will automatically discover and create relations.
 
 ## Step 6: Report
 
 Summarize what was stored:
 - Number of notes added
-- Types of knowledge captured
+- Tags used
 - Any connections to existing knowledge
 - Any existing notes that were updated or superseded
 

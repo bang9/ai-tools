@@ -4,27 +4,42 @@ A local knowledge graph for AI — automatically stores, connects, and retrieves
 
 ## What It Does
 
-memex gives AI assistants persistent memory. During conversations, it extracts and stores important knowledge — architectural decisions, code patterns, risks, open questions — into a local knowledge graph. Future sessions can query this graph to build on past context instead of starting from scratch.
+memex gives AI assistants persistent memory. It **automatically collects** knowledge from conversations via a hook-based pipeline — architectural decisions, code patterns, risks, open questions — into a local knowledge graph. Future sessions can query this graph to build on past context instead of starting from scratch.
 
 ## Architecture
 
 ```
-Conversation → Extract Knowledge → Store Notes
-                                      ↓
-                                  Tag Index ← Search ← Future Session
-                                  Source Index
-                                  Graph Index
-                                  Embedding Index (optional)
-                                      ↓
-                                  LLM Enrichment (optional)
-                                  → auto-relate notes
-                                  → detect superseded knowledge
+Claude Code Session
+  │
+  ├─ [Stop hook, async] runs after each assistant turn
+  │   stdin: { session_id, transcript_path, cwd }
+  │
+  └─ hook.js (background)
+      ├─ Collector: reads transcript JSONL, extracts new turns (cursor-based)
+      ├─ Analyzer: Agent SDK analyzes session context → structured JSON output
+      │   → notes_to_add, notes_to_update, notes_to_supersede
+      └─ Store: applies changes to global knowledge graph
+          ├─ notes/         (individual note files)
+          ├─ index/         (tags, sources, graph indexes)
+          └─ embeddings/    (semantic vectors via MiniLM-L6-v2)
 ```
 
-- **Notes** — atomic knowledge units with type, tags, sources, and relations
-- **Indexes** — tag, source, graph, and embedding indexes for fast lookup
-- **Graph traversal** — BFS context queries to find related knowledge
-- **LLM enrichment** — optional background processing to auto-discover relations
+### Data Flow
+
+1. **Hook** — `Stop` event fires after each assistant turn (async, non-blocking)
+2. **Collect** — reads transcript JSONL from cursor position, extracts user/assistant text
+3. **Analyze** — Agent SDK with structured outputs decides what to extract
+4. **Store** — adds/updates/supersedes notes in the global knowledge graph
+5. **Query** — MCP tools search, context, and list for retrieval in future sessions
+
+### MCP Server (Query-Focused)
+
+The MCP server provides tools for **querying** the knowledge graph:
+- `search` — filter by tag, source, query, type, status
+- `context` — BFS graph traversal from a source path
+- `list` — list all notes as summaries
+- `get` — retrieve a single note
+- `add/update/delete` — manual mutations (supplements auto-collection)
 
 ## Installation
 
@@ -46,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/memex/install.s
 ```bash
 cd memex
 pnpm install
-pnpm run build    # builds CLI + MCP server to dist/
+pnpm run build    # builds CLI + MCP server + hook to dist/
 ```
 
 ## CLI Commands
@@ -62,17 +77,6 @@ memex list    [--type <type>] [--status <status>]
 memex config  set <key> <value> | get <key>
 ```
 
-### Note Types
-
-| Type | Description |
-|------|-------------|
-| `decision` | A choice made between alternatives |
-| `question` | Something unclear or needing investigation |
-| `pattern` | A recurring convention or idiom |
-| `risk` | A potential problem or concern |
-| `observation` | A factual note about how something works |
-| `todo` | Work to be done later |
-
 ### Status Values
 
 - `open` — active, relevant (default)
@@ -82,29 +86,31 @@ memex config  set <key> <value> | get <key>
 ## Configuration
 
 ```bash
-memex config set auth_token sk-ant-oat01-xxxxx   # OAuth token for enrichment
+memex config set auth_token sk-ant-oat01-xxxxx   # OAuth token for auto-collection & enrichment
 memex config set api_key sk-ant-api03-xxxxx       # Or use an Anthropic API key
-memex config set embedding_enabled true           # Enable local embeddings
+memex config set embedding_enabled true           # Enable semantic embeddings (default: true)
+memex config set hook_min_turns 3                 # Min turns before hook triggers analysis
 ```
 
 Settings are stored in `~/.memex/config.json`.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `auth_token` | OAuth token from `claude setup-token` (for Agent SDK enrichment) | (none) |
+| `auth_token` | OAuth token from `claude setup-token` (for Agent SDK) | (none) |
 | `api_key` | Anthropic API key from [console.anthropic.com](https://console.anthropic.com) | (none) |
-| `embedding_enabled` | Generate local embeddings for similarity search | `false` |
-| `model` | Model for LLM enrichment | `claude-haiku-4-5-20251001` |
+| `embedding_enabled` | Generate semantic embeddings for similarity search | `true` |
+| `model` | Model for analysis and enrichment | `claude-haiku-4-5-20251001` |
+| `hook_min_turns` | Minimum new turns before hook triggers analysis | `3` |
 
-### Authentication (for LLM Enrichment)
+### Authentication
 
-LLM enrichment uses the Claude Agent SDK to auto-discover relations between notes. Auth is resolved in priority order:
+Auto-collection and LLM enrichment use the Claude Agent SDK. Auth is resolved in priority order:
 
-1. **Environment variables** — `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (auto-passed when running as MCP server inside Claude Code)
-2. **`auth_token`** — OAuth token set via `memex config set auth_token <token>` (get one with `claude setup-token`)
-3. **`api_key`** — Anthropic API key set via `memex config set api_key <key>`
+1. **Environment variables** — `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
+2. **`auth_token`** — set via `memex config set auth_token <token>` (get one with `claude setup-token`)
+3. **`api_key`** — set via `memex config set api_key <key>`
 
-If none are set, enrichment is disabled but all other features (CRUD, search, graph) work normally.
+If none are set, auto-collection and enrichment are disabled but manual CRUD, search, and graph features work normally.
 
 ## Data Storage
 
@@ -116,20 +122,15 @@ All data is stored locally in `~/.memex/`:
 ├── notes/               # Individual note files (JSON)
 │   ├── <id>.json
 │   └── ...
-└── indexes/
-    ├── tags.json        # Tag → note IDs
-    ├── sources.json     # Source key → note IDs
-    ├── graph.json       # Note ID → outgoing edges
-    └── embeddings.json  # Note ID → embedding vector
+├── index/
+│   ├── tags.json        # Tag → note IDs
+│   ├── sources.json     # Source key → note IDs
+│   └── graph.json       # Note ID → outgoing edges
+├── embeddings/
+│   └── vectors.json     # Note ID → embedding vector (384-dim)
+└── sessions/
+    └── <session_id>.cursor  # Last processed line per session
 ```
-
-## How It Works
-
-1. **Add** — AI extracts a knowledge unit and stores it as a note with type, tags, and source citations
-2. **Index** — the note is indexed by tags, sources, and graph relations for fast lookup
-3. **Search** — future sessions query by tag, source file, type, or full-text to find relevant knowledge
-4. **Context** — graph traversal (BFS) retrieves a note with all its related notes up to a configurable depth
-5. **Enrich** (optional) — LLM enrichment auto-discovers relations between notes and detects superseded knowledge
 
 ## License
 

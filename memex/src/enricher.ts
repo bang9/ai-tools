@@ -2,6 +2,7 @@ import type { Note, Relation, EnrichmentResult } from "./types.js";
 import { sourceKey } from "./types.js";
 import { Store } from "./store.js";
 import { cosineSimilarity } from "./search.js";
+import { extractJSON } from "./utils.js";
 
 export interface LLMClient {
   analyze(note: Note, candidates: Note[]): Promise<EnrichmentResult>;
@@ -206,19 +207,3 @@ Rules:
   return prompt;
 }
 
-function extractJSON(text: string): string {
-  // Try markdown code block
-  let match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (match) return match[1].trim();
-
-  // Try raw JSON
-  const start = text.indexOf("{");
-  if (start >= 0) {
-    let depth = 0;
-    for (let i = start; i < text.length; i++) {
-      if (text[i] === "{") depth++;
-      else if (text[i] === "}") { depth--; if (depth === 0) return text.slice(start, i + 1); }
-    }
-  }
-  return text;
-}

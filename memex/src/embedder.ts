@@ -1,6 +1,35 @@
 import { Store } from "./store.js";
 import { cosineSimilarity } from "./search.js";
 
+// Lazy-loaded sentence-transformer pipeline
+let extractor: any = null;
+let extractorFailed = false;
+
+async function getExtractor(): Promise<any> {
+  if (extractor) return extractor;
+  if (extractorFailed) return null;
+
+  try {
+    const { pipeline } = await import("@huggingface/transformers");
+    extractor = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+    return extractor;
+  } catch (err) {
+    extractorFailed = true;
+    console.error("embedder: failed to load model, falling back to BoW:", err);
+    return null;
+  }
+}
+
+async function computeEmbedding(text: string): Promise<number[]> {
+  const ext = await getExtractor();
+  if (ext) {
+    const output = await ext(text, { pooling: "mean", normalize: true });
+    return Array.from(output.data as Float32Array);
+  }
+  // Fallback to BoW if model unavailable
+  return bowEmbedding(text);
+}
+
 export class Embedder {
   private queue: string[] = [];
   private processing = false;
@@ -29,7 +58,7 @@ export class Embedder {
     while (this.queue.length > 0) {
       const id = this.queue.shift()!;
       try {
-        this.processNote(id);
+        await this.processNote(id);
       } catch (err) {
         console.error(`embedder: failed to process note ${id}:`, err);
       }
@@ -38,15 +67,15 @@ export class Embedder {
     this.processing = false;
   }
 
-  private processNote(id: string): void {
+  private async processNote(id: string): void {
     const note = this.store.get(id);
-    const embedding = bowEmbedding(note.content);
+    const embedding = await computeEmbedding(note.content);
     this.store.setEmbedding(id, embedding);
   }
 
-  similarNotes(query: string, k: number): string[] {
+  async similarNotes(query: string, k: number): Promise<string[]> {
     if (!this.enabled) return [];
-    const queryEmb = bowEmbedding(query);
+    const queryEmb = await computeEmbedding(query);
     const allEmbs = this.store.allEmbeddings();
 
     const scored: { id: string; score: number }[] = [];
@@ -60,7 +89,8 @@ export class Embedder {
   }
 }
 
-// Bag-of-words embedding (placeholder until sentence-transformer integration)
+// --- BoW fallback ---
+
 function bowEmbedding(text: string): number[] {
   const tokens = text.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
   const vec = new Float32Array(384);
@@ -73,7 +103,6 @@ function bowEmbedding(text: string): number[] {
     }
   }
 
-  // L2 normalize
   let norm = 0;
   for (const v of vec) norm += v * v;
   if (norm > 0) {

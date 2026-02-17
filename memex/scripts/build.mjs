@@ -6,7 +6,7 @@ const shared = {
   target: "node20",
   format: "esm",
   sourcemap: true,
-  external: ["@anthropic-ai/claude-agent-sdk"],
+  external: ["@anthropic-ai/claude-agent-sdk", "@huggingface/transformers"],
   banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" },
 };
 
@@ -25,10 +25,21 @@ await esbuild.build({
   banner: { js: "#!/usr/bin/env node\n" + shared.banner.js },
 });
 
+// Hook entry point (Stop hook)
+await esbuild.build({
+  ...shared,
+  entryPoints: ["src/hook.ts"],
+  outfile: "dist/hook.js",
+});
+
 // Tests
 await esbuild.build({
   ...shared,
-  entryPoints: ["src/__tests__/store.test.ts"],
+  entryPoints: [
+    "src/__tests__/store.test.ts",
+    "src/__tests__/collector.test.ts",
+    "src/__tests__/analyzer.test.ts",
+  ],
   outdir: "dist/__tests__",
   outExtension: { ".js": ".test.js" },
 });

@@ -161,6 +161,7 @@ export class Store {
       case "api_key": cfg.api_key = value; break;
       case "embedding_enabled": cfg.embedding_enabled = value === "true"; break;
       case "model": cfg.model = value; break;
+      case "hook_min_turns": cfg.hook_min_turns = parseInt(value, 10) || 3; break;
       default: throw new Error(`Unknown config key: ${key}`);
     }
     atomicWrite(join(this.baseDir, "config.json"), JSON.stringify(cfg, null, 2));
