@@ -16,9 +16,9 @@ Usage:
   memex config get [key]
 
 Examples:
-  echo "gRPC chosen for type safety" | memex add --type decision --tag architecture --source ai-tools:cmd/main.go
+  echo "gRPC chosen for type safety" | memex add --type decision --tag architecture --source ai-tools:src/mcp.ts
   memex search --tag architecture
-  memex context "ai-tools:cmd/"
+  memex context "ai-tools:src/"
   memex list
 `;
 

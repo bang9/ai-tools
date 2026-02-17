@@ -66,7 +66,7 @@ List all notes as summaries.
 
 ```
 1. Check existing knowledge for the file/area:
-   mcp__memex__search(source="project:path/to/file.go")
+   mcp__memex__search(source="project:path/to/file.ts")
 
 2. Check related tags:
    mcp__memex__search(tag="authentication")
@@ -83,7 +83,7 @@ List all notes as summaries.
      content="Chose JWT over session cookies for API auth because...",
      type="decision",
      tags=["auth", "api"],
-     sources=[{project: "myapp", path: "internal/auth/handler.go"}]
+     sources=[{project: "myapp", path: "src/auth/handler.ts"}]
    )
 
 2. Mark superseded knowledge:
@@ -107,7 +107,7 @@ List all notes as summaries.
 
 Sources use `"project:path"` format:
 - `project` — git remote name or directory name (e.g., `ai-tools`, `myapp`)
-- `path` — relative to project root (e.g., `internal/auth/handler.go`)
+- `path` — relative to project root (e.g., `src/auth/handler.ts`)
 
 Examples:
 - `ai-tools:memex/src/store.ts`

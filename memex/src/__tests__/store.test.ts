@@ -19,7 +19,7 @@ describe("Store CRUD", () => {
       content: "gRPC chosen for type safety",
       type: "decision",
       tags: ["architecture", "grpc"],
-      sources: [{ project: "ai-tools", path: "cmd/main.go" }],
+      sources: [{ project: "ai-tools", path: "src/main.ts" }],
     });
     assert.equal(id.length, 8);
 
@@ -56,11 +56,11 @@ describe("Store CRUD", () => {
 
   it("delete", () => {
     const { store } = newTestStore();
-    const id = store.add({ content: "to delete", tags: ["deleteme"], sources: [{ project: "test", path: "foo.go" }] });
+    const id = store.add({ content: "to delete", tags: ["deleteme"], sources: [{ project: "test", path: "foo.ts" }] });
     store.delete(id);
     assert.throws(() => store.get(id));
     assert.deepEqual(store.tagsIndex()["deleteme"], undefined);
-    assert.deepEqual(store.sourcesIndex()["test:foo.go"], undefined);
+    assert.deepEqual(store.sourcesIndex()["test:foo.ts"], undefined);
   });
 
   it("delete nonexistent throws", () => {
@@ -84,29 +84,29 @@ describe("Store CRUD", () => {
 describe("Indexes", () => {
   it("tag index", () => {
     const { store } = newTestStore();
-    const id1 = store.add({ content: "note 1", tags: ["go", "grpc"] });
-    const id2 = store.add({ content: "note 2", tags: ["go", "rest"] });
+    const id1 = store.add({ content: "note 1", tags: ["typescript", "grpc"] });
+    const id2 = store.add({ content: "note 2", tags: ["typescript", "rest"] });
     const tags = store.tagsIndex();
-    assert.equal(tags["go"].length, 2);
+    assert.equal(tags["typescript"].length, 2);
     assert.deepEqual(tags["grpc"], [id1]);
     assert.deepEqual(tags["rest"], [id2]);
   });
 
   it("source index", () => {
     const { store } = newTestStore();
-    const id1 = store.add({ content: "note about main", sources: [{ project: "myproj", path: "cmd/main.go" }] });
-    store.add({ content: "note about utils", sources: [{ project: "myproj", path: "internal/utils.go" }] });
-    assert.deepEqual(store.sourcesIndex()["myproj:cmd/main.go"], [id1]);
+    const id1 = store.add({ content: "note about main", sources: [{ project: "myproj", path: "src/main.ts" }] });
+    store.add({ content: "note about utils", sources: [{ project: "myproj", path: "src/utils.ts" }] });
+    assert.deepEqual(store.sourcesIndex()["myproj:src/main.ts"], [id1]);
   });
 
   it("index persistence", () => {
     const dir = mkdtempSync(join(tmpdir(), "memex-test-"));
     const s1 = new Store(dir);
-    const id1 = s1.add({ content: "persistent", tags: ["persist"], sources: [{ project: "proj", path: "a.go" }] });
+    const id1 = s1.add({ content: "persistent", tags: ["persist"], sources: [{ project: "proj", path: "a.ts" }] });
 
     const s2 = new Store(dir);
     assert.deepEqual(s2.tagsIndex()["persist"], [id1]);
-    assert.deepEqual(s2.sourcesIndex()["proj:a.go"], [id1]);
+    assert.deepEqual(s2.sourcesIndex()["proj:a.ts"], [id1]);
     assert.equal(s2.get(id1).content, "persistent");
   });
 });
@@ -114,17 +114,17 @@ describe("Indexes", () => {
 describe("Search", () => {
   it("by tag", () => {
     const { store } = newTestStore();
-    store.add({ content: "go note", tags: ["go"] });
+    store.add({ content: "typescript note", tags: ["typescript"] });
     store.add({ content: "python note", tags: ["python"] });
-    store.add({ content: "both", tags: ["go", "python"] });
-    assert.equal(search(store, { tag: "go" }).length, 2);
+    store.add({ content: "both", tags: ["typescript", "python"] });
+    assert.equal(search(store, { tag: "typescript" }).length, 2);
   });
 
   it("by source prefix", () => {
     const { store } = newTestStore();
-    store.add({ content: "about cmd", sources: [{ project: "proj", path: "cmd/main.go" }] });
-    store.add({ content: "about internal", sources: [{ project: "proj", path: "internal/store.go" }] });
-    assert.equal(search(store, { source: "proj:cmd" }).length, 1);
+    store.add({ content: "about main", sources: [{ project: "proj", path: "src/main.ts" }] });
+    store.add({ content: "about store", sources: [{ project: "proj", path: "lib/store.ts" }] });
+    assert.equal(search(store, { source: "proj:src" }).length, 1);
   });
 
   it("by type", () => {
@@ -154,48 +154,48 @@ describe("Search", () => {
 
   it("combined filters", () => {
     const { store } = newTestStore();
-    store.add({ content: "go grpc decision", type: "decision", tags: ["go"] });
-    store.add({ content: "go observation", type: "observation", tags: ["go"] });
+    store.add({ content: "typescript grpc decision", type: "decision", tags: ["typescript"] });
+    store.add({ content: "typescript observation", type: "observation", tags: ["typescript"] });
     store.add({ content: "python decision", type: "decision", tags: ["python"] });
-    assert.equal(search(store, { tag: "go", type: "decision" }).length, 1);
+    assert.equal(search(store, { tag: "typescript", type: "decision" }).length, 1);
   });
 });
 
 describe("Context (BFS)", () => {
   it("traverses graph", () => {
     const { store } = newTestStore();
-    const id1 = store.add({ content: "main entry point", sources: [{ project: "proj", path: "cmd/main.go" }] });
+    const id1 = store.add({ content: "main entry point", sources: [{ project: "proj", path: "src/main.ts" }] });
     const id2 = store.add({ content: "store implementation" });
     const id3 = store.add({ content: "database layer" });
     store.addRelations(id1, [{ target_id: id2, type: "relates_to" }]);
     store.addRelations(id2, [{ target_id: id3, type: "depends_on" }]);
 
-    const results = context(store, "proj:cmd/main.go", 3);
+    const results = context(store, "proj:src/main.ts", 3);
     assert.equal(results.length, 3);
   });
 
   it("no match returns empty", () => {
     const { store } = newTestStore();
-    store.add({ content: "unrelated", sources: [{ project: "other", path: "foo.go" }] });
+    store.add({ content: "unrelated", sources: [{ project: "other", path: "foo.ts" }] });
     assert.equal(context(store, "nonexistent:path", 3).length, 0);
   });
 
   it("handles cycles", () => {
     const { store } = newTestStore();
-    const id1 = store.add({ content: "note1", sources: [{ project: "proj", path: "a.go" }] });
+    const id1 = store.add({ content: "note1", sources: [{ project: "proj", path: "a.ts" }] });
     const id2 = store.add({ content: "note2" });
     store.addRelations(id1, [{ target_id: id2, type: "relates_to" }]);
     store.addRelations(id2, [{ target_id: id1, type: "relates_to" }]);
-    assert.equal(context(store, "proj:a.go", 3).length, 2);
+    assert.equal(context(store, "proj:a.ts", 3).length, 2);
   });
 
   it("incoming edges are tracked", () => {
     const { store } = newTestStore();
-    const id1 = store.add({ content: "note1", sources: [{ project: "proj", path: "a.go" }] });
+    const id1 = store.add({ content: "note1", sources: [{ project: "proj", path: "a.ts" }] });
     const id2 = store.add({ content: "note2" });
     store.addRelations(id1, [{ target_id: id2, type: "relates_to" }]);
 
-    const results = context(store, "proj:a.go", 3);
+    const results = context(store, "proj:a.ts", 3);
     const note2 = results.find((r) => r.note.id === id2);
     assert.ok(note2?.incoming);
     assert.equal(note2!.incoming![0].target_id, id1);
@@ -284,12 +284,12 @@ describe("Utilities", () => {
   });
 
   it("parseSource", () => {
-    const src = parseSource("myproj:cmd/main.go");
+    const src = parseSource("myproj:src/main.ts");
     assert.equal(src.project, "myproj");
-    assert.equal(src.path, "cmd/main.go");
+    assert.equal(src.path, "src/main.ts");
 
-    const src2 = parseSource("just/a/path.go");
+    const src2 = parseSource("just/a/path.ts");
     assert.equal(src2.project, "");
-    assert.equal(src2.path, "just/a/path.go");
+    assert.equal(src2.path, "just/a/path.ts");
   });
 });

@@ -57,7 +57,7 @@ mcp__memex__add(
   content="Specific description of the knowledge...",
   type="decision",
   tags=["tag1", "tag2"],
-  sources=[{project: "project-name", path: "relative/path.go"}]
+  sources=[{project: "project-name", path: "src/relative/path.ts"}]
 )
 ```
 
