@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { WhipAPIClient, parseConnectURL, AuthError, ConnectionError } from '../api/client'
+import { WhipAPIClient, buildConnectURL, parseConnectURL, AuthError, ConnectionError } from '../api/client'
 import { saveAuth, clearAuth, getClient, loadAuth } from '../stores/auth'
 
 interface Props {
@@ -48,7 +48,7 @@ export function LoginPage({ onLogin }: Props) {
           // Server temporarily unreachable — don't clear potentially valid credentials
           const auth = loadAuth()
           if (auth) {
-            setUrl(`${auth.baseURL}?token=${auth.token}`)
+            setUrl(buildConnectURL(auth.baseURL, auth.token))
           }
           setError('Cannot connect to server')
         } else {
@@ -67,7 +67,7 @@ export function LoginPage({ onLogin }: Props) {
 
     const parsed = parseConnectURL(url.trim())
     if (!parsed) {
-      setError('Invalid URL format. Expected: https://...?token=...')
+      setError('Invalid URL format. Expected: https://...#token=... (legacy ?token=... also works)')
       return
     }
 
@@ -119,7 +119,7 @@ export function LoginPage({ onLogin }: Props) {
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://xxx.trycloudflare.com?token=abc123"
+              placeholder="https://xxx.trycloudflare.com#token=abc123"
               disabled={loading}
               className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#8B5CF6] focus:border-transparent transition-colors disabled:opacity-60"
             />

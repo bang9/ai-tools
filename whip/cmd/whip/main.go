@@ -1080,10 +1080,8 @@ func remoteCmd() *cobra.Command {
 			fmt.Fprintln(os.Stderr, "  Shortcuts: [o] open in browser  [c] copy URL  [q] quit")
 
 			// Extract token from connect URL and save config
-			if u, parseErr := url.Parse(connectURL); parseErr == nil {
-				if t := u.Query().Get("token"); t != "" {
-					cfg.ServeToken = t
-				}
+			if t := connectURLToken(connectURL); t != "" {
+				cfg.ServeToken = t
 			}
 			configChanged := false
 			if tunnel != cfg.Tunnel {
@@ -1275,4 +1273,19 @@ func timeAgo(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+func connectURLToken(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if t := u.Query().Get("token"); t != "" {
+		return t
+	}
+	fragment, err := url.ParseQuery(u.Fragment)
+	if err != nil {
+		return ""
+	}
+	return fragment.Get("token")
 }

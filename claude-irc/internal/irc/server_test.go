@@ -176,12 +176,43 @@ func TestAPIAuthBearerToken(t *testing.T) {
 	}
 }
 
-func TestAPIAuthQueryParam(t *testing.T) {
+func TestAPIAuthQueryParamPeers(t *testing.T) {
 	ts, _, token := setupTestServer(t)
 	resp := doRequest(t, ts, "", "GET", "/api/peers?token="+token, nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIAuthQueryParamTasks(t *testing.T) {
+	ts, _, token := setupTestServer(t)
+	resp := doRequest(t, ts, "", "GET", "/api/tasks?token="+token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIAuthQueryParamRejectsMessages(t *testing.T) {
+	ts, _, token := setupTestServer(t)
+	resp := doRequest(t, ts, "", "GET", "/api/messages/user?token="+token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIAuthQueryParamRejectsMutatingEndpoints(t *testing.T) {
+	ts, _, token := setupTestServer(t)
+	resp := doRequest(t, ts, "", "POST", "/api/messages?token="+token, map[string]string{
+		"from":    "user",
+		"to":      "alice",
+		"content": "hello",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
 	}
 }
 
@@ -758,6 +789,30 @@ func TestAPIMasterKeysRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestAPIMasterStatusRejectsQueryAuth(t *testing.T) {
+	ts, _, token := setupTestServerWithMaster(t, "master-session")
+
+	resp := doRequest(t, ts, "", "GET", "/api/master/status?token="+token, nil)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIMasterKeysRejectsQueryAuth(t *testing.T) {
+	ts, _, token := setupTestServerWithMaster(t, "master-session")
+
+	resp := doRequest(t, ts, "", "POST", "/api/master/keys?token="+token, map[string]string{
+		"keys": "whoami",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
 func TestAPIMasterKeysRejectsOversizedKeys(t *testing.T) {
 	ts, _, token := setupTestServerWithMaster(t, "master-session")
 
@@ -834,6 +889,36 @@ func TestAPIRunServer(t *testing.T) {
 	// Token should be 32 hex chars
 	if len(gotInfo.Token) != 32 {
 		t.Errorf("expected 32-char token, got %d chars", len(gotInfo.Token))
+	}
+}
+
+func TestAPIShortURLRedirectUsesFragmentConnectURL(t *testing.T) {
+	ts, _, token := setupTestServer(t)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/s/"+shortCodeFromToken(token), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302, got %d", resp.StatusCode)
+	}
+
+	wantLocation := DashboardURL(ConnectURL(ts.URL, token))
+	if got := resp.Header.Get("Location"); got != wantLocation {
+		t.Fatalf("expected redirect to %q, got %q", wantLocation, got)
 	}
 }
 

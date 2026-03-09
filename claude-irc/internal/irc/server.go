@@ -43,12 +43,7 @@ type ServerInfo struct {
 const dashboardOperatorName = "user"
 const defaultServerBindHost = "127.0.0.1"
 const defaultServerAdvertiseHost = "localhost"
-
-const (
-	maxHTTPJSONBodyBytes      int64 = 1 << 20
-	maxHTTPMessageContentSize       = 10 << 10
-	maxHTTPMasterKeysSize           = 10 << 10
-)
+const dashboardWebBaseURL = "https://whip.bang9.dev"
 
 const (
 	maxHTTPJSONBodyBytes      int64 = 1 << 20
@@ -210,6 +205,20 @@ func shortCodeFromToken(token string) string {
 	return hex.EncodeToString(h[:4]) // 8 hex chars
 }
 
+func ConnectURL(baseURL, token string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Sprintf("%s#token=%s", strings.TrimRight(baseURL, "#"), token)
+	}
+	u.RawQuery = ""
+	u.Fragment = "token=" + token
+	return u.String()
+}
+
+func DashboardURL(connectURL string) string {
+	return dashboardWebBaseURL + "#" + connectURL
+}
+
 func generateToken() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -225,9 +234,8 @@ func buildHandler(store *Store, token string, shortCode string, masterTmux strin
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/s/") {
 			code := strings.TrimPrefix(r.URL.Path, "/s/")
 			if code == shortCode {
-				host := r.Host
-				connectURL := fmt.Sprintf("https://%s?token=%s", host, token)
-				webURL := fmt.Sprintf("https://whip.bang9.dev#%s", connectURL)
+				connectURL := ConnectURL(requestBaseURL(r), token)
+				webURL := DashboardURL(connectURL)
 				http.Redirect(w, r, webURL, http.StatusFound)
 			} else {
 				http.NotFound(w, r)
@@ -272,19 +280,45 @@ func isAllowedOrigin(origin string) bool {
 	return localhostPattern.MatchString(origin)
 }
 
-func checkAuth(r *http.Request, token string) bool {
-	// Check Authorization header
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		if strings.TrimPrefix(auth, "Bearer ") == token {
-			return true
-		}
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
 	}
-	// Check query param
-	if r.URL.Query().Get("token") == token {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = forwarded
+	}
+	return fmt.Sprintf("%s://%s", scheme, r.Host)
+}
+
+func checkAuth(r *http.Request, token string) bool {
+	auth := r.Header.Get("Authorization")
+	if auth != "" {
+		return strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == token
+	}
+	if !allowLegacyQueryTokenAuth(r) {
+		return false
+	}
+	return r.URL.Query().Get("token") == token
+}
+
+func allowLegacyQueryTokenAuth(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+
+	path := strings.TrimRight(r.URL.Path, "/")
+	switch path {
+	case "/api/peers", "/api/tasks":
 		return true
 	}
-	return false
+
+	if !strings.HasPrefix(path, "/api/tasks/") {
+		return false
+	}
+
+	taskID := strings.TrimPrefix(path, "/api/tasks/")
+	return taskID != "" && !strings.Contains(taskID, "/")
 }
 
 func route(w http.ResponseWriter, r *http.Request, store *Store, masterTmux string) {

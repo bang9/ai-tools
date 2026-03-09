@@ -135,15 +135,23 @@ export class WhipAPIClient {
   }
 }
 
+export function buildConnectURL(baseURL: string, token: string): string {
+  const normalizedBaseURL = baseURL.replace(/[?#].*$/, '')
+  return `${normalizedBaseURL}#token=${encodeURIComponent(token)}`
+}
+
 export function parseConnectURL(input: string): { baseURL: string; token: string } | null {
   try {
-    // Handle web dashboard URL with hash fragment (e.g. https://whip.bang9.dev#https://host?token=xxx)
+    // Handle either a direct connect URL or a dashboard URL whose hash carries one.
     const url = new URL(input)
-    const raw = url.hash ? url.hash.slice(1) : input
+    const rawHash = url.hash.slice(1)
+    const raw = rawHash.startsWith('http://') || rawHash.startsWith('https://') ? rawHash : input
     const connectURL = new URL(raw)
-    const token = connectURL.searchParams.get('token')
+    const hashToken = new URLSearchParams(connectURL.hash.startsWith('#') ? connectURL.hash.slice(1) : connectURL.hash).get('token')
+    const token = hashToken ?? connectURL.searchParams.get('token')
     if (!token) return null
     connectURL.search = ''
+    connectURL.hash = ''
     return { baseURL: connectURL.toString(), token }
   } catch {
     return null

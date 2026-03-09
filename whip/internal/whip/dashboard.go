@@ -67,10 +67,10 @@ const (
 	viewList viewState = iota
 	viewDetail
 	viewTmux
-	viewIRC           // peer selection list
-	viewIRCMsg        // message text input
-	viewRemoteConfig  // tunnel/port config input
-	viewRemoteStatus  // remote running status page
+	viewIRC          // peer selection list
+	viewIRCMsg       // message text input
+	viewRemoteConfig // tunnel/port config input
+	viewRemoteStatus // remote running status page
 )
 
 type ircSendResultMsg struct{ err error }
@@ -723,11 +723,9 @@ func (m DashboardModel) startRemote(cfg RemoteConfig) tea.Cmd {
 		}
 
 		// Save token from connect URL
-		if u, parseErr := url.Parse(result.ConnectURL); parseErr == nil {
-			if t := u.Query().Get("token"); t != "" {
-				storeCfg.ServeToken = t
-				m.store.SaveConfig(storeCfg)
-			}
+		if t := connectURLToken(result.ConnectURL); t != "" {
+			storeCfg.ServeToken = t
+			m.store.SaveConfig(storeCfg)
 		}
 
 		return remoteStartedMsg{cmd: cmd, url: result.ConnectURL, shortURL: result.ShortURL}
@@ -1717,6 +1715,21 @@ func timeAgo(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+func connectURLToken(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if t := u.Query().Get("token"); t != "" {
+		return t
+	}
+	fragment, err := url.ParseQuery(u.Fragment)
+	if err != nil {
+		return ""
+	}
+	return fragment.Get("token")
 }
 
 func max(a, b int) int {

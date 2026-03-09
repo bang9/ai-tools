@@ -315,3 +315,43 @@ func TestServeKeyboardLoopWithDeps_MakeRawError(t *testing.T) {
 		t.Fatalf("expected raw mode failure to be reported, got %q", stderr.String())
 	}
 }
+
+func TestServeURLs_LocalConnectURLUsesFragmentToken(t *testing.T) {
+	info := irc.ServerInfo{
+		Token:     "test-token",
+		ShortCode: "abc12345",
+		LocalURL:  "http://localhost:8585",
+	}
+
+	connectURL, shortURL, webURL := serveURLs(info, "")
+
+	if connectURL != "http://localhost:8585#token=test-token" {
+		t.Fatalf("unexpected connect URL: %q", connectURL)
+	}
+	if shortURL != "http://localhost:8585/s/abc12345" {
+		t.Fatalf("unexpected short URL: %q", shortURL)
+	}
+	if webURL != "https://whip.bang9.dev#http://localhost:8585#token=test-token" {
+		t.Fatalf("unexpected web URL: %q", webURL)
+	}
+}
+
+func TestServeURLs_PublicURLOverridesLocalURL(t *testing.T) {
+	info := irc.ServerInfo{
+		Token:     "test-token",
+		ShortCode: "abc12345",
+		LocalURL:  "http://localhost:8585",
+	}
+
+	connectURL, shortURL, webURL := serveURLs(info, "https://public.example")
+
+	if connectURL != "https://public.example#token=test-token" {
+		t.Fatalf("unexpected connect URL: %q", connectURL)
+	}
+	if shortURL != "https://public.example/s/abc12345" {
+		t.Fatalf("unexpected short URL: %q", shortURL)
+	}
+	if webURL != "https://whip.bang9.dev#https://public.example#token=test-token" {
+		t.Fatalf("unexpected web URL: %q", webURL)
+	}
+}

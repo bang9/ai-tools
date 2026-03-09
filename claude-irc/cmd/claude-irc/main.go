@@ -440,19 +440,13 @@ func serveCmd() *cobra.Command {
 				MasterTmux: masterTmux,
 				Token:      token,
 				OnReady: func(info irc.ServerInfo) {
-					connectURL := info.LocalURL
-					if publicURL != "" {
-						connectURL = publicURL
-					}
-					fullURL := fmt.Sprintf("%s?token=%s", connectURL, info.Token)
-					shortURL := fmt.Sprintf("%s/s/%s", connectURL, info.ShortCode)
-					webURL := fmt.Sprintf("https://whip.bang9.dev#%s", fullURL)
+					connectURL, shortURL, webURL := serveURLs(info, publicURL)
 					fmt.Fprintf(os.Stderr, "claude-irc serve started.\n")
-					fmt.Fprintf(os.Stderr, "Connect URL: %s\n", fullURL)
+					fmt.Fprintf(os.Stderr, "Connect URL: %s\n", connectURL)
 					fmt.Fprintf(os.Stderr, "Short URL: %s\n", shortURL)
 					if keyboardShortcutsAvailable() {
 						fmt.Fprintf(os.Stderr, "\nShortcuts: [o] open in browser  [c] copy URL  [q] quit\n")
-						go serveKeyboardLoop(ctx, webURL, fullURL, cancel)
+						go serveKeyboardLoop(ctx, webURL, connectURL, cancel)
 					}
 				},
 			})
@@ -465,6 +459,17 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&masterTmux, "master-tmux", "", "Master tmux session name for capture/input endpoints")
 	cmd.Flags().StringVar(&token, "token", "", "Pre-set auth token (reuse across restarts); if empty, a new one is generated")
 	return cmd
+}
+
+func serveURLs(info irc.ServerInfo, publicURL string) (connectURL string, shortURL string, webURL string) {
+	baseURL := info.LocalURL
+	if publicURL != "" {
+		baseURL = publicURL
+	}
+	connectURL = irc.ConnectURL(baseURL, info.Token)
+	shortURL = fmt.Sprintf("%s/s/%s", strings.TrimRight(baseURL, "/"), info.ShortCode)
+	webURL = irc.DashboardURL(connectURL)
+	return connectURL, shortURL, webURL
 }
 
 type keyboardLoopDeps struct {
