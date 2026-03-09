@@ -16,10 +16,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate release tag
+        env:
+          RAW_TAG: ${{ github.ref_name }}
+        run: |
+          tag="$RAW_TAG"
+          semver_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if ! printf '%s\n' "$tag" | grep -Eq "$semver_tag_pattern"; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
+          printf 'RELEASE_TAG=%s\n' "$tag" >> "$GITHUB_ENV"
+
       - name: Generate Release Notes
         id: notes
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="$RELEASE_TAG"
           PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
 
           BODY=""
@@ -38,7 +50,7 @@ jobs:
             else
               while IFS= read -r line; do
                 # Strip commit hash prefix
-                MSG=$(echo "$line" | sed 's/^[a-f0-9]* //')
+                MSG="${line#* }"
                 BODY="${BODY}- ${MSG}"$'\n'
               done <<< "$COMMITS"
             fi
@@ -52,8 +64,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
             --notes-file /tmp/release-notes.md
 
   claude-irc:
