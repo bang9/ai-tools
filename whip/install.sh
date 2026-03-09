@@ -63,6 +63,40 @@ download_file() {
     error "Neither curl nor wget is installed"
 }
 
+download_optional_file() {
+    local url="$1" dest="$2"
+    local http_code output
+
+    if command -v curl &> /dev/null; then
+        if ! http_code=$(curl -sSL -w '%{http_code}' -o "$dest" "$url"); then
+            rm -f "$dest"
+            return 1
+        fi
+        case "$http_code" in
+            200) return 0 ;;
+            404)
+                rm -f "$dest"
+                return 2
+                ;;
+        esac
+        rm -f "$dest"
+        return 1
+    fi
+
+    if command -v wget &> /dev/null; then
+        if output=$(wget -q -S -O "$dest" "$url" 2>&1); then
+            return 0
+        fi
+        rm -f "$dest"
+        if printf '%s\n' "$output" | grep -Eq 'HTTP/[0-9.]+\s+404'; then
+            return 2
+        fi
+        return 1
+    fi
+
+    error "Neither curl nor wget is installed"
+}
+
 sha256_file() {
     local file="$1"
     if command -v sha256sum &> /dev/null; then
@@ -94,21 +128,28 @@ lookup_checksum() {
     ' "$manifest"
 }
 
-install_verified_binary() {
+install_binary_with_optional_checksum() {
     local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
     local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
-    local expected_checksum actual_checksum
+    local expected_checksum actual_checksum checksum_status
 
-    if ! download_file "$checksum_url" "$manifest"; then
-        rm -f "$tmp" "$manifest"
-        return 1
-    fi
-
-    expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
-    if [ -z "$expected_checksum" ]; then
-        warn "Checksum entry not found for ${asset_name}"
-        rm -f "$tmp" "$manifest"
-        return 1
+    if download_optional_file "$checksum_url" "$manifest"; then
+        expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+        if [ -z "$expected_checksum" ]; then
+            warn "Checksum entry not found for ${asset_name}"
+            rm -f "$tmp" "$manifest"
+            return 1
+        fi
+    else
+        checksum_status=$?
+        if [ "$checksum_status" -eq 2 ]; then
+            warn "Checksum manifest not found for ${asset_name}; installing without checksum verification"
+            rm -f "$manifest"
+            expected_checksum=""
+        else
+            rm -f "$tmp" "$manifest"
+            return 1
+        fi
     fi
 
     if ! download_file "$download_url" "$tmp"; then
@@ -116,15 +157,17 @@ install_verified_binary() {
         return 1
     fi
 
-    if ! actual_checksum=$(sha256_file "$tmp"); then
-        rm -f "$tmp" "$manifest"
-        return 1
-    fi
+    if [ -n "$expected_checksum" ]; then
+        if ! actual_checksum=$(sha256_file "$tmp"); then
+            rm -f "$tmp" "$manifest"
+            return 1
+        fi
 
-    if [ "$actual_checksum" != "$expected_checksum" ]; then
-        warn "Checksum mismatch for ${asset_name}"
-        rm -f "$tmp" "$manifest"
-        return 1
+        if [ "$actual_checksum" != "$expected_checksum" ]; then
+            warn "Checksum mismatch for ${asset_name}"
+            rm -f "$tmp" "$manifest"
+            return 1
+        fi
     fi
 
     if ! chmod +x "$tmp"; then
@@ -187,7 +230,7 @@ install_binary() {
     local checksum_url="https://github.com/${REPO}/releases/download/${version}/${checksum_name}"
 
     step "Installing ${name} ${version}..."
-    if ! install_verified_binary "$download_url" "$checksum_url" "$download_name" "${INSTALL_DIR}/${binary_name}"; then
+    if ! install_binary_with_optional_checksum "$download_url" "$checksum_url" "$download_name" "${INSTALL_DIR}/${binary_name}"; then
         warn "Failed to download ${name}. It will be installed on first use via plugin hook."
         return 1
     fi

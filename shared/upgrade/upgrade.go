@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,16 @@ var (
 	}
 )
 
+type httpStatusError struct {
+	statusCode int
+	status     string
+	url        string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("unexpected status %s for %s", e.status, e.url)
+}
+
 // GetLatestVersion fetches the latest release tag from the GitHub API.
 func GetLatestVersion(repo string) (string, error) {
 	resp, err := httpClient.Get(latestReleaseURL(repo))
@@ -62,10 +73,10 @@ func GetLatestVersion(repo string) (string, error) {
 }
 
 // DownloadBinary downloads a release binary to destPath using the safe download
-// pattern: download to tmp file, verify its checksum, then move the new binary into place.
+// pattern: download to tmp file, verify its checksum when available, then move it into place.
 func DownloadBinary(repo, version, binaryName, destPath string) error {
 	platformBinary := platformBinaryName(binaryName)
-	expectedChecksum, err := fetchExpectedChecksum(repo, version, binaryName, platformBinary)
+	expectedChecksum, hasChecksum, err := fetchExpectedChecksum(repo, version, binaryName, platformBinary)
 	if err != nil {
 		return err
 	}
@@ -79,16 +90,25 @@ func DownloadBinary(repo, version, binaryName, destPath string) error {
 		return fmt.Errorf("download failed for %s: %w", binaryName, err)
 	}
 
-	actualChecksum, err := sha256File(tmpPath)
-	if err != nil {
-		return fmt.Errorf("checksum calculation failed for %s: %w", binaryName, err)
-	}
-	if !strings.EqualFold(actualChecksum, expectedChecksum) {
-		return fmt.Errorf(
-			"checksum mismatch for %s: expected %s, got %s",
+	if hasChecksum {
+		actualChecksum, err := sha256File(tmpPath)
+		if err != nil {
+			return fmt.Errorf("checksum calculation failed for %s: %w", binaryName, err)
+		}
+		if !strings.EqualFold(actualChecksum, expectedChecksum) {
+			return fmt.Errorf(
+				"checksum mismatch for %s: expected %s, got %s",
+				binaryName,
+				expectedChecksum,
+				actualChecksum,
+			)
+		}
+	} else {
+		fmt.Fprintf(
+			os.Stderr,
+			"Warning: checksum manifest missing for %s %s; installing without verification\n",
 			binaryName,
-			expectedChecksum,
-			actualChecksum,
+			version,
 		)
 	}
 
@@ -134,19 +154,22 @@ func checksumManifestName(binaryName string) string {
 	return binaryName + "-checksums.txt"
 }
 
-func fetchExpectedChecksum(repo, version, binaryName, assetName string) (string, error) {
+func fetchExpectedChecksum(repo, version, binaryName, assetName string) (string, bool, error) {
 	manifestURL := releaseAssetURL(repo, version, checksumManifestName(binaryName))
 	manifest, err := downloadBytes(manifestURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch checksum manifest for %s: %w", binaryName, err)
+		if isHTTPStatus(err, http.StatusNotFound) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to fetch checksum manifest for %s: %w", binaryName, err)
 	}
 
 	checksum, err := checksumForAsset(manifest, assetName)
 	if err != nil {
-		return "", fmt.Errorf("failed to read checksum for %s: %w", assetName, err)
+		return "", true, fmt.Errorf("failed to read checksum for %s: %w", assetName, err)
 	}
 
-	return checksum, nil
+	return checksum, true, nil
 }
 
 func checksumForAsset(manifest []byte, assetName string) (string, error) {
@@ -177,7 +200,11 @@ func downloadBytes(url string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %s", resp.Status)
+		return nil, &httpStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			url:        url,
+		}
 	}
 
 	return io.ReadAll(resp.Body)
@@ -191,7 +218,11 @@ func downloadToFile(url, destPath string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %s", resp.Status)
+		return &httpStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			url:        url,
+		}
 	}
 
 	file, err := os.Create(destPath)
@@ -205,6 +236,11 @@ func downloadToFile(url, destPath string) error {
 	}
 
 	return file.Close()
+}
+
+func isHTTPStatus(err error, statusCode int) bool {
+	var statusErr *httpStatusError
+	return errors.As(err, &statusErr) && statusErr.statusCode == statusCode
 }
 
 func sha256File(path string) (string, error) {

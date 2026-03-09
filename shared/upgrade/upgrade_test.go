@@ -134,6 +134,45 @@ func TestDownloadBinaryVerifiedInstall(t *testing.T) {
 	}
 }
 
+func TestDownloadBinaryWithoutChecksumManifestFallsBackToUnverifiedInstall(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "test-tool")
+	oldContent := []byte("old-binary-content")
+	if err := os.WriteFile(destPath, oldContent, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	binaryContent := []byte("legacy-release-binary")
+	assetName := platformBinaryName("test-tool")
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/test/repo/v1.2.3/test-tool-checksums.txt":
+			http.NotFound(w, r)
+		case "/releases/test/repo/v1.2.3/" + assetName:
+			w.Write(binaryContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	if err := DownloadBinary("test/repo", "v1.2.3", "test-tool", destPath); err != nil {
+		t.Fatalf("DownloadBinary returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("failed to read installed binary: %v", err)
+	}
+	if string(content) != string(binaryContent) {
+		t.Fatalf("expected installed content %q, got %q", binaryContent, content)
+	}
+
+	if _, err := os.Stat(destPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp file should not remain after successful install")
+	}
+}
+
 func TestDownloadBinaryChecksumMismatchPreservesOldBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "test-tool")
@@ -172,6 +211,30 @@ func TestDownloadBinaryChecksumMismatchPreservesOldBinary(t *testing.T) {
 
 	if _, statErr := os.Stat(destPath + ".tmp"); !os.IsNotExist(statErr) {
 		t.Fatalf("tmp file should be cleaned up after checksum mismatch")
+	}
+}
+
+func TestDownloadBinaryMissingChecksumEntryReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "test-tool")
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/test/repo/v1.2.3/test-tool-checksums.txt":
+			fmt.Fprint(w, "abc123  some-other-asset\n")
+		case "/releases/test/repo/v1.2.3/" + platformBinaryName("test-tool"):
+			w.Write([]byte("downloaded-binary"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	err := DownloadBinary("test/repo", "v1.2.3", "test-tool", destPath)
+	if err == nil {
+		t.Fatal("expected missing checksum entry error")
+	}
+	if !strings.Contains(err.Error(), "asset") {
+		t.Fatalf("expected missing checksum entry error, got %v", err)
 	}
 }
 
@@ -278,6 +341,21 @@ func TestRunToolList(t *testing.T) {
 				t.Errorf("first tool should be self (%s), got %s", tt.cfg.BinaryName, tools[0])
 			}
 		})
+	}
+}
+
+func TestIsHTTPStatus(t *testing.T) {
+	err := &httpStatusError{
+		statusCode: http.StatusNotFound,
+		status:     "404 Not Found",
+		url:        "https://example.com/file.txt",
+	}
+
+	if !isHTTPStatus(err, http.StatusNotFound) {
+		t.Fatal("expected 404 status to match")
+	}
+	if isHTTPStatus(err, http.StatusInternalServerError) {
+		t.Fatal("did not expect 500 status to match")
 	}
 }
 
