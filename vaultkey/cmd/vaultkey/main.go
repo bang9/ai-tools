@@ -3,11 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
 
+	"github.com/bang9/ai-tools/shared/upgrade"
 	"github.com/bang9/ai-tools/vaultkey/internal/vaultkey"
 	"github.com/spf13/cobra"
 )
@@ -283,70 +281,11 @@ func upgradeCmd() *cobra.Command {
 		Short: "Upgrade vaultkey to the latest version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo := "bang9/ai-tools"
-
-			// Fetch latest version from GitHub
-			fmt.Fprintln(os.Stderr, "Checking for updates...")
-			out, err := exec.Command("curl", "-sfSL",
-				fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)).Output()
-			if err != nil {
-				return fmt.Errorf("failed to check latest version: %w", err)
-			}
-
-			// Parse tag_name from JSON (simple string search to avoid adding dependencies)
-			latestVersion := ""
-			for _, line := range strings.Split(string(out), "\n") {
-				line = strings.TrimSpace(line)
-				if strings.Contains(line, `"tag_name"`) {
-					parts := strings.Split(line, `"`)
-					if len(parts) >= 4 {
-						latestVersion = parts[3]
-					}
-					break
-				}
-			}
-			if latestVersion == "" {
-				return fmt.Errorf("failed to parse latest version from GitHub")
-			}
-
-			if version != "dev" && latestVersion == version {
-				fmt.Fprintf(os.Stderr, "Already up to date (%s)\n", version)
-				return nil
-			}
-
-			osName := runtime.GOOS
-			arch := runtime.GOARCH
-
-			binaryName := fmt.Sprintf("vaultkey-%s-%s", osName, arch)
-			if osName == "windows" {
-				binaryName += ".exe"
-			}
-
-			downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, latestVersion, binaryName)
-
-			// Find current binary path
-			binPath, err := os.Executable()
-			if err != nil {
-				binPath = filepath.Join(os.Getenv("HOME"), ".local", "bin", "vaultkey")
-			}
-			// Resolve symlinks
-			if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
-				binPath = resolved
-			}
-
-			fmt.Fprintf(os.Stderr, "Downloading %s...\n", latestVersion)
-			dlCmd := exec.Command("curl", "-fsSL", "-o", binPath, downloadURL)
-			dlCmd.Stderr = os.Stderr
-			if err := dlCmd.Run(); err != nil {
-				return fmt.Errorf("download failed: %w", err)
-			}
-
-			if err := os.Chmod(binPath, 0755); err != nil {
-				return fmt.Errorf("chmod failed: %w", err)
-			}
-
-			fmt.Fprintf(os.Stderr, "Updated to %s\n", latestVersion)
-			return nil
+			return upgrade.Run(upgrade.Config{
+				Repo:       "bang9/ai-tools",
+				BinaryName: "vaultkey",
+				Version:    version,
+			})
 		},
 	}
 }

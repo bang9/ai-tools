@@ -44,6 +44,11 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/vaultkey-linux-amd64 ./cmd/vaultkey
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/vaultkey-windows-amd64.exe ./cmd/vaultkey
 
+      - name: Generate checksums
+        run: |
+          cd vaultkey/dist
+          sha256sum * > vaultkey-checksums.txt
+
       - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,4 +57,5 @@ jobs:
             vaultkey/dist/vaultkey-darwin-arm64 \
             vaultkey/dist/vaultkey-darwin-amd64 \
             vaultkey/dist/vaultkey-linux-amd64 \
-            vaultkey/dist/vaultkey-windows-amd64.exe
+            vaultkey/dist/vaultkey-windows-amd64.exe \
+            vaultkey/dist/vaultkey-checksums.txt

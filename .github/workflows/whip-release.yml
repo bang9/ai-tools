@@ -44,6 +44,11 @@ jobs:
           GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/whip-darwin-amd64 ./cmd/whip
           GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/whip-linux-amd64 ./cmd/whip
 
+      - name: Generate checksums
+        run: |
+          cd whip/dist
+          sha256sum * > whip-checksums.txt
+
       - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,4 +56,5 @@ jobs:
           gh release upload "$RELEASE_VERSION" \
             whip/dist/whip-darwin-arm64 \
             whip/dist/whip-darwin-amd64 \
-            whip/dist/whip-linux-amd64
+            whip/dist/whip-linux-amd64 \
+            whip/dist/whip-checksums.txt

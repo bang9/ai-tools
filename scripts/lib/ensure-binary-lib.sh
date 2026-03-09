@@ -89,28 +89,116 @@ fi
 # --- Download Setup ---
 VERSION="$EXPECTED_VERSION"
 DOWNLOAD_NAME="${BINARY_NAME}-${OS}-${ARCH}"
+CHECKSUMS_NAME="${BINARY_NAME}-checksums.txt"
 if [ "$OS" = "windows" ]; then
     DOWNLOAD_NAME="${DOWNLOAD_NAME}.exe"
     INSTALLED_BINARY="${INSTALLED_BINARY}.exe"
 fi
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${DOWNLOAD_NAME}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/${CHECKSUMS_NAME}"
 
 # --- Pre-upgrade Hook ---
 pre_upgrade_hook
 
 echo "Downloading $BINARY_NAME ${VERSION}..." >&2
 
+# --- download_file ---
+download_file() {
+    local url="$1" dest="$2"
+    if command -v curl &> /dev/null; then
+        curl -fsSL -o "$dest" "$url"
+        return $?
+    fi
+    if command -v wget &> /dev/null; then
+        wget -q -O "$dest" "$url"
+        return $?
+    fi
+    echo "Error: neither curl nor wget is available for downloads." >&2
+    return 1
+}
+
+# --- sha256_file ---
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
+        return $?
+    fi
+    if command -v shasum &> /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
+        return $?
+    fi
+    if command -v openssl &> /dev/null; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+        return $?
+    fi
+    echo "Error: no SHA-256 tool found (tried sha256sum, shasum, openssl)." >&2
+    return 1
+}
+
+# --- lookup_checksum ---
+lookup_checksum() {
+    local manifest="$1" asset_name="$2"
+    awk -v name="$asset_name" '
+        NF >= 2 {
+            file = $2
+            sub(/^\*/, "", file)
+            if (file == name) {
+                print $1
+                exit
+            }
+        }
+    ' "$manifest"
+}
+
 # --- safe_install ---
 safe_install() {
-    local url="$1" dest="$2" tmp="${dest}.tmp.$$"
-    if curl -fsSL -o "$tmp" "$url"; then
-        chmod +x "$tmp"
-        rm -f "$dest"
-        mv "$tmp" "$dest"
-        return 0
+    local url="$1" dest="$2" asset_name="$3" checksum_url="$4"
+    local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
+    local expected_checksum actual_checksum
+
+    if ! download_file "$checksum_url" "$manifest"; then
+        echo "Failed to download checksum manifest: $checksum_url" >&2
+        rm -f "$tmp" "$manifest"
+        return 1
     fi
-    rm -f "$tmp"
-    return 1
+
+    expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+    if [ -z "$expected_checksum" ]; then
+        echo "Checksum entry not found for $asset_name in $checksum_url" >&2
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! download_file "$url" "$tmp"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! actual_checksum=$(sha256_file "$tmp"); then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if [ "$actual_checksum" != "$expected_checksum" ]; then
+        echo "Checksum mismatch for $asset_name: expected $expected_checksum, got $actual_checksum" >&2
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! chmod +x "$tmp"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    rm -f "$dest"
+    if ! mv "$tmp" "$dest"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    rm -f "$manifest"
+    return 0
 }
 
 # --- record_version (file-based version tracking) ---
@@ -121,25 +209,11 @@ record_version() {
 }
 
 # --- Download & Install ---
-if command -v curl &> /dev/null; then
-    if safe_install "$DOWNLOAD_URL" "$INSTALLED_BINARY"; then
-        record_version
-        echo "$BINARY_NAME ${VERSION} installed to $INSTALLED_BINARY" >&2
-        post_install_hook
-        exit 0
-    fi
-elif command -v wget &> /dev/null; then
-    TMP_BINARY="${INSTALLED_BINARY}.tmp.$$"
-    if wget -q -O "$TMP_BINARY" "$DOWNLOAD_URL"; then
-        chmod +x "$TMP_BINARY"
-        rm -f "$INSTALLED_BINARY"
-        mv "$TMP_BINARY" "$INSTALLED_BINARY"
-        record_version
-        echo "$BINARY_NAME ${VERSION} installed to $INSTALLED_BINARY" >&2
-        post_install_hook
-        exit 0
-    fi
-    rm -f "$TMP_BINARY"
+if safe_install "$DOWNLOAD_URL" "$INSTALLED_BINARY" "$DOWNLOAD_NAME" "$CHECKSUMS_URL"; then
+    record_version
+    echo "$BINARY_NAME ${VERSION} installed to $INSTALLED_BINARY" >&2
+    post_install_hook
+    exit 0
 fi
 
 echo "Failed to download binary. Trying to build from source..." >&2

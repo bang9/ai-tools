@@ -44,6 +44,11 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/redit-linux-amd64 ./cmd/redit
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/redit-windows-amd64.exe ./cmd/redit
 
+      - name: Generate checksums
+        run: |
+          cd redit/dist
+          sha256sum * > redit-checksums.txt
+
       - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,4 +57,5 @@ jobs:
             redit/dist/redit-darwin-arm64 \
             redit/dist/redit-darwin-amd64 \
             redit/dist/redit-linux-amd64 \
-            redit/dist/redit-windows-amd64.exe
+            redit/dist/redit-windows-amd64.exe \
+            redit/dist/redit-checksums.txt

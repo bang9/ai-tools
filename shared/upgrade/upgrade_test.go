@@ -1,9 +1,15 @@
 package upgrade
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -44,46 +50,170 @@ func TestConfigWithCompanionTools(t *testing.T) {
 	}
 }
 
-func TestDownloadBinarySafePattern(t *testing.T) {
-	// Create a temporary directory to simulate the install directory
+func TestGetLatestVersion(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/repos/test/repo/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
+	}))
+
+	version, err := GetLatestVersion("test/repo")
+	if err != nil {
+		t.Fatalf("GetLatestVersion returned error: %v", err)
+	}
+	if version != "v1.2.3" {
+		t.Fatalf("expected v1.2.3, got %s", version)
+	}
+}
+
+func TestGetLatestVersionBadStatus(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+
+	_, err := GetLatestVersion("test/repo")
+	if err == nil {
+		t.Fatal("expected error for non-200 latest release response")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 404") {
+		t.Fatalf("expected 404 error, got %v", err)
+	}
+}
+
+func TestChecksumForAssetParsesManifest(t *testing.T) {
+	manifest := []byte("abc123  tool-a\nfff999 *tool-b\n")
+
+	checksum, err := checksumForAsset(manifest, "tool-b")
+	if err != nil {
+		t.Fatalf("checksumForAsset returned error: %v", err)
+	}
+	if checksum != "fff999" {
+		t.Fatalf("expected checksum fff999, got %s", checksum)
+	}
+}
+
+func TestDownloadBinaryVerifiedInstall(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "test-tool")
-
-	// Create an existing "old" binary
 	oldContent := []byte("old-binary-content")
 	if err := os.WriteFile(destPath, oldContent, 0755); err != nil {
 		t.Fatal(err)
 	}
 
-	// DownloadBinary should fail with a bad URL, but tmp file should be cleaned up
-	err := DownloadBinary("nonexistent/repo", "v0.0.0", "test-tool", destPath)
-	if err == nil {
-		t.Fatal("expected error for nonexistent repo download")
+	binaryContent := []byte("verified-binary")
+	expectedChecksum := sha256Hex(binaryContent)
+	assetName := platformBinaryName("test-tool")
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/test/repo/v1.2.3/test-tool-checksums.txt":
+			fmt.Fprintf(w, "%s  %s\n", expectedChecksum, assetName)
+		case "/releases/test/repo/v1.2.3/" + assetName:
+			w.Write(binaryContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	if err := DownloadBinary("test/repo", "v1.2.3", "test-tool", destPath); err != nil {
+		t.Fatalf("DownloadBinary returned error: %v", err)
 	}
 
-	// The tmp file should not exist after failed download
-	tmpPath := destPath + ".tmp"
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
-		t.Errorf("tmp file should be cleaned up after failed download")
-	}
-
-	// The old binary should still be intact (safe pattern: don't remove old on failure)
 	content, err := os.ReadFile(destPath)
 	if err != nil {
-		t.Fatalf("old binary should still exist after failed download: %v", err)
+		t.Fatalf("failed to read installed binary: %v", err)
 	}
-	if string(content) != "old-binary-content" {
-		t.Errorf("old binary content should be unchanged, got %s", string(content))
+	if string(content) != string(binaryContent) {
+		t.Fatalf("expected installed content %q, got %q", binaryContent, content)
+	}
+
+	if _, err := os.Stat(destPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp file should not remain after successful install")
+	}
+}
+
+func TestDownloadBinaryChecksumMismatchPreservesOldBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "test-tool")
+	oldContent := []byte("old-binary-content")
+	if err := os.WriteFile(destPath, oldContent, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	assetName := platformBinaryName("test-tool")
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/test/repo/v1.2.3/test-tool-checksums.txt":
+			fmt.Fprintf(w, "%s  %s\n", sha256Hex([]byte("different-binary")), assetName)
+		case "/releases/test/repo/v1.2.3/" + assetName:
+			w.Write([]byte("downloaded-binary"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	err := DownloadBinary("test/repo", "v1.2.3", "test-tool", destPath)
+	if err == nil {
+		t.Fatal("expected checksum mismatch error")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch error, got %v", err)
+	}
+
+	content, readErr := os.ReadFile(destPath)
+	if readErr != nil {
+		t.Fatalf("old binary should still exist after failed download: %v", readErr)
+	}
+	if string(content) != string(oldContent) {
+		t.Fatalf("old binary content should be unchanged, got %q", content)
+	}
+
+	if _, statErr := os.Stat(destPath + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("tmp file should be cleaned up after checksum mismatch")
 	}
 }
 
 func TestDownloadBinaryPlatformFormat(t *testing.T) {
-	// Verify the platform binary name format is correct
-	binaryName := "claude-irc"
-	expected := binaryName + "-" + runtime.GOOS + "-" + runtime.GOARCH
-	got := binaryName + "-" + runtime.GOOS + "-" + runtime.GOARCH
-	if got != expected {
-		t.Errorf("platform binary format: expected %s, got %s", expected, got)
+	tests := []struct {
+		name       string
+		binaryName string
+		goos       string
+		goarch     string
+		want       string
+	}{
+		{
+			name:       "current platform",
+			binaryName: "claude-irc",
+			goos:       runtime.GOOS,
+			goarch:     runtime.GOARCH,
+			want:       platformBinaryName("claude-irc"),
+		},
+		{
+			name:       "windows executable",
+			binaryName: "vaultkey",
+			goos:       "windows",
+			goarch:     "amd64",
+			want:       "vaultkey-windows-amd64.exe",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := platformBinaryNameFor(tt.binaryName, tt.goos, tt.goarch); got != tt.want {
+				t.Errorf("platform binary format: expected %s, got %s", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestInstalledBinaryName(t *testing.T) {
+	if got := installedBinaryNameFor("vaultkey", "windows"); got != "vaultkey.exe" {
+		t.Fatalf("expected windows binary name vaultkey.exe, got %s", got)
+	}
+	if got := installedBinaryNameFor("vaultkey", "darwin"); got != "vaultkey" {
+		t.Fatalf("expected non-windows binary name vaultkey, got %s", got)
 	}
 }
 
@@ -94,36 +224,23 @@ func TestRunAlreadyUpToDate(t *testing.T) {
 		Version:    "v1.0.0",
 	}
 
-	// Mock GetLatestVersion by temporarily replacing the function flow
-	// Since Run checks version != "dev" && latestVersion == version,
-	// we test the skip path by calling Run with a version that
-	// would match. We need to intercept GetLatestVersion.
-	// For unit testing, we test the version comparison logic directly.
-
 	if cfg.Version == "dev" {
 		t.Error("test version should not be dev")
 	}
 
-	// Test that version comparison works correctly
-	if cfg.Version != "v1.0.0" {
-		t.Error("expected version v1.0.0")
-	}
-
-	// When version matches latest, should skip (tested via logic, not network)
 	latestVersion := "v1.0.0"
 	if cfg.Version != "dev" && latestVersion == cfg.Version {
-		// This is the "already up to date" path — correct behavior
-	} else {
-		t.Error("should detect already up to date")
+		return
 	}
+
+	t.Error("should detect already up to date")
 }
 
 func TestRunToolList(t *testing.T) {
-	// Test that self is always first in the tool list
 	tests := []struct {
-		name       string
-		cfg        Config
-		wantTools  []string
+		name      string
+		cfg       Config
+		wantTools []string
 	}{
 		{
 			name: "self only",
@@ -157,7 +274,6 @@ func TestRunToolList(t *testing.T) {
 				}
 			}
 
-			// Self should always be first
 			if tools[0] != tt.cfg.BinaryName {
 				t.Errorf("first tool should be self (%s), got %s", tt.cfg.BinaryName, tools[0])
 			}
@@ -165,10 +281,33 @@ func TestRunToolList(t *testing.T) {
 	}
 }
 
-func TestGetLatestVersionBadRepo(t *testing.T) {
-	// Test with a repo that definitely doesn't exist
-	_, err := GetLatestVersion("nonexistent-user-xxxxx/nonexistent-repo-xxxxx")
-	if err == nil {
-		t.Error("expected error for nonexistent repo")
+func withTestServer(t *testing.T, handler http.Handler) {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	oldClient := httpClient
+	httpClient = server.Client()
+	t.Cleanup(func() {
+		httpClient = oldClient
+	})
+
+	oldLatestReleaseURL := latestReleaseURL
+	oldReleaseAssetURL := releaseAssetURL
+	latestReleaseURL = func(repo string) string {
+		return server.URL + "/api/repos/" + repo + "/releases/latest"
 	}
+	releaseAssetURL = func(repo, version, asset string) string {
+		return fmt.Sprintf("%s/releases/%s/%s/%s", server.URL, repo, version, asset)
+	}
+	t.Cleanup(func() {
+		latestReleaseURL = oldLatestReleaseURL
+		releaseAssetURL = oldReleaseAssetURL
+	})
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

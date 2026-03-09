@@ -50,6 +50,98 @@ get_latest_version() {
     echo "$version"
 }
 
+download_file() {
+    local url="$1" dest="$2"
+    if command -v curl &> /dev/null; then
+        curl -fsSL -o "$dest" "$url"
+        return $?
+    fi
+    if command -v wget &> /dev/null; then
+        wget -q -O "$dest" "$url"
+        return $?
+    fi
+    error "Neither curl nor wget is installed"
+}
+
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
+        return $?
+    fi
+    if command -v shasum &> /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
+        return $?
+    fi
+    if command -v openssl &> /dev/null; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+        return $?
+    fi
+    error "No SHA-256 tool found (tried sha256sum, shasum, openssl)"
+}
+
+lookup_checksum() {
+    local manifest="$1" asset_name="$2"
+    awk -v name="$asset_name" '
+        NF >= 2 {
+            file = $2
+            sub(/^\*/, "", file)
+            if (file == name) {
+                print $1
+                exit
+            }
+        }
+    ' "$manifest"
+}
+
+install_verified_binary() {
+    local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
+    local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
+    local expected_checksum actual_checksum
+
+    if ! download_file "$checksum_url" "$manifest"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+    if [ -z "$expected_checksum" ]; then
+        warn "Checksum entry not found for ${asset_name}"
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! download_file "$download_url" "$tmp"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! actual_checksum=$(sha256_file "$tmp"); then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if [ "$actual_checksum" != "$expected_checksum" ]; then
+        warn "Checksum mismatch for ${asset_name}"
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! chmod +x "$tmp"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    rm -f "$dest"
+    if ! mv "$tmp" "$dest"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    rm -f "$manifest"
+    return 0
+}
+
 ensure_path() {
     local shell_profile=""
 
@@ -84,6 +176,7 @@ install_binary() {
     local name=$1 os=$2 arch=$3 version=$4
     local download_name="${name}-${os}-${arch}"
     local binary_name="$name"
+    local checksum_name="${name}-checksums.txt"
 
     if [ "$os" = "windows" ]; then
         download_name="${download_name}.exe"
@@ -91,13 +184,13 @@ install_binary() {
     fi
 
     local download_url="https://github.com/${REPO}/releases/download/${version}/${download_name}"
+    local checksum_url="https://github.com/${REPO}/releases/download/${version}/${checksum_name}"
 
     step "Installing ${name} ${version}..."
-    if ! curl -fsSL -o "${INSTALL_DIR}/${binary_name}" "$download_url"; then
+    if ! install_verified_binary "$download_url" "$checksum_url" "$download_name" "${INSTALL_DIR}/${binary_name}"; then
         warn "Failed to download ${name}. It will be installed on first use via plugin hook."
         return 1
     fi
-    chmod +x "${INSTALL_DIR}/${binary_name}"
     info "  ${name} installed"
     return 0
 }

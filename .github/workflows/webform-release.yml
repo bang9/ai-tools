@@ -44,6 +44,11 @@ jobs:
           GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/webform-darwin-amd64 ./cmd/webform
           GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/webform-linux-amd64 ./cmd/webform
 
+      - name: Generate checksums
+        run: |
+          cd webform/dist
+          sha256sum * > webform-checksums.txt
+
       - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,4 +56,5 @@ jobs:
           gh release upload "$RELEASE_VERSION" \
             webform/dist/webform-darwin-arm64 \
             webform/dist/webform-darwin-amd64 \
-            webform/dist/webform-linux-amd64
+            webform/dist/webform-linux-amd64 \
+            webform/dist/webform-checksums.txt

@@ -44,6 +44,11 @@ jobs:
           GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-irc-darwin-amd64 ./cmd/claude-irc
           GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-irc-linux-amd64 ./cmd/claude-irc
 
+      - name: Generate checksums
+        run: |
+          cd claude-irc/dist
+          sha256sum * > claude-irc-checksums.txt
+
       - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,4 +56,5 @@ jobs:
           gh release upload "$RELEASE_VERSION" \
             claude-irc/dist/claude-irc-darwin-arm64 \
             claude-irc/dist/claude-irc-darwin-amd64 \
-            claude-irc/dist/claude-irc-linux-amd64
+            claude-irc/dist/claude-irc-linux-amd64 \
+            claude-irc/dist/claude-irc-checksums.txt

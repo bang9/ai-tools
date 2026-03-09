@@ -49,6 +49,98 @@ get_latest_version() {
     echo "$version"
 }
 
+download_file() {
+    local url="$1" dest="$2"
+    if command -v curl &> /dev/null; then
+        curl -fsSL -o "$dest" "$url"
+        return $?
+    fi
+    if command -v wget &> /dev/null; then
+        wget -q -O "$dest" "$url"
+        return $?
+    fi
+    error "Neither curl nor wget is installed"
+}
+
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
+        return $?
+    fi
+    if command -v shasum &> /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
+        return $?
+    fi
+    if command -v openssl &> /dev/null; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+        return $?
+    fi
+    error "No SHA-256 tool found (tried sha256sum, shasum, openssl)"
+}
+
+lookup_checksum() {
+    local manifest="$1" asset_name="$2"
+    awk -v name="$asset_name" '
+        NF >= 2 {
+            file = $2
+            sub(/^\*/, "", file)
+            if (file == name) {
+                print $1
+                exit
+            }
+        }
+    ' "$manifest"
+}
+
+install_verified_binary() {
+    local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
+    local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
+    local expected_checksum actual_checksum
+
+    if ! download_file "$checksum_url" "$manifest"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+    if [ -z "$expected_checksum" ]; then
+        warn "Checksum entry not found for ${asset_name}"
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! download_file "$download_url" "$tmp"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! actual_checksum=$(sha256_file "$tmp"); then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if [ "$actual_checksum" != "$expected_checksum" ]; then
+        warn "Checksum mismatch for ${asset_name}"
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    if ! chmod +x "$tmp"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    rm -f "$dest"
+    if ! mv "$tmp" "$dest"; then
+        rm -f "$tmp" "$manifest"
+        return 1
+    fi
+
+    rm -f "$manifest"
+    return 0
+}
+
 ensure_path() {
     local shell_profile=""
 
@@ -83,19 +175,21 @@ main() {
     echo "Setting up claude-irc..."
     echo ""
 
-    local os arch version binary_name download_url
+    local os arch version binary_name checksum_name download_url checksums_url
 
     os=$(detect_os)
     arch=$(detect_arch)
     version=$(get_latest_version)
 
     binary_name="claude-irc-${os}-${arch}"
+    checksum_name="${BINARY_NAME}-checksums.txt"
     if [ "$os" = "windows" ]; then
         binary_name="${binary_name}.exe"
         BINARY_NAME="claude-irc.exe"
     fi
 
     download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}"
+    checksums_url="https://github.com/${REPO}/releases/download/${version}/${checksum_name}"
 
     echo "  Version:      $version"
     echo "  Platform:     ${os}/${arch}"
@@ -105,11 +199,10 @@ main() {
     mkdir -p "$INSTALL_DIR"
 
     info "Downloading ${binary_name}..."
-    if ! curl -fsSL -o "${INSTALL_DIR}/${BINARY_NAME}" "$download_url"; then
+    if ! install_verified_binary "$download_url" "$checksums_url" "$binary_name" "${INSTALL_DIR}/${BINARY_NAME}"; then
         error "Download failed. Check if the release exists: https://github.com/${REPO}/releases/tag/${version}"
     fi
 
-    chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
     ensure_path
 
     echo ""
