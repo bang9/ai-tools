@@ -26,7 +26,11 @@ func (s *Store) SessionMarkerPath(daemonPID int) string {
 
 func (s *Store) WriteSessionMarker(name string, daemonPID int, sessionPID int) error {
 	content := fmt.Sprintf("%s\n%d", name, sessionPID)
-	return os.WriteFile(s.SessionMarkerPath(daemonPID), []byte(content), 0644)
+	path := s.SessionMarkerPath(daemonPID)
+	if err := os.WriteFile(path, []byte(content), privateFilePerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateFilePerm)
 }
 
 func (s *Store) RemoveSessionMarker(daemonPID int) error {

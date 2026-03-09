@@ -264,7 +264,14 @@ func TestAPIMessageRoutesRejectInvalidIdentifiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to glob base dir: %v", err)
 	}
-	if len(matches) != 0 {
+	filtered := matches[:0]
+	for _, match := range matches {
+		if filepath.Base(match) == storeMetaFile {
+			continue
+		}
+		filtered = append(filtered, match)
+	}
+	if len(filtered) != 0 {
 		t.Fatalf("expected no root-level message files after invalid POSTs, got %v", matches)
 	}
 

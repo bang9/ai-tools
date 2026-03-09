@@ -28,7 +28,7 @@ func (s *Store) SaveConfig(cfg *Config) error {
 		if err != nil {
 			return err
 		}
-		return atomicWriteFile(filepath.Join(s.BaseDir, configFile), data, 0644)
+		return atomicWriteFile(filepath.Join(s.BaseDir, configFile), data, privateFilePerm)
 	})
 }
 
@@ -46,7 +46,7 @@ func (s *Store) UpdateConfig(fn func(*Config) error) (*Config, error) {
 		if err != nil {
 			return err
 		}
-		if err := atomicWriteFile(filepath.Join(s.BaseDir, configFile), data, 0644); err != nil {
+		if err := atomicWriteFile(filepath.Join(s.BaseDir, configFile), data, privateFilePerm); err != nil {
 			return err
 		}
 		updated, err = cloneConfig(cfg)

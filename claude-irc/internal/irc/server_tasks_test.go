@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -219,12 +220,76 @@ func TestAPITasksRejectInvalidID(t *testing.T) {
 }
 
 func TestWhipTasksDir_UsesWHIPHOMEOverride(t *testing.T) {
-	override := filepath.Join(t.TempDir(), "custom-whip-home")
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	override := filepath.Join(tmpHome, whipBaseDirName, "custom-whip-home")
 	t.Setenv("WHIP_HOME", override)
 
-	got := whipTasksDir()
-	want := filepath.Join(override, "tasks")
+	got, err := whipTasksDir()
+	if err != nil {
+		t.Fatalf("whipTasksDir: %v", err)
+	}
+	resolvedOverride, err := canonicalizeStorePath(override)
+	if err != nil {
+		t.Fatalf("canonicalizeStorePath: %v", err)
+	}
+	want := filepath.Join(resolvedOverride, "tasks")
 	if got != want {
 		t.Fatalf("whipTasksDir() = %q, want %q", got, want)
+	}
+}
+
+func TestWhipTasksDir_RejectsPathOutsideCanonicalRoot(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("WHIP_HOME", filepath.Join(t.TempDir(), "outside"))
+
+	_, err := whipTasksDir()
+	if err == nil || !strings.Contains(err.Error(), "outside canonical root") {
+		t.Fatalf("whipTasksDir error = %v, want outside canonical root", err)
+	}
+}
+
+func TestWhipTasksDir_RejectsMarkerMismatch(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	root := filepath.Join(tmpHome, whipBaseDirName)
+	if err := os.MkdirAll(root, privateDirPerm); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	meta := storeMetadata{
+		StoreKind:     claudeIRCStoreKind,
+		OwnerUID:      os.Geteuid(),
+		CanonicalRoot: root,
+		CreatedAt:     time.Now().UTC(),
+		InstallID:     "bad-install",
+	}
+	writeStoreMetadataFixture(t, filepath.Join(root, storeMetaFile), meta)
+
+	_, err := whipTasksDir()
+	if err == nil || !strings.Contains(err.Error(), "store kind mismatch") {
+		t.Fatalf("whipTasksDir error = %v, want store kind mismatch", err)
+	}
+}
+
+func TestAPITasks_RejectsInvalidWhipHome(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("WHIP_HOME", filepath.Join(t.TempDir(), "outside"))
+
+	ts, _, token := setupTestServer(t)
+
+	resp := doRequest(t, ts, token, "GET", "/api/tasks", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	decodeJSON(t, resp, &body)
+	if !strings.Contains(body["error"], "outside canonical root") {
+		t.Fatalf("unexpected error: %q", body["error"])
 	}
 }

@@ -53,46 +53,42 @@ type whipTask struct {
 
 const globalWorkspaceName = "global"
 
-func whipBaseDir() string {
-	if override := strings.TrimSpace(os.Getenv("WHIP_HOME")); override != "" {
-		return override
-	}
-	home, err := os.UserHomeDir()
+func whipBaseDir() (string, error) {
+	return resolveWhipBaseDir()
+}
+
+func whipTasksDir() (string, error) {
+	baseDir, err := whipBaseDir()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return filepath.Join(home, ".whip")
+	return filepath.Join(baseDir, "tasks"), nil
 }
 
-func whipTasksDir() string {
-	baseDir := whipBaseDir()
-	if baseDir == "" {
-		return ""
-	}
-	return filepath.Join(baseDir, "tasks")
-}
-
-func workspaceTasksDir(workspace string) string {
-	baseDir := whipBaseDir()
-	if baseDir == "" {
-		return ""
+func workspaceTasksDir(workspace string) (string, error) {
+	baseDir, err := whipBaseDir()
+	if err != nil {
+		return "", err
 	}
 	if workspace == "" || workspace == globalWorkspaceName {
-		return filepath.Join(baseDir, "tasks")
+		return filepath.Join(baseDir, "tasks"), nil
 	}
-	return filepath.Join(baseDir, "workspaces", workspace, "tasks")
+	return filepath.Join(baseDir, "workspaces", workspace, "tasks"), nil
 }
 
-func workspaceNames() []string {
-	baseDir := whipBaseDir()
-	if baseDir == "" {
-		return []string{globalWorkspaceName}
+func workspaceNames() ([]string, error) {
+	baseDir, err := whipBaseDir()
+	if err != nil {
+		return nil, err
 	}
 
 	workspaces := []string{globalWorkspaceName}
 	entries, err := os.ReadDir(filepath.Join(baseDir, "workspaces"))
 	if err != nil {
-		return workspaces
+		if os.IsNotExist(err) {
+			return workspaces, nil
+		}
+		return nil, err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -100,7 +96,7 @@ func workspaceNames() []string {
 		}
 		workspaces = append(workspaces, entry.Name())
 	}
-	return workspaces
+	return workspaces, nil
 }
 
 func normalizeTaskWorkspace(workspace string) string {
@@ -136,14 +132,16 @@ func firstNonEmpty(values ...string) string {
 }
 
 func readAllWhipTasks() ([]whipTask, error) {
-	baseDir := whipBaseDir()
-	if baseDir == "" {
-		return nil, fmt.Errorf("cannot determine home directory")
-	}
-
 	var tasks []whipTask
-	for _, workspace := range workspaceNames() {
-		dir := workspaceTasksDir(workspace)
+	workspaces, err := workspaceNames()
+	if err != nil {
+		return nil, err
+	}
+	for _, workspace := range workspaces {
+		dir, err := workspaceTasksDir(workspace)
+		if err != nil {
+			return nil, err
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -179,13 +177,17 @@ func readWhipTask(id string) (*whipTask, error) {
 		return nil, err
 	}
 
-	baseDir := whipBaseDir()
-	if baseDir == "" {
-		return nil, fmt.Errorf("cannot determine home directory")
+	workspaces, err := workspaceNames()
+	if err != nil {
+		return nil, err
 	}
 
-	for _, workspace := range workspaceNames() {
-		taskPath := filepath.Join(workspaceTasksDir(workspace), id, "task.json")
+	for _, workspace := range workspaces {
+		dir, err := workspaceTasksDir(workspace)
+		if err != nil {
+			return nil, err
+		}
+		taskPath := filepath.Join(dir, id, "task.json")
 		task, err := readWhipTaskFromDir(taskPath, workspace)
 		if err == nil {
 			return task, nil

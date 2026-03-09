@@ -111,8 +111,10 @@ func TestSpawnMasterSession_UsesHomePromptPath(t *testing.T) {
 }
 
 func TestSpawnMasterSession_UsesWHIPHOMEOverride(t *testing.T) {
-	tempRoot := t.TempDir()
-	override := filepath.Join(tempRoot, "custom-whip-home")
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	override := filepath.Join(tempHome, whipDir, "custom-whip-home")
 	t.Setenv("WHIP_HOME", override)
 
 	var gotShellCmd string
@@ -135,7 +137,11 @@ func TestSpawnMasterSession_UsesWHIPHOMEOverride(t *testing.T) {
 		t.Fatalf("SpawnMasterSession: %v", err)
 	}
 
-	wantPromptPath := filepath.Join(override, whipHomeDirName, whipHomePromptFile)
+	resolvedOverride, err := canonicalizeStorePath(override)
+	if err != nil {
+		t.Fatalf("canonicalizeStorePath: %v", err)
+	}
+	wantPromptPath := filepath.Join(resolvedOverride, whipHomeDirName, whipHomePromptFile)
 	if !strings.Contains(gotShellCmd, wantPromptPath) {
 		t.Fatalf("shell command should reference %q: %s", wantPromptPath, gotShellCmd)
 	}

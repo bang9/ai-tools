@@ -19,14 +19,14 @@ func (s *Store) SaveTask(task *Task) error {
 func (s *Store) saveTaskUnlocked(task *Task) error {
 	task.Workspace = NormalizeWorkspaceName(task.Workspace)
 	dir := s.taskDirInWorkspace(task.Workspace, task.ID)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(task, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(filepath.Join(dir, taskFile), data, 0644)
+	return atomicWriteFile(filepath.Join(dir, taskFile), data, privateFilePerm)
 }
 
 func (s *Store) LoadTask(id string) (*Task, error) {
@@ -103,7 +103,7 @@ func (s *Store) DeleteTask(id string) error {
 
 func (s *Store) SavePrompt(id, content string) error {
 	return s.withTaskLock(id, func() error {
-		return atomicWriteFile(s.promptPath(id), []byte(content), 0644)
+		return atomicWriteFile(s.promptPath(id), []byte(content), privateFilePerm)
 	})
 }
 

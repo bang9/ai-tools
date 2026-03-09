@@ -1,6 +1,8 @@
 package irc
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -68,6 +70,41 @@ func TestMarkAllRead(t *testing.T) {
 	messages, _ := store.ReadInbox("server")
 	if len(messages) != 2 {
 		t.Errorf("expected 2 messages total, got %d", len(messages))
+	}
+}
+
+func TestSendMessageAndMarkAllRead_UsePrivatePermissions(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.SendMessage("server", "client", "msg1"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	inboxDir := store.InboxDir("server")
+	assertMode(t, inboxDir, privateDirPerm)
+
+	entries, err := os.ReadDir(inboxDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 message file, got %d", len(entries))
+	}
+	messagePath := filepath.Join(inboxDir, entries[0].Name())
+	assertMode(t, messagePath, privateFilePerm)
+
+	if err := store.MarkAllRead("server"); err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	assertMode(t, inboxDir, privateDirPerm)
+	assertMode(t, messagePath, privateFilePerm)
+
+	messages, err := store.ReadInbox("server")
+	if err != nil {
+		t.Fatalf("ReadInbox: %v", err)
+	}
+	if len(messages) != 1 || !messages[0].Read {
+		t.Fatalf("expected one read message after MarkAllRead, got %+v", messages)
 	}
 }
 

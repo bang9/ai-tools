@@ -50,6 +50,7 @@ func TestSocketPingPong(t *testing.T) {
 		t.Fatalf("failed to connect to daemon socket: %v", err)
 	}
 	defer conn.Close()
+	assertMode(t, store.SocketsDir(), privateDirPerm)
 
 	// Send ping
 	req := SocketRequest{Type: "ping"}
@@ -128,13 +129,13 @@ func TestDaemonPIDFile(t *testing.T) {
 	store := newTestStore(t)
 	name := "pidtest"
 
-	os.MkdirAll(store.SocketsDir(), 0755)
-
-	// Write a PID file
-	pidPath := store.PIDPath(name)
-	os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0644)
+	if err := store.writePIDFile(name, os.Getpid()); err != nil {
+		t.Fatalf("writePIDFile: %v", err)
+	}
+	assertMode(t, store.SocketsDir(), privateDirPerm)
 
 	// Verify it exists
+	pidPath := store.PIDPath(name)
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		t.Fatalf("failed to read PID file: %v", err)
@@ -147,6 +148,7 @@ func TestDaemonPIDFile(t *testing.T) {
 	if pid != os.Getpid() {
 		t.Errorf("expected PID %d, got %d", os.Getpid(), pid)
 	}
+	assertMode(t, pidPath, privateFilePerm)
 }
 
 func TestStaleCleanup(t *testing.T) {

@@ -52,8 +52,7 @@ func (s *Store) SpawnDaemon(name string, sessionPID int) (int, error) {
 	pid := cmd.Process.Pid
 
 	// Write PID file
-	os.MkdirAll(s.SocketsDir(), 0755)
-	if err := os.WriteFile(s.PIDPath(name), []byte(strconv.Itoa(pid)), 0644); err != nil {
+	if err := s.writePIDFile(name, pid); err != nil {
 		cmd.Process.Kill()
 		return 0, fmt.Errorf("failed to write PID file: %w", err)
 	}
@@ -67,7 +66,9 @@ func (s *Store) SpawnDaemon(name string, sessionPID int) (int, error) {
 // RunDaemon runs the socket listener loop. This is called by the __daemon command.
 func (s *Store) RunDaemon(name string, sessionPID int) error {
 	socketPath := s.SocketPath(name)
-	os.MkdirAll(filepath.Dir(socketPath), 0755)
+	if err := ensurePrivateDir(filepath.Dir(socketPath)); err != nil {
+		return fmt.Errorf("failed to create socket directory: %w", err)
+	}
 	os.Remove(socketPath) // Clean stale socket
 
 	listener, err := net.Listen("unix", socketPath)
@@ -108,6 +109,13 @@ func (s *Store) RunDaemon(name string, sessionPID int) error {
 		}
 		go s.handleConnection(conn, name)
 	}
+}
+
+func (s *Store) writePIDFile(name string, pid int) error {
+	if err := ensurePrivateDir(s.SocketsDir()); err != nil {
+		return err
+	}
+	return writeFileAtomic(s.PIDPath(name), []byte(strconv.Itoa(pid)), privateFilePerm)
 }
 
 func (s *Store) handleConnection(conn net.Conn, name string) {

@@ -183,6 +183,24 @@ func TestSavePrompt(t *testing.T) {
 	}
 }
 
+func TestSaveTaskAndPrompt_UsePrivatePermissions(t *testing.T) {
+	s := tempStore(t)
+	task := NewTask("Secure Task", "desc", "/tmp")
+
+	if err := s.SaveTask(task); err != nil {
+		t.Fatalf("SaveTask: %v", err)
+	}
+
+	taskDir := filepath.Join(s.BaseDir, tasksDir, task.ID)
+	assertMode(t, taskDir, privateDirPerm)
+	assertMode(t, filepath.Join(taskDir, taskFile), privateFilePerm)
+
+	if err := s.SavePrompt(task.ID, "secure prompt"); err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+	assertMode(t, s.PromptPath(task.ID), privateFilePerm)
+}
+
 func TestSaveTask_UsesLegacyGlobalPathByDefault(t *testing.T) {
 	s := tempStore(t)
 	task := NewTask("Global Task", "desc", "/tmp")

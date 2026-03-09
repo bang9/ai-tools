@@ -98,13 +98,18 @@ func (s *Store) withRegistryLock(fn func(*Registry) error) error {
 	lockPath := s.LockPath()
 
 	// Ensure parent dir exists
-	os.MkdirAll(filepath.Dir(lockPath), 0755)
+	if err := ensurePrivateDir(filepath.Dir(lockPath)); err != nil {
+		return fmt.Errorf("ensuring lock directory: %w", err)
+	}
 
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, privateFilePerm)
 	if err != nil {
 		return fmt.Errorf("opening lock file: %w", err)
 	}
 	defer f.Close()
+	if err := f.Chmod(privateFilePerm); err != nil {
+		return fmt.Errorf("setting lock permissions: %w", err)
+	}
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("acquiring lock: %w", err)
@@ -147,7 +152,9 @@ func writeRegistryAtomic(path string, reg *Registry) error {
 	data = append(data, '\n')
 
 	dir := filepath.Dir(path)
-	os.MkdirAll(dir, 0755)
+	if err := ensurePrivateDir(dir); err != nil {
+		return fmt.Errorf("ensuring registry directory: %w", err)
+	}
 
 	tmp, err := os.CreateTemp(dir, ".registry-*.tmp")
 	if err != nil {

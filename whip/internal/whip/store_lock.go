@@ -9,7 +9,7 @@ import (
 
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return err
 	}
 
@@ -43,14 +43,17 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 }
 
 func withFileLock(path string, fn func() error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, privateFilePerm)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if err := f.Chmod(privateFilePerm); err != nil {
+		return err
+	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}

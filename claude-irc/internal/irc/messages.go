@@ -25,7 +25,7 @@ func (s *Store) SendMessage(to, from, content string) error {
 	}
 
 	dir := s.InboxDir(to)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return fmt.Errorf("failed to create inbox dir: %w", err)
 	}
 
@@ -43,7 +43,7 @@ func (s *Store) SendMessage(to, from, content string) error {
 	data = append(data, '\n')
 
 	filename := fmt.Sprintf("%d.json", time.Now().UnixNano())
-	return os.WriteFile(filepath.Join(dir, filename), data, 0644)
+	return writeFileAtomic(filepath.Join(dir, filename), data, privateFilePerm)
 }
 
 // ReadInbox returns all messages for a peer, sorted chronologically.
@@ -129,6 +129,19 @@ func (s *Store) MarkAllRead(name string) error {
 	}
 
 	dir := s.InboxDir(name)
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("inbox path is not a directory: %s", dir)
+	}
+	if err := os.Chmod(dir, privateDirPerm); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -160,7 +173,7 @@ func (s *Store) MarkAllRead(name string) error {
 				continue
 			}
 			updated = append(updated, '\n')
-			os.WriteFile(path, updated, 0644)
+			writeFileAtomic(path, updated, privateFilePerm)
 		}
 	}
 
