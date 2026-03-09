@@ -8,7 +8,7 @@ The workflow follows a **master-agent** pattern:
 
 1. The **master session** (you, interacting with Claude Code) creates tasks, assigns them, and coordinates
 2. Each **agent session** runs in its own Terminal tab, works autonomously on a task, and communicates back via IRC
-3. `whip` manages task lifecycle (create, assign, monitor, complete)
+3. `whip` manages task lifecycle (`whip task ...`) and workspace lifecycle (`whip workspace ...`)
 4. `claude-irc` provides the communication layer between sessions
 
 ```mermaid
@@ -21,11 +21,11 @@ sequenceDiagram
 
     User->>Master: Describe work to be done
     Master->>IRC: join workspace master IRC
-    Master->>Whip: create task(s) with structured descriptions
-    Master->>Whip: assign task → spawns Terminal tab
+    Master->>Whip: task create with structured descriptions
+    Master->>Whip: task assign → spawns Terminal tab
     Whip->>Agent: New Terminal tab with prompt.txt
 
-    Agent->>Whip: heartbeat (register PID)
+    Agent->>Whip: task heartbeat (register PID)
     Agent->>IRC: join whip-<task-id>
     Agent->>IRC: msg workspace-master "Acknowledged. Starting..."
     Agent->>IRC: msg workspace-master "Plan: ..."
@@ -40,7 +40,7 @@ sequenceDiagram
 
     Agent->>IRC: msg workspace-master "Task complete. Summary..."
     Agent->>IRC: quit
-    Agent->>Whip: status <id> completed --note "summary"
+    Agent->>Whip: task status <id> completed --note "summary"
     Whip-->>Master: Dependent tasks auto-assigned
 ```
 
@@ -53,9 +53,9 @@ created --> assigned --> in_progress --> completed
                                     --> failed
 ```
 
-- **created**: Task stored in `global` (`~/.whip/tasks/<id>/task.json`) or a named workspace (`~/.whip/workspaces/<name>/tasks/<id>/task.json`)
-- **assigned**: `whip assign` spawns a new Terminal tab with Claude Code and a prompt file
-- **in_progress**: Agent calls `whip heartbeat`, registering its PID
+- **created**: Task stored in `global` (`WHIP_HOME/tasks/<id>/task.json`, default `~/.whip/tasks/<id>/task.json`) or a named workspace (`WHIP_HOME/workspaces/<name>/tasks/<id>/task.json`)
+- **assigned**: `whip task assign` spawns a new Terminal tab with Claude Code and a prompt file
+- **in_progress**: Agent calls `whip task heartbeat`, registering its PID
 - **completed**: Agent finishes work; downstream stack tasks auto-assign
 - **failed**: Agent couldn't complete; handoff note preserved for retry
 
@@ -72,6 +72,10 @@ created --> assigned --> in_progress --> completed
 - `global` is for single-task work.
 - `workspace` is for stacked work.
 - A named workspace should be treated as a stacked lane of related tasks.
+- `whip task create --workspace <name>` is the authoritative ensure step for a named workspace.
+- If the current working directory is inside git, that first create ensures `WHIP_HOME/workspaces/<name>/worktree` and resolves task `cwd` inside that worktree.
+- If the current working directory is not inside git, the workspace falls back to the current `cwd` and may not have a worktree path.
+- When continuing a named workspace, prefer the stored workspace worktree as the working-directory context for repo inspection, tests, and review commands.
 - `claude-irc` stays shared, but master identity is scoped by workspace:
   - `global` → `whip-master`
   - `<workspace>` → `whip-master-<workspace>`
@@ -97,10 +101,10 @@ The master stays connected throughout the entire session. Never run `claude-irc 
 
 ### 2. Create Tasks
 
-Each task needs a structured description with clear scope and acceptance criteria:
+Each task needs a structured description with clear scope and acceptance criteria. For named workspaces, the first `whip task create --workspace <name>` also ensures the workspace metadata and, in git repos, the workspace worktree:
 
 ```bash
-whip create "Auth module" --workspace issue-sweep --desc "## Objective
+whip task create "Auth module" --workspace issue-sweep --desc "## Objective
 Implement JWT authentication with refresh tokens.
 
 ## Scope
@@ -117,27 +121,28 @@ Implement JWT authentication with refresh tokens.
 - Token expiry: 15m access, 7d refresh"
 ```
 
-The structured format (Objective / Scope / Acceptance Criteria / Context) helps agents self-orient and work independently.
+The structured format (Objective / Scope / Acceptance Criteria / Context) helps agents self-orient and work independently. After a workspace has a resolved worktree, keep later repo commands pointed at that workspace path instead of the original checkout.
 
 ### 3. Encode Stack Order (if needed)
 
 ```bash
 # Deploy waits on both auth and API tasks
-whip dep <deploy-id> --after <auth-id> --after <api-id>
+whip task dep <deploy-id> --after <auth-id> --after <api-id>
 ```
 
-Tasks with unmet prerequisites cannot be assigned. `whip dep` is the low-level command that encodes stack order. When a prerequisite completes, `whip` automatically assigns any unblocked downstream task.
+Tasks with unmet prerequisites cannot be assigned. `whip task dep` is the low-level command that encodes stack order. When a prerequisite completes, `whip` automatically assigns any unblocked downstream task.
 
 ### 4. Assign Tasks
 
 ```bash
-whip assign <task-id>
+whip task assign <task-id>
 ```
 
 This:
 - Opens a new Terminal tab
 - Starts `claude --dangerously-skip-permissions` with a generated prompt file
 - Uses the task's workspace to derive the correct master identity
+- Uses the task's stored `cwd`, which points at the workspace worktree when one exists
 - The prompt file contains: task details, IRC setup instructions, reporting protocol, and completion steps
 
 ### 5. Agent Communication
@@ -146,7 +151,7 @@ Once spawned, the agent follows a defined protocol:
 
 ```bash
 # Agent initialization (automatic from prompt.txt)
-whip heartbeat <task-id>                    # Register PID
+whip task heartbeat <task-id>                    # Register PID
 claude-irc join whip-<task-id>              # Join IRC
 claude-irc msg <workspace-master> "Acknowledged."  # Announce start
 /loop 1m claude-irc inbox                   # Enable monitoring
@@ -162,7 +167,7 @@ The master monitors incoming messages via the `/loop` cron and responds as neede
 claude-irc msg whip-<task-id> "Use the existing UserService, don't create a new one."
 
 # Master broadcasts to all agents
-whip broadcast "API contract updated. Check the latest notes."
+whip task broadcast "API contract updated. Check the latest notes."
 ```
 
 When the whip TUI sends a message to an agent, it arrives under the identity `user`. Agents can reply directly:
@@ -178,13 +183,13 @@ claude-irc msg user "Got it. Adjusting the approach now."
 
 ```bash
 # Quick status overview
-whip list
+whip task list
 
 # Live dashboard with auto-refresh
 whip dashboard
 
 # Check specific task details
-whip show <task-id>
+whip task show <task-id>
 ```
 
 The dashboard shows task status, PID liveness, blocked-by relationships, and progress notes.
@@ -197,7 +202,7 @@ When an agent finishes:
 # Agent side
 claude-irc msg whip-master "Task <id> complete. Implemented JWT auth with refresh tokens."
 claude-irc quit
-whip status <id> completed --note "JWT + refresh token auth. Files: src/auth/, src/middleware/auth.ts"
+whip task status <id> completed --note "JWT + refresh token auth. Files: src/auth/, src/middleware/auth.ts"
 # Session auto-terminates
 ```
 
@@ -211,20 +216,21 @@ If an agent cannot complete its task:
 # Agent writes detailed handoff note
 claude-irc msg whip-master "Task <id> failed: <reason>. Handoff note written."
 claude-irc quit
-whip status <id> failed --note "Accomplished X. Failed at Y because Z. Next agent should start at..."
+whip task status <id> failed --note "Accomplished X. Failed at Y because Z. Next agent should start at..."
 ```
 
 The master can then retry:
 
 ```bash
-whip unassign <id>    # Reset to created
-whip assign <id>      # Spawn fresh agent (handoff note included in prompt)
+whip task unassign <id>    # Reset to created
+whip task assign <id>      # Spawn fresh agent (handoff note included in prompt)
 ```
 
 ### 9. Clean Up
 
 ```bash
-whip clean        # Remove completed/failed tasks
+whip task clean                 # Remove completed/failed tasks
+whip workspace drop issue-sweep # Drop a named workspace's tasks, metadata, and worktree
 claude-irc quit   # Leave IRC (only when fully done)
 ```
 
@@ -238,8 +244,8 @@ For a single, self-contained piece of work:
 
 ```bash
 # Create and assign one task
-whip create "Fix login bug" --desc "## Objective ..."
-whip assign <id>
+whip task create "Fix login bug" --desc "## Objective ..."
+whip task assign <id>
 
 # Monitor, respond to questions, review when done
 ```
@@ -254,22 +260,28 @@ For stacked work inside one named workspace:
 
 ```bash
 # Step 1: Create all tasks
-whip create "Auth module" --workspace issue-sweep --desc "..."       # → id: a1b2c
-whip create "API endpoints" --workspace issue-sweep --desc "..."     # → id: d3e4f
-whip create "Frontend pages" --workspace issue-sweep --desc "..."    # → id: g5h6i
-whip create "Deploy" --workspace issue-sweep --desc "..."            # → id: j7k8l
+whip task create "Auth module" --workspace issue-sweep --desc "..."       # → id: a1b2c
+whip task create "API endpoints" --workspace issue-sweep --desc "..."     # → id: d3e4f
+whip task create "Frontend pages" --workspace issue-sweep --desc "..."    # → id: g5h6i
+whip task create "Deploy" --workspace issue-sweep --desc "..."            # → id: j7k8l
+whip workspace show issue-sweep                                            # inspect repo/worktree metadata if needed
 
 # Step 2: Encode stack order
-whip dep j7k8l --after a1b2c --after d3e4f --after g5h6i
+whip task dep j7k8l --after a1b2c --after d3e4f --after g5h6i
 
 # Step 3: Assign root tasks inside the same workspace
-whip assign a1b2c
-whip assign d3e4f
-whip assign g5h6i
+whip task assign a1b2c
+whip task assign d3e4f
+whip task assign g5h6i
 
 # Step 4: Coordinate — respond to messages, relay info between agents
 # Step 5: Deploy auto-assigns when auth + API + frontend all complete
 ```
+
+Workspace execution model:
+
+- `git-worktree`: the first `whip task create --workspace <name>` runs in git, so whip ensures `WHIP_HOME/workspaces/<name>/worktree` and all task `cwd`s resolve inside it
+- `direct-cwd`: the first `whip task create --workspace <name>` runs outside git, so tasks keep using the provided `cwd` and `worktree_path` may be empty
 
 Key differences from Solo Flow:
 
@@ -277,7 +289,8 @@ Key differences from Solo Flow:
 |--------|-----------|-----------|
 | Agents | 1 | 2+ parallel |
 | Planning | Minimal | Define roles, interfaces, ownership |
-| Stack order | None | Encode with `whip dep` |
+| Stack order | None | Encode with `whip task dep` |
+| Execution model | Direct current cwd | `git-worktree` when in git, `direct-cwd` otherwise |
 | Communication | Master <-> Agent | Master <-> Agents + relay between agents |
 | Coordination | Low | Master relays context, manages interfaces |
 
@@ -286,14 +299,14 @@ flowchart TB
     Master[Master Session]
 
     subgraph "Solo Flow"
-        S_Create[whip create] --> S_Assign[whip assign]
+        S_Create[whip task create] --> S_Assign[whip task assign]
         S_Assign --> S_Agent[Agent]
         S_Agent --> S_Done[completed]
     end
 
     subgraph "Team Flow"
-        T_Create[whip create x N] --> T_Dep[encode stack order]
-        T_Dep --> T_Assign[whip assign independent tasks]
+        T_Create[whip task create x N] --> T_Dep[encode stack order]
+        T_Dep --> T_Assign[whip task assign independent tasks]
         T_Assign --> T_A1[Agent A]
         T_Assign --> T_A2[Agent B]
         T_Assign --> T_A3[Agent C]
@@ -347,7 +360,7 @@ claude-irc join whip-master
 # User asks: "Refactor the auth system and write docs for the workflow"
 
 # Master creates tasks
-whip create "Refactor auth module" --desc "## Objective
+whip task create "Refactor auth module" --desc "## Objective
 Refactor auth to use middleware pattern...
 ## Scope
 - In: src/auth/
@@ -359,7 +372,7 @@ Refactor auth to use middleware pattern...
 - Current auth is inline in route handlers"
 # → Created task a1b2c
 
-whip create "Workflow documentation" --desc "## Objective
+whip task create "Workflow documentation" --desc "## Objective
 Write docs/workflow.md covering whip + claude-irc workflow...
 ## Scope
 - In: New file docs/workflow.md
@@ -372,8 +385,8 @@ Write docs/workflow.md covering whip + claude-irc workflow...
 # → Created task 3aae4
 
 # Assign both tasks (no stack prerequisite between them)
-whip assign a1b2c --master-irc whip-master
-whip assign 3aae4 --master-irc whip-master
+whip task assign a1b2c --master-irc whip-master
+whip task assign 3aae4 --master-irc whip-master
 
 # Agents initialize and share plans
 # [claude-irc] whip-a1b2c: Acknowledged. Plan: Extract auth logic into middleware...
@@ -391,7 +404,7 @@ claude-irc msg whip-a1b2c "No, clean break. Remove the old helpers entirely."
 # [claude-irc] whip-3aae4: Task complete. docs/workflow.md created with diagrams.
 
 # Clean up
-whip clean
+whip task clean
 ```
 
 ---
@@ -402,18 +415,33 @@ whip clean
 
 | Command | Description |
 |---------|-------------|
-| `whip create <title> [--desc/--file/stdin]` | Create a new task |
-| `whip list` | List all tasks with status |
-| `whip show <id>` | Show task details |
-| `whip assign <id> [--master-irc <name>]` | Spawn agent in new Terminal tab |
-| `whip unassign <id>` | Kill session, reset to created |
-| `whip status <id> [status] [--note]` | Get/set status with notes |
-| `whip broadcast "message"` | Message all active sessions |
-| `whip heartbeat [id]` | Register PID (called by agents) |
-| `whip kill <id>` | Force kill a session |
-| `whip clean` | Remove completed/failed tasks |
+| `whip task create <title> [--desc/--file/stdin] [--workspace <name>]` | Create a new task |
+| `whip task list` | List all tasks with status |
+| `whip task show <id>` | Show task details |
+| `whip task assign <id> [--master-irc <name>]` | Spawn agent in new Terminal tab |
+| `whip task unassign <id>` | Kill session, reset to created |
+| `whip task status <id> [status] [--note]` | Get/set status with notes |
+| `whip task broadcast "message"` | Message all active sessions |
+| `whip task heartbeat [id]` | Register PID (called by agents) |
+| `whip task kill <id>` | Force kill a session |
+| `whip task clean` | Remove completed/failed tasks |
+| `whip task dep <id> --after <id>` | Encode stack prerequisites |
+| `whip task delete <id>` | Delete a task |
+
+### whip workspace commands
+
+| Command | Description |
+|---------|-------------|
+| `whip workspace list` | List named workspaces |
+| `whip workspace show <name>` | Show workspace metadata and tasks |
+| `whip workspace drop <name>` | Remove workspace tasks, metadata, and worktree |
+
+### other whip commands
+
+| Command | Description |
+|---------|-------------|
 | `whip dashboard` | Live TUI dashboard |
-| `whip dep <id> --after <id>` | Encode stack prerequisites |
+| `whip remote` | Start remote mode with web dashboard |
 
 ### claude-irc commands
 

@@ -8,7 +8,7 @@
 
 1. **마스터 세션** (사용자가 Claude Code와 대화하는 세션)이 태스크를 생성, 배정, 조율
 2. 각 **에이전트 세션**은 별도의 터미널 탭에서 실행되며, 태스크를 자율적으로 수행하고 IRC로 마스터와 통신
-3. `whip`이 태스크 라이프사이클을 관리 (생성, 배정, 모니터링, 완료)
+3. `whip`이 태스크 라이프사이클(`whip task ...`)과 workspace 라이프사이클(`whip workspace ...`)을 관리
 4. `claude-irc`가 세션 간 통신 레이어를 제공
 
 ```mermaid
@@ -21,11 +21,11 @@ sequenceDiagram
 
     User->>Master: 작업 내용 설명
     Master->>IRC: join workspace master IRC
-    Master->>Whip: 구조화된 설명으로 태스크 생성
-    Master->>Whip: 태스크 배정 → 터미널 탭 스폰
+    Master->>Whip: task create로 구조화된 태스크 생성
+    Master->>Whip: task assign → 터미널 탭 스폰
     Whip->>Agent: 새 터미널 탭 + prompt.txt
 
-    Agent->>Whip: heartbeat (PID 등록)
+    Agent->>Whip: task heartbeat (PID 등록)
     Agent->>IRC: join whip-<task-id>
     Agent->>IRC: msg workspace-master "인수했습니다. 시작합니다..."
     Agent->>IRC: msg workspace-master "계획: ..."
@@ -40,7 +40,7 @@ sequenceDiagram
 
     Agent->>IRC: msg workspace-master "태스크 완료. 요약..."
     Agent->>IRC: quit
-    Agent->>Whip: status <id> completed --note "요약"
+    Agent->>Whip: task status <id> completed --note "요약"
     Whip-->>Master: downstream 태스크 자동 배정
 ```
 
@@ -53,9 +53,9 @@ created --> assigned --> in_progress --> completed
                                     --> failed
 ```
 
-- **created**: `global` (`~/.whip/tasks/<id>/task.json`) 또는 named workspace (`~/.whip/workspaces/<name>/tasks/<id>/task.json`)에 태스크 저장
-- **assigned**: `whip assign`이 새 터미널 탭에 Claude Code와 프롬프트 파일을 스폰
-- **in_progress**: 에이전트가 `whip heartbeat`를 호출하여 PID 등록
+- **created**: `global` (`WHIP_HOME/tasks/<id>/task.json`, 기본값 `~/.whip/tasks/<id>/task.json`) 또는 named workspace (`WHIP_HOME/workspaces/<name>/tasks/<id>/task.json`)에 태스크 저장
+- **assigned**: `whip task assign`이 새 터미널 탭에 Claude Code와 프롬프트 파일을 스폰
+- **in_progress**: 에이전트가 `whip task heartbeat`를 호출하여 PID 등록
 - **completed**: 에이전트 작업 완료; downstream stack 태스크 자동 배정
 - **failed**: 에이전트가 완료하지 못함; 인수인계 노트가 retry를 위해 보존
 
@@ -72,6 +72,10 @@ created --> assigned --> in_progress --> completed
 - `global`은 single-task work용입니다.
 - `workspace`는 stacked work용입니다.
 - named workspace는 관련 태스크들의 stacked lane으로 다뤄야 합니다.
+- `whip task create --workspace <name>`가 named workspace의 authoritative ensure 단계입니다.
+- 현재 working directory가 git 안에 있으면, 첫 create 시 `WHIP_HOME/workspaces/<name>/worktree`를 만들고 task `cwd`를 그 worktree 안으로 resolve합니다.
+- 현재 working directory가 git 밖에 있으면, workspace는 현재 `cwd`를 그대로 사용하고 worktree path가 없을 수 있습니다.
+- 기존 named workspace를 이어서 다룰 때는 repo 탐색, 테스트, 리뷰 명령도 원본 checkout이 아니라 저장된 workspace worktree 기준으로 실행하는 편이 맞습니다.
 - `claude-irc`는 공유되지만, master identity는 workspace별로 나뉩니다.
   - `global` → `whip-master`
   - `<workspace>` → `whip-master-<workspace>`
@@ -97,10 +101,10 @@ claude-irc join whip-master-issue-sweep
 
 ### 2. 태스크 생성
 
-각 태스크에는 명확한 스코프와 수락 기준이 포함된 구조화된 설명이 필요합니다:
+각 태스크에는 명확한 스코프와 수락 기준이 포함된 구조화된 설명이 필요합니다. named workspace에서는 첫 `whip task create --workspace <name>`가 workspace metadata와, git repo인 경우 workspace worktree도 함께 ensure합니다:
 
 ```bash
-whip create "Auth 모듈" --workspace issue-sweep --desc "## Objective
+whip task create "Auth 모듈" --workspace issue-sweep --desc "## Objective
 리프레시 토큰을 포함한 JWT 인증 구현.
 
 ## Scope
@@ -117,27 +121,28 @@ whip create "Auth 모듈" --workspace issue-sweep --desc "## Objective
 - 토큰 만료: 액세스 15분, 리프레시 7일"
 ```
 
-구조화된 포맷 (Objective / Scope / Acceptance Criteria / Context)은 에이전트가 스스로 방향을 잡고 독립적으로 작업하는 데 도움을 줍니다.
+구조화된 포맷 (Objective / Scope / Acceptance Criteria / Context)은 에이전트가 스스로 방향을 잡고 독립적으로 작업하는 데 도움을 줍니다. workspace worktree가 resolve된 뒤에는 이후 repo 명령도 그 경로 기준으로 실행하세요.
 
 ### 3. 스택 순서 인코딩 (필요시)
 
 ```bash
 # Deploy 태스크가 auth와 API 태스크 완료를 기다리도록 설정
-whip dep <deploy-id> --after <auth-id> --after <api-id>
+whip task dep <deploy-id> --after <auth-id> --after <api-id>
 ```
 
-충족되지 않은 선행 조건이 있는 태스크는 배정할 수 없습니다. `whip dep`는 stacked 순서를 표현하는 저수준 명령이고, 선행 조건이 완료되면 `whip`이 차단 해제된 downstream 태스크를 자동으로 배정합니다.
+충족되지 않은 선행 조건이 있는 태스크는 배정할 수 없습니다. `whip task dep`는 stacked 순서를 표현하는 저수준 명령이고, 선행 조건이 완료되면 `whip`이 차단 해제된 downstream 태스크를 자동으로 배정합니다.
 
 ### 4. 태스크 배정
 
 ```bash
-whip assign <task-id>
+whip task assign <task-id>
 ```
 
 이 명령은:
 - 새 터미널 탭을 열고
 - 생성된 프롬프트 파일과 함께 `claude --dangerously-skip-permissions`를 시작
 - 태스크의 workspace에 맞는 master identity를 사용
+- 태스크에 저장된 `cwd`를 사용하며, named workspace라면 보통 workspace worktree 경로를 가리킴
 - 프롬프트 파일에는 태스크 상세, IRC 설정 지침, 보고 프로토콜, 완료 단계가 포함
 
 ### 5. 에이전트 커뮤니케이션
@@ -146,7 +151,7 @@ whip assign <task-id>
 
 ```bash
 # 에이전트 초기화 (prompt.txt에서 자동 실행)
-whip heartbeat <task-id>                    # PID 등록
+whip task heartbeat <task-id>                    # PID 등록
 claude-irc join whip-<task-id>              # IRC 참여
 claude-irc msg <workspace-master> "인수했습니다."    # 시작 알림
 /loop 1m claude-irc inbox                   # 모니터링 활성화
@@ -162,7 +167,7 @@ claude-irc msg <workspace-master> "계획: <2-3문장 접근 방식>"
 claude-irc msg whip-<task-id> "기존 UserService를 사용해. 새로 만들지 마."
 
 # 마스터가 전체 에이전트에 브로드캐스트
-whip broadcast "API 계약이 업데이트되었습니다. 토픽 보드를 확인하세요."
+whip task broadcast "API 계약이 업데이트되었습니다. 토픽 보드를 확인하세요."
 ```
 
 whip TUI가 에이전트에게 메시지를 보내면 `user` 신원으로 전달됩니다. 에이전트는 직접 답장할 수 있습니다:
@@ -178,13 +183,13 @@ claude-irc msg user "확인했습니다. 접근 방식을 조정하겠습니다.
 
 ```bash
 # 빠른 상태 확인
-whip list
+whip task list
 
 # 자동 새로고침되는 라이브 대시보드
 whip dashboard
 
 # 특정 태스크 상세 확인
-whip show <task-id>
+whip task show <task-id>
 ```
 
 대시보드는 태스크 상태, PID 활성 여부, blocked-by 관계, 진행 노트를 보여줍니다.
@@ -197,7 +202,7 @@ whip show <task-id>
 # 에이전트 측
 claude-irc msg whip-master "태스크 <id> 완료. JWT 인증과 리프레시 토큰 구현 완료."
 claude-irc quit
-whip status <id> completed --note "JWT + 리프레시 토큰 인증. 파일: src/auth/, src/middleware/auth.ts"
+whip task status <id> completed --note "JWT + 리프레시 토큰 인증. 파일: src/auth/, src/middleware/auth.ts"
 # 세션 자동 종료
 ```
 
@@ -211,20 +216,21 @@ whip status <id> completed --note "JWT + 리프레시 토큰 인증. 파일: src
 # 에이전트가 상세한 인수인계 노트 작성
 claude-irc msg whip-master "태스크 <id> 실패: <이유>. 인수인계 노트 작성 완료."
 claude-irc quit
-whip status <id> failed --note "X를 완료함. Y에서 Z 때문에 실패. 다음 에이전트는 ...부터 시작해야 함"
+whip task status <id> failed --note "X를 완료함. Y에서 Z 때문에 실패. 다음 에이전트는 ...부터 시작해야 함"
 ```
 
 마스터가 재시도할 수 있습니다:
 
 ```bash
-whip unassign <id>    # created로 리셋
-whip assign <id>      # 새 에이전트 스폰 (인수인계 노트가 프롬프트에 포함)
+whip task unassign <id>    # created로 리셋
+whip task assign <id>      # 새 에이전트 스폰 (인수인계 노트가 프롬프트에 포함)
 ```
 
 ### 9. 정리
 
 ```bash
-whip clean        # 완료/실패 태스크 제거
+whip task clean                 # 완료/실패 태스크 제거
+whip workspace drop issue-sweep # named workspace의 태스크, metadata, worktree 정리
 claude-irc quit   # IRC 퇴장 (모든 작업이 완전히 끝났을 때만)
 ```
 
@@ -238,8 +244,8 @@ claude-irc quit   # IRC 퇴장 (모든 작업이 완전히 끝났을 때만)
 
 ```bash
 # 태스크 하나 생성하고 배정
-whip create "로그인 버그 수정" --desc "## Objective ..."
-whip assign <id>
+whip task create "로그인 버그 수정" --desc "## Objective ..."
+whip task assign <id>
 
 # 모니터링, 질문에 답변, 완료 시 리뷰
 ```
@@ -254,22 +260,28 @@ whip assign <id>
 
 ```bash
 # Step 1: 모든 태스크 생성
-whip create "Auth 모듈" --workspace issue-sweep --desc "..."           # → id: a1b2c
-whip create "API 엔드포인트" --workspace issue-sweep --desc "..."       # → id: d3e4f
-whip create "프론트엔드 페이지" --workspace issue-sweep --desc "..."     # → id: g5h6i
-whip create "배포" --workspace issue-sweep --desc "..."                 # → id: j7k8l
+whip task create "Auth 모듈" --workspace issue-sweep --desc "..."           # → id: a1b2c
+whip task create "API 엔드포인트" --workspace issue-sweep --desc "..."       # → id: d3e4f
+whip task create "프론트엔드 페이지" --workspace issue-sweep --desc "..."     # → id: g5h6i
+whip task create "배포" --workspace issue-sweep --desc "..."                 # → id: j7k8l
+whip workspace show issue-sweep                                              # 필요하면 repo/worktree metadata 확인
 
 # Step 2: 스택 순서 인코딩
-whip dep j7k8l --after a1b2c --after d3e4f --after g5h6i
+whip task dep j7k8l --after a1b2c --after d3e4f --after g5h6i
 
 # Step 3: 같은 workspace 안의 root task 배정
-whip assign a1b2c
-whip assign d3e4f
-whip assign g5h6i
+whip task assign a1b2c
+whip task assign d3e4f
+whip task assign g5h6i
 
 # Step 4: 조율 — 메시지에 응답, 에이전트 간 정보 전달
 # Step 5: Auth + API + 프론트엔드가 모두 완료되면 배포가 자동 배정
 ```
+
+Workspace execution model:
+
+- `git-worktree`: 첫 `whip task create --workspace <name>`가 git 안에서 실행되면 whip이 `WHIP_HOME/workspaces/<name>/worktree`를 보장하고 모든 task `cwd`를 그 안으로 resolve
+- `direct-cwd`: 첫 `whip task create --workspace <name>`가 git 밖에서 실행되면 task들이 전달된 `cwd`를 그대로 사용하고 `worktree_path`는 비어 있을 수 있음
 
 Solo Flow와의 주요 차이점:
 
@@ -277,7 +289,8 @@ Solo Flow와의 주요 차이점:
 |------|-----------|-----------|
 | 에이전트 | 1개 | 2개 이상 병렬 |
 | 계획 | 최소 | 역할, 인터페이스, 소유권 정의 |
-| 스택 순서 | 없음 | `whip dep`으로 인코딩 |
+| 스택 순서 | 없음 | `whip task dep`으로 인코딩 |
+| 실행 모델 | 현재 cwd 직접 사용 | git이면 `git-worktree`, 아니면 `direct-cwd` |
 | 통신 | 마스터 <-> 에이전트 | 마스터 <-> 에이전트들 + 에이전트 간 중계 |
 | 조율 | 낮음 | 마스터가 컨텍스트 전달, 인터페이스 관리 |
 
@@ -286,13 +299,13 @@ flowchart TB
     Master[마스터 세션]
 
     subgraph "Solo Flow"
-        S_Create[whip create] --> S_Assign[whip assign]
+        S_Create[whip task create] --> S_Assign[whip task assign]
         S_Assign --> S_Agent[에이전트]
         S_Agent --> S_Done[완료]
     end
 
     subgraph "Team Flow"
-        T_Create[whip create x N] --> T_Dep[스택 순서 인코딩]
+        T_Create[whip task create x N] --> T_Dep[스택 순서 인코딩]
         T_Dep --> T_Assign[독립 태스크 배정]
         T_Assign --> T_A1[에이전트 A]
         T_Assign --> T_A2[에이전트 B]
@@ -347,7 +360,7 @@ claude-irc join whip-master
 # 사용자 요청: "인증 시스템 리팩터링하고 워크플로우 문서 작성해줘"
 
 # 마스터가 태스크 생성
-whip create "Auth 모듈 리팩터링" --desc "## Objective
+whip task create "Auth 모듈 리팩터링" --desc "## Objective
 미들웨어 패턴으로 인증 리팩터링...
 ## Scope
 - In: src/auth/
@@ -359,7 +372,7 @@ whip create "Auth 모듈 리팩터링" --desc "## Objective
 - 현재 인증은 라우트 핸들러에 인라인으로 구현"
 # → Created task a1b2c
 
-whip create "워크플로우 문서" --desc "## Objective
+whip task create "워크플로우 문서" --desc "## Objective
 whip + claude-irc 워크플로우를 다루는 docs/workflow.md 작성...
 ## Scope
 - In: 새 파일 docs/workflow.md
@@ -372,8 +385,8 @@ whip + claude-irc 워크플로우를 다루는 docs/workflow.md 작성...
 # → Created task 3aae4
 
 # 두 태스크 모두 배정 (스택 선행 조건 없음)
-whip assign a1b2c --master-irc whip-master
-whip assign 3aae4 --master-irc whip-master
+whip task assign a1b2c --master-irc whip-master
+whip task assign 3aae4 --master-irc whip-master
 
 # 에이전트들이 초기화하고 계획 공유
 # [claude-irc] whip-a1b2c: 인수했습니다. 계획: 인증 로직을 미들웨어로 추출...
@@ -391,29 +404,44 @@ claude-irc msg whip-a1b2c "아니, 완전히 새로 만들어. 기존 헬퍼는 
 # [claude-irc] whip-3aae4: 태스크 완료. docs/workflow.md 다이어그램 포함하여 생성 완료.
 
 # 정리
-whip clean
+whip task clean
 ```
 
 ---
 
 ## 커맨드 레퍼런스
 
-### whip 커맨드
+### whip task 커맨드
 
 | 커맨드 | 설명 |
 |--------|------|
-| `whip create <title> [--desc/--file/stdin]` | 새 태스크 생성 |
-| `whip list` | 모든 태스크 상태 확인 |
-| `whip show <id>` | 태스크 상세 보기 |
-| `whip assign <id> [--master-irc <name>]` | 새 터미널 탭에 에이전트 스폰 |
-| `whip unassign <id>` | 세션 종료, created로 리셋 |
-| `whip status <id> [status] [--note]` | 상태 조회/설정 (노트 포함) |
-| `whip broadcast "message"` | 모든 활성 세션에 메시지 전송 |
-| `whip heartbeat [id]` | PID 등록 (에이전트가 호출) |
-| `whip kill <id>` | 세션 강제 종료 |
-| `whip clean` | 완료/실패 태스크 제거 |
+| `whip task create <title> [--desc/--file/stdin] [--workspace <name>]` | 새 태스크 생성 |
+| `whip task list` | 모든 태스크 상태 확인 |
+| `whip task show <id>` | 태스크 상세 보기 |
+| `whip task assign <id> [--master-irc <name>]` | 새 터미널 탭에 에이전트 스폰 |
+| `whip task unassign <id>` | 세션 종료, created로 리셋 |
+| `whip task status <id> [status] [--note]` | 상태 조회/설정 (노트 포함) |
+| `whip task broadcast "message"` | 모든 활성 세션에 메시지 전송 |
+| `whip task heartbeat [id]` | PID 등록 (에이전트가 호출) |
+| `whip task kill <id>` | 세션 강제 종료 |
+| `whip task clean` | 완료/실패 태스크 제거 |
+| `whip task dep <id> --after <id>` | 스택 선행 조건 인코딩 |
+| `whip task delete <id>` | 태스크 삭제 |
+
+### whip workspace 커맨드
+
+| 커맨드 | 설명 |
+|--------|------|
+| `whip workspace list` | named workspace 목록 |
+| `whip workspace show <name>` | workspace metadata와 태스크 확인 |
+| `whip workspace drop <name>` | workspace 태스크, metadata, worktree 정리 |
+
+### 기타 whip 커맨드
+
+| 커맨드 | 설명 |
+|--------|------|
 | `whip dashboard` | 라이브 TUI 대시보드 |
-| `whip dep <id> --after <id>` | 스택 선행 조건 인코딩 |
+| `whip remote` | 웹 대시보드용 remote mode 시작 |
 
 ### claude-irc 커맨드
 

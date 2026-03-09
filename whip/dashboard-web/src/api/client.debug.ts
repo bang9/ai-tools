@@ -173,17 +173,17 @@ function initialMockCapture(): string {
     '│ AI companion agent is orchestrating the replay lane                         │',
     '╰──────────────────────────────────────────────────────────────────────────────╯',
     '',
-    '$ whip create "Replay analyzer" --workspace incident-replay',
-    '$ whip create "CJK tokenizer spike" --workspace incident-replay',
-    '$ whip dep 91fd2 7b2d4',
-    '$ whip assign 7b2d4',
+    '$ whip task create "Replay analyzer" --workspace incident-replay',
+    '$ whip task create "CJK tokenizer spike" --workspace incident-replay',
+    '$ whip task dep 91fd2 --after 7b2d4',
+    '$ whip task assign 7b2d4',
     '$ claude-irc msg whip-91fd2 "Stand by until replay diff is approved."',
     '',
     '[review] replay analyzer ready',
     '  - edge case: multi-word queries on CJK content need tokenizer follow-up',
     '  - next: approve replay lane, then route tokenizer lane',
     '',
-    '$ whip approve 7b2d4',
+    '$ whip task approve 7b2d4',
   ].join('\n')
 }
 

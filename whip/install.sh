@@ -281,8 +281,10 @@ main() {
     info "whip ${version} installed successfully!"
     echo ""
     echo "  Quick start:"
-    echo "    whip create \"My Task\" --desc \"Description here\""
-    echo "    whip assign <id>"
+    echo "    whip task create \"My Task\" --desc \"Description here\""
+    echo "    whip task assign <id>"
+    echo "    whip task create \"API Task\" --workspace issue-sweep --desc \"Description here\""
+    echo "    whip workspace show issue-sweep"
     echo "    whip dashboard"
     echo ""
 }

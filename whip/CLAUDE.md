@@ -16,6 +16,12 @@ For ad hoc execution, use the CLI directly. For guided planning and dispatch, pr
 - `global` is for single-task work.
 - `workspace` is for stacked work.
 - A named workspace should be planned as a stacked lane of related tasks, not as an arbitrary flat bag of concurrent tasks.
+- `whip task create --workspace <name>` ensures the named workspace on first use.
+- Workspace execution model:
+  - `git-worktree` when the current cwd is inside git; the workspace keeps its isolated checkout at `WHIP_HOME/workspaces/<name>/worktree`
+  - `direct-cwd` when the current cwd is not inside git; tasks keep using that cwd and may not have a worktree path
+- `whip workspace show <name>` reports the workspace execution model together with repo/worktree metadata.
+- When continuing a named workspace, prefer the stored workspace worktree as the working-directory context for repo commands.
 - `~/.whip/home/` remains shared reference context. Task state is namespaced by workspace.
 - `claude-irc` remains a shared bus. Master identity is scoped by workspace:
   - `global` → `whip-master`
@@ -26,19 +32,20 @@ For ad hoc execution, use the CLI directly. For guided planning and dispatch, pr
 ```bash
 # Single-task work in global
 claude-irc join whip-master
-whip create "Auth module" --difficulty medium --desc "Implement JWT auth"
-whip assign <auth-id>
+whip task create "Auth module" --difficulty medium --desc "Implement JWT auth"
+whip task assign <auth-id>
 ```
 
 ```bash
 # Stacked work in a named workspace
 claude-irc join whip-master-issue-sweep
 
-whip create "Auth module" --workspace issue-sweep --difficulty medium --desc "Implement JWT auth"
-whip create "Deploy" --workspace issue-sweep --difficulty easy --desc "Deploy after auth"
-whip dep <deploy-id> --after <auth-id>   # lower-level command that encodes stack order
-whip assign <auth-id>
-whip list
+whip task create "Auth module" --workspace issue-sweep --difficulty medium --desc "Implement JWT auth"
+whip task create "Deploy" --workspace issue-sweep --difficulty easy --desc "Deploy after auth"
+whip task dep <deploy-id> --after <auth-id>   # lower-level command that encodes stack order
+whip task assign <auth-id>
+whip task list
+whip workspace show issue-sweep
 whip dashboard
 claude-irc inbox
 ```
@@ -93,13 +100,14 @@ Sub-agents may reference `~/.whip/home/memory.md` and `~/.whip/home/projects.md`
 
 ## Help
 
-Run `whip --help` for the full command list. For guided usage, see `/whip-plan`, `/whip-start`, and `/whip-lesson-learn`.
+Run `whip task --help`, `whip workspace --help`, and `whip --help` for the full command list. For guided usage, see `/whip-plan`, `/whip-start`, and `/whip-lesson-learn`.
 
 ## Notes
 
-- `assign` only works for tasks in `created` status whose stack prerequisites are already complete.
-- `whip create --workspace <name>` stores tasks under a named workspace while keeping `global` on the legacy default path.
-- `whip dep` is still the compatibility command for wiring `stacked` order. Treat it as a low-level mechanism, not the primary user-facing concept.
+- `whip task assign` only works for tasks in `created` status whose stack prerequisites are already complete.
+- `whip task create --workspace <name>` stores tasks under a named workspace and ensures its workspace metadata. In `git-worktree`, it also ensures the workspace worktree before saving the task `cwd`.
+- `whip task dep` is still the compatibility command for wiring `stacked` order. Treat it as a low-level mechanism, not the primary user-facing concept.
 - Downstream stack tasks auto-assign when their prerequisites become `completed`.
+- `whip workspace drop <name>` is the cleanup entry point for named workspace tasks, metadata, and worktree state.
 - `tmux` is the preferred runner because it allows dashboard capture and attach.
 - `whip remote` requires `tmux` to be installed (`brew install tmux` on macOS).

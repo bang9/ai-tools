@@ -21,6 +21,21 @@ You are the lead. Dispatch work to agent sessions via whip.
   - `global` → `whip-master`
   - `<workspace>` → `whip-master-<workspace>`
 
+## Workspace execution model
+
+- `git-worktree`: the first `whip task create --workspace <workspace-name>` runs inside git, so whip ensures `WHIP_HOME/workspaces/<workspace-name>/worktree` and stores task `cwd` inside it.
+- `direct-cwd`: the first `whip task create --workspace <workspace-name>` runs outside git, so tasks keep using the provided `cwd` and `worktree_path` may be empty.
+- `whip workspace show <workspace-name>` reports the current execution model.
+
+## Workspace preparation
+
+- If you are continuing an existing named workspace, inspect it first with `whip workspace show <workspace-name>`.
+- If that workspace reports a stored `worktree_path`, use that path as the working-directory context for subsequent repo inspection, git, test, and review commands.
+- If the named workspace does not exist yet, `whip task create --workspace <workspace-name>` is the authoritative ensure step.
+- In `git-worktree`, the first `whip task create --workspace <workspace-name>` ensures `WHIP_HOME/workspaces/<workspace-name>/worktree` and resolves task `cwd` inside that worktree.
+- In `direct-cwd`, the workspace falls back to the current `cwd` and may not have a `worktree_path`.
+- Do not rely on a one-shot `cd` in a child shell. Keep using the resolved workspace path as the working-directory context for each repo command you run.
+
 ## Step 0: Health check (always run first)
 
 Every invocation starts here — no exceptions. Check live state before doing anything:
@@ -31,8 +46,11 @@ claude-irc join <workspace-master> 2>/dev/null
 # If this fails: claude-irc quit 2>/dev/null && claude-irc join <workspace-master>
 
 # 2. Live status — what's running right now?
-whip list
+whip task list
 claude-irc inbox
+
+# 3. If continuing a named workspace, inspect its stored metadata
+whip workspace show <workspace-name>
 ```
 
 Review the output before proceeding:
@@ -70,7 +88,7 @@ Whip owns the backend-specific prompt, model, effort, and resume behavior. Do no
 Dispatch without heavy planning, but define clear scope and acceptance criteria in the description.
 
 ```bash
-whip create "<title>" --backend <chosen-backend> --difficulty <level> --desc "## Objective
+whip task create "<title>" --backend <chosen-backend> --difficulty <level> --desc "## Objective
 <what needs to be done>
 
 ## Scope
@@ -83,10 +101,10 @@ whip create "<title>" --backend <chosen-backend> --difficulty <level> --desc "##
 
 ## Context
 <any additional context the agent needs>"
-whip assign <task-id>
+whip task assign <task-id>
 ```
 
-Monitor the agent: review its initial plan when it arrives, respond to questions, and check progress via `whip list`. Do NOT run `claude-irc quit` — stay connected for future dispatches.
+Monitor the agent: review its initial plan when it arrives, respond to questions, and check progress via `whip task list`. Do NOT run `claude-irc quit` — stay connected for future dispatches.
 
 ---
 
@@ -110,8 +128,10 @@ Parallelization guardrails:
 
 Create all tasks, encode stack order if needed, then assign independent tasks. Downstream stack tasks auto-assign when their prerequisites complete.
 
+If you are continuing a named workspace, inspect it first with `whip workspace show <workspace-name>`. If it already has a `worktree_path`, use that path as the working-directory context for your own repo commands. If it does not exist yet, the first `whip task create --workspace <workspace-name>` below will ensure it.
+
 ```bash
-whip create "<agent role/title>" --workspace <workspace-name> --backend <chosen-backend> --difficulty <level> --desc "## Objective
+whip task create "<agent role/title>" --workspace <workspace-name> --backend <chosen-backend> --difficulty <level> --desc "## Objective
 <what needs to be done>
 
 ## Scope
@@ -124,8 +144,8 @@ whip create "<agent role/title>" --workspace <workspace-name> --backend <chosen-
 
 ## Context
 <any additional context the agent needs>"
-whip dep <task-id> --after <prerequisite-id>  # only if needed; this encodes stack order
-whip assign <task-id>  # only assign tasks without unmet prerequisites
+whip task dep <task-id> --after <prerequisite-id>  # only if needed; this encodes stack order
+whip task assign <task-id>  # only assign tasks without unmet prerequisites
 ```
 
 ### Step 3: Coordinate
@@ -133,8 +153,8 @@ whip assign <task-id>  # only assign tasks without unmet prerequisites
 As team lead:
 - Respond to agent messages promptly — agents escalate user-facing questions to you
 - When an agent needs user input, relay the question to the user and pass the answer back
-- Use `whip list` to monitor overall progress
-- Use `whip broadcast "message"` for team-wide announcements
+- Use `whip task list` to monitor overall progress
+- Use `whip task broadcast "message"` for team-wide announcements
 - Use `claude-irc msg <irc-name> "message"` for direct communication with specific agents
 - Relay information between agents when they need context from each other
 - Mirror important decisions, blockers, and review requests into the main user chat. IRC is for agents; the user does not automatically see it.
@@ -144,13 +164,13 @@ As team lead:
 As agents complete:
 - Review their deliverables
 - Dependent agents auto-deploy when prerequisites are met
-- If a shell died but the task still has a valid session: use `whip resume <id>` or dashboard resume before creating a new session.
-- If an agent failed and you want to preserve context/notes/session history: use `whip retry <id>`.
-- Use `whip unassign <id>` when you need to kill/reset a live or stuck task before retrying from scratch.
+- If a shell died but the task still has a valid session: use `whip task resume <id>` or dashboard resume before creating a new session.
+- If an agent failed and you want to preserve context/notes/session history: use `whip task retry <id>`.
+- Use `whip task unassign <id>` when you need to kill/reset a live or stuck task before retrying from scratch.
 
 ### Step 5: Wrap up
 
-When all agents are done, summarize what was accomplished across the team. Do NOT run `claude-irc quit` — stay connected for future dispatches.
+When all agents are done, summarize what was accomplished across the team. If this named workspace was temporary and the user wants it removed, run `whip workspace drop <workspace-name>` after all deliverables are accepted. Do NOT run `claude-irc quit` — stay connected for future dispatches.
 
 ---
 
@@ -189,11 +209,11 @@ For tasks where you want to review changes before the agent commits, use the `--
 
 ### How it works
 
-1. **Create with review**: `whip create "title" --backend <chosen-backend> --difficulty medium --review --desc "..."`
-2. **Agent works**: The agent's prompt instructs it to NOT commit and to report via `whip status <id> review` when done.
-3. **Review**: Check the agent's changes (e.g., via `git diff` in the task's working directory).
-4. **Approve**: `whip approve <id>` notifies the agent via IRC to commit and finish the task.
-   - Approval does not directly mark the task `completed`; the agent still needs to commit and run `whip status <id> completed --note "..."`
+1. **Create with review**: `whip task create "title" --backend <chosen-backend> --difficulty medium --review --desc "..."`
+2. **Agent works**: The agent's prompt instructs it to NOT commit and to report via `whip task status <id> review` when done.
+3. **Review**: Check the agent's changes in the task `cwd` or the workspace worktree when one exists.
+4. **Approve**: `whip task approve <id>` notifies the agent via IRC to commit and finish the task.
+   - Approval does not directly mark the task `completed`; the agent still needs to commit and run `whip task status <id> completed --note "..."`
 
 ### When to use review
 

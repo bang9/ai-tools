@@ -35,7 +35,7 @@ Run these commands to initialize your session:
 
 1. Register yourself (this records your shell PID from $WHIP_SHELL_PID):
 `)
-	fmt.Fprintf(&b, "   whip heartbeat %s\n", task.ID)
+	fmt.Fprintf(&b, "   whip task heartbeat %s\n", task.ID)
 
 	b.WriteString(`
 2. Join the communication channel:
@@ -79,7 +79,7 @@ Before diving in, share your approach with the lead:
   Good: "Auth module done. JWT + refresh token implemented. Moving to middleware."
   Bad: "Working on it."
 `)
-	fmt.Fprintf(&b, "- Update progress notes: whip status %s in_progress --note \"your progress here\"\n", task.ID)
+	fmt.Fprintf(&b, "- Update progress notes: whip task status %s in_progress --note \"your progress here\"\n", task.ID)
 	b.WriteString(`- If blocked, say what you need specifically so it can be unblocked fast.
 - When you receive a message from the lead session, acknowledge and respond promptly.
 
@@ -95,7 +95,7 @@ If you cannot complete the task, do NOT just mark it failed silently. Before giv
 	fmt.Fprintf(&b, "   claude-irc msg %s \"Task %s failed: <reason>. Handoff note written.\"\n",
 		task.MasterIRCName, task.ID)
 	b.WriteString("3. claude-irc quit\n")
-	fmt.Fprintf(&b, "4. whip status %s failed --note \"<detailed handoff note>\"\n", task.ID)
+	fmt.Fprintf(&b, "4. whip task status %s failed --note \"<detailed handoff note>\"\n", task.ID)
 	b.WriteString(`   (this will auto-terminate the session)
 
 The handoff note is critical — it will be preserved and shown to the next agent assigned to this task after retry.
@@ -117,7 +117,7 @@ Before marking complete, verify your work (run tests, build checks, or whatever 
 		b.WriteString("- exact next step for the lead if they need to take over\n\n")
 		fmt.Fprintf(&b, "1. claude-irc msg %s \"Task %s ready for review. Delivered: <summary>. Files: <files>. Verification: <checks>. Suggested commit: <message>. Risks/follow-ups: <items>. Takeover note: <what the lead should do next>.\"\n",
 			task.MasterIRCName, task.ID)
-		fmt.Fprintf(&b, "2. whip status %s review --note \"Delivered: <summary>. Files: <files>. Verification: <checks>. Suggested commit: <message>. Risks/follow-ups: <items>. Takeover note: <what the lead should do next>.\"\n", task.ID)
+		fmt.Fprintf(&b, "2. whip task status %s review --note \"Delivered: <summary>. Files: <files>. Verification: <checks>. Suggested commit: <message>. Risks/follow-ups: <items>. Takeover note: <what the lead should do next>.\"\n", task.ID)
 		b.WriteString("3. Wait for the lead to approve. You will receive an IRC message when approved.\n")
 		b.WriteString("4. After receiving approval: commit your changes, then run:\n")
 		b.WriteString("   When committing:\n")
@@ -127,7 +127,7 @@ Before marking complete, verify your work (run tests, build checks, or whatever 
 		b.WriteString("     Examples: `feat(auth): add JWT refresh token`, `fix(api): handle null response`\n")
 		b.WriteString("   - Write a concise commit message that describes what changed and why\n")
 		b.WriteString("   claude-irc quit\n")
-		fmt.Fprintf(&b, "   whip status %s completed --note \"final summary\"\n", task.ID)
+		fmt.Fprintf(&b, "   whip task status %s completed --note \"final summary\"\n", task.ID)
 		b.WriteString("   (this will auto-terminate the session)\n")
 	} else if task.Difficulty == "easy" {
 		b.WriteString("**IMPORTANT: You must commit your changes before marking complete.**\n\n")
@@ -141,7 +141,7 @@ Before marking complete, verify your work (run tests, build checks, or whatever 
 		fmt.Fprintf(&b, "2. claude-irc msg %s \"Task %s complete. Here's what I delivered: <concrete summary>\"\n",
 			task.MasterIRCName, task.ID)
 		b.WriteString("3. claude-irc quit\n")
-		fmt.Fprintf(&b, "4. whip status %s completed --note \"final summary of what was delivered\"\n", task.ID)
+		fmt.Fprintf(&b, "4. whip task status %s completed --note \"final summary of what was delivered\"\n", task.ID)
 		b.WriteString("   (this will auto-terminate the session)\n")
 	} else {
 		b.WriteString("**IMPORTANT: Commit your changes before marking complete.**\n\n")
@@ -155,7 +155,7 @@ Before marking complete, verify your work (run tests, build checks, or whatever 
 		fmt.Fprintf(&b, "2. claude-irc msg %s \"Task %s complete. Here's what I delivered: <concrete summary>\"\n",
 			task.MasterIRCName, task.ID)
 		b.WriteString("3. claude-irc quit\n")
-		fmt.Fprintf(&b, "4. whip status %s completed --note \"final summary of what was delivered\"\n", task.ID)
+		fmt.Fprintf(&b, "4. whip task status %s completed --note \"final summary of what was delivered\"\n", task.ID)
 		b.WriteString("   (this will auto-terminate the session)\n")
 	}
 

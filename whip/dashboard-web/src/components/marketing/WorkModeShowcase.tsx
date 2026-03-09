@@ -56,7 +56,7 @@ function GlobalVisual() {
   return (
     <div className="rounded-[2rem] bg-white/35 p-5 shadow-[inset_0_1.5px_0_rgba(255,255,255,0.95),inset_0_-0.5px_0_rgba(255,255,255,0.3),0_16px_48px_rgba(76,94,160,0.08)] backdrop-blur-[24px] backdrop-saturate-[1.8] dark:bg-white/4 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] dark:backdrop-saturate-100">
       <div className="mb-4 rounded-[1rem] bg-[linear-gradient(135deg,rgba(79,70,229,0.10),rgba(59,130,246,0.06))] px-4 py-3 font-mono text-xs text-[#4f46e5] shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:bg-[linear-gradient(135deg,rgba(79,70,229,0.16),rgba(59,130,246,0.10))] dark:text-[#c7d2fe] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        whip create "Polish the billing empty state copy"
+        whip task create "Polish the billing empty state copy"
       </div>
       <div className="relative space-y-5">
         <div className="absolute left-[1.1rem] top-5 bottom-5 w-px bg-[linear-gradient(180deg,rgba(79,70,229,0.18),rgba(79,70,229,0.58),rgba(79,70,229,0.18))] dark:bg-[linear-gradient(180deg,rgba(129,140,248,0.12),rgba(129,140,248,0.48),rgba(129,140,248,0.12))]" />

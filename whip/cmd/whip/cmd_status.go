@@ -130,7 +130,7 @@ func approveCmd() *cobra.Command {
 			}
 
 			if task.IRCName != "" {
-				commitMsg := fmt.Sprintf("Task %s approved. Status is now approved_pending_finalize. Commit your changes and run `whip status %s completed --note \"...\"` to finalize.", id, id)
+				commitMsg := fmt.Sprintf("Task %s approved. Status is now approved_pending_finalize. Commit your changes and run `whip task status %s completed --note \"...\"` to finalize.", id, id)
 				ircCmd := exec.Command("claude-irc", "msg", task.IRCName, commitMsg)
 				ircCmd.Stderr = os.Stderr
 				if err := ircCmd.Run(); err != nil {

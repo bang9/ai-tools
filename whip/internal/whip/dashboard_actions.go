@@ -90,7 +90,7 @@ func (m DashboardModel) resumeTask(task *Task) tea.Cmd {
 		}
 
 		shellCmd := fmt.Sprintf(
-			`cd %s && WHIP_SHELL_PID=$$ WHIP_TASK_ID=%s whip heartbeat %s >/dev/null 2>&1; WHIP_SHELL_PID=$$ WHIP_TASK_ID=%s %s ; exit`,
+			`cd %s && WHIP_SHELL_PID=$$ WHIP_TASK_ID=%s whip task heartbeat %s >/dev/null 2>&1; WHIP_SHELL_PID=$$ WHIP_TASK_ID=%s %s ; exit`,
 			shellEscape(task.CWD),
 			shellEscape(task.ID),
 			shellEscape(task.ID),

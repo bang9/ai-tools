@@ -54,8 +54,17 @@ func createCmd() *cobra.Command {
 				return err
 			}
 
+			workspace = whip.NormalizeWorkspaceName(workspace)
+			if workspace != whip.GlobalWorkspaceName {
+				_, resolvedCWD, err := store.EnsureWorkspace(workspace, cwd)
+				if err != nil {
+					return err
+				}
+				cwd = resolvedCWD
+			}
+
 			task := whip.NewTask(title, description, cwd)
-			task.Workspace = whip.NormalizeWorkspaceName(workspace)
+			task.Workspace = workspace
 			task.Difficulty = difficulty
 			task.Review = review
 			task.Backend = backend

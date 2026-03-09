@@ -32,7 +32,7 @@ const steps: PreviewStep[] = [
     id: 'plan',
     label: 'Plan',
     summary: 'You describe the goal. The AI companion agent shapes it into a stacked run.',
-    command: 'whip create "Incident replay workflow" --difficulty hard --review',
+    command: 'whip task create "Incident replay workflow" --difficulty hard --review',
     dialogue: [
       {
         label: 'You',
@@ -58,7 +58,7 @@ const steps: PreviewStep[] = [
     id: 'assign',
     label: 'Assign',
     summary: 'The companion agent dispatches sub agents where it is safe to fan out.',
-    command: 'whip assign api-lane && whip assign contract-lane',
+    command: 'whip task assign api-lane && whip task assign contract-lane',
     dialogue: [
       {
         label: 'You',
@@ -84,7 +84,7 @@ const steps: PreviewStep[] = [
     id: 'review',
     label: 'Review',
     summary: 'The companion agent escalates only the decisions that need a human.',
-    command: 'whip approve contract-lane && whip review export-lane',
+    command: 'whip task approve contract-lane && whip task status export-lane review',
     dialogue: [
       {
         label: 'Companion',
@@ -110,7 +110,7 @@ const steps: PreviewStep[] = [
     id: 'complete',
     label: 'Complete',
     summary: 'All lanes converge. The companion agent closes the run cleanly.',
-    command: 'whip status replay-run completed --note "stack merged cleanly"',
+    command: 'whip task status replay-run completed --note "stack merged cleanly"',
     dialogue: [
       {
         label: 'Companion',

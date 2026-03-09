@@ -16,7 +16,7 @@ func (m DashboardModel) renderListView(w int) string {
 		b.WriteString(lipgloss.NewStyle().
 			Foreground(colorSubtle).
 			Italic(true).
-			Render("  No tasks yet — create one with: whip create \"title\" --desc \"description\""))
+			Render("  No tasks yet — create one with: whip task create \"title\" --desc \"description\""))
 		b.WriteString("\n")
 	} else {
 		b.WriteString(m.renderTable())

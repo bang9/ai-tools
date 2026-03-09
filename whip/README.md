@@ -1,6 +1,6 @@
 # whip
 
-Task orchestrator for Claude Code — run single-task work in `global`, run stacked work in a named `workspace`, and monitor everything from a TUI or web dashboard.
+Task orchestrator for Claude Code. Use `whip task ...` for task lifecycle, `whip workspace ...` for workspace lifecycle, and the dashboard or remote mode for monitoring.
 
 ## Install
 
@@ -19,30 +19,45 @@ Or via Claude Code Plugin:
 
 ```bash
 # Single-task work in global
-whip create "Auth module" --desc "Implement JWT authentication"
-whip assign <auth-id>
+whip task create "Auth module" --desc "Implement JWT authentication"
+whip task assign <auth-id>
 
 # Stacked work in a named workspace
-whip create "API endpoints" --workspace issue-sweep --desc "Build REST API for users"
+whip task create "API endpoints" --workspace issue-sweep --desc "Build REST API for users"
+whip workspace show issue-sweep
 whip dashboard
 ```
 
-## Commands
+## Task Commands
 
 | Command | Description |
 |---------|-------------|
-| `create <title> [--desc/--file/stdin] [--workspace <name>]` | Create a new task in `global` or a named workspace |
-| `list` | List all tasks with status |
-| `show <id>` | Show task details |
-| `assign <id> [--master-irc <name>]` | Spawn agent session |
-| `unassign <id>` | Kill session, reset to created |
-| `status <id> [new-status] [--note]` | Get/set status with notes |
-| `dep <id> --after <id>` | Wire stack prerequisites (compatibility dependency command) |
-| `broadcast "message"` | Message all active sessions |
-| `retry <id>` | Retry failed task |
-| `resume <id>` | Resume task session interactively |
-| `kill <id>` | Force kill a task session |
-| `clean` | Remove completed/failed tasks |
+| `task create <title> [--desc/--file/stdin] [--workspace <name>]` | Create a task in `global` or a named workspace |
+| `task list` | List all tasks with status |
+| `task show <id>` | Show task details |
+| `task assign <id> [--master-irc <name>]` | Spawn agent session |
+| `task unassign <id>` | Kill session, reset to created |
+| `task status <id> [new-status] [--note]` | Get/set status with notes |
+| `task dep <id> --after <id>` | Wire stack prerequisites |
+| `task broadcast "message"` | Message all active sessions |
+| `task retry <id>` | Retry failed task |
+| `task resume <id>` | Resume task session interactively |
+| `task kill <id>` | Force kill a task session |
+| `task clean` | Remove completed/failed tasks |
+| `task delete <id>` | Delete a task |
+
+## Workspace Commands
+
+| Command | Description |
+|---------|-------------|
+| `workspace list` | List named workspaces |
+| `workspace show <name>` | Show workspace metadata, execution model, and tasks |
+| `workspace drop <name>` | Drop workspace tasks, metadata, and worktree |
+
+## Other Commands
+
+| Command | Description |
+|---------|-------------|
 | `dashboard` | Live TUI dashboard |
 | `remote` | Start remote mode with web dashboard |
 | `hello` | Print hello world |
@@ -54,12 +69,27 @@ created → assigned → in_progress → completed
                                  → failed
 ```
 
-- `global` tasks stay on the legacy path: `~/.whip/tasks/<id>/task.json`
-- Named workspace tasks are stored under `~/.whip/workspaces/<name>/tasks/<id>/task.json`
-- `assign` spawns a tmux session (or Terminal.app tab) with Claude Code
-- `whip dep` remains the compatibility command for encoding stack order inside a workspace
+- `global` tasks stay on the legacy path: `WHIP_HOME/tasks/<id>/task.json` (default `~/.whip/tasks/<id>/task.json`)
+- Named workspace tasks are stored under `WHIP_HOME/workspaces/<name>/tasks/<id>/task.json`
+- `whip task assign` spawns a tmux session (or Terminal.app tab) with Claude Code
+- `whip task dep` remains the compatibility command for encoding stack order inside a workspace
 - Downstream stack tasks auto-assign when prerequisites complete
 - Sessions communicate via shared `claude-irc`, while master identity is scoped by workspace
+
+## Workspace Model
+
+- Workspace model:
+  - `global` for single-task work
+  - `workspace` for stacked named lanes
+- Workspace execution model:
+  - `git-worktree` when the first `whip task create --workspace <name>` runs inside a git repository
+  - `direct-cwd` when the first `whip task create --workspace <name>` runs outside git
+- `whip task create --workspace <name>` is the authoritative ensure step for a named workspace.
+- In `git-worktree`, whip ensures `WHIP_HOME/workspaces/<name>/worktree` and resolves each task `cwd` inside that worktree.
+- In `direct-cwd`, workspace tasks keep using the provided `cwd` and `worktree_path` may be empty.
+- `whip workspace show <name>` reports the workspace execution model together with repo/worktree metadata.
+- Once a workspace has a resolved worktree, continue repo inspection, testing, and review commands against that stored workspace path rather than the original checkout.
+- `whip workspace drop <name>` removes the workspace's tasks, metadata, and worktree together.
 
 ## Dashboard
 
@@ -103,7 +133,7 @@ Settings are saved to `~/.whip/config.json` for reuse. With a tunnel, a **short 
 
 ## How It Works
 
-1. Master session creates tasks in `global` or a named workspace
+1. Master session creates tasks via `whip task create` in `global` or a named workspace
 2. Each task spawns a tmux session running Claude Code with a prompt file
 3. Sessions coordinate via shared `claude-irc`, using workspace-scoped master identities
 4. On completion, downstream stack tasks auto-assign and the workspace master is notified

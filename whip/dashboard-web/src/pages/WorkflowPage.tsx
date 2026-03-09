@@ -288,7 +288,7 @@ function DispatchSection() {
             <div className="space-y-3">
               <div className="flex gap-2">
                 <span className="text-white/40">$</span>
-                <span className="text-[#c7d2fe]">whip assign a3f2 b8c1</span>
+                <span className="text-[#c7d2fe]">whip task assign a3f2 && whip task assign b8c1</span>
               </div>
               <div className="space-y-1.5 border-t border-white/6 pt-3">
                 <p><span className="text-[#34d399]">→</span> Launched: index-pipeline <span className="text-white/36">(whip-a3f2)</span></p>

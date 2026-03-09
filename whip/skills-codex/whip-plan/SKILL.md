@@ -23,8 +23,14 @@ Before decomposing work, classify the session:
 - `global` is for single-task work
 - `workspace` is for stacked work
 
+When you pick a named workspace, remember that execution later resolves to one of two workspace execution models:
+- `git-worktree` if the first `whip task create --workspace <name>` runs inside git
+- `direct-cwd` if that first create runs outside git
+
 If the user wants one self-contained task, keep it in `global`.
 If the user wants a grouped session, stacked PR lane, issue sweep, or anything likely to overlap in the same repo, pick a named workspace and plan the work as a stack.
+
+If you are planning follow-up work for an existing named workspace, inspect it with `whip workspace show <workspace-name>` and prefer its stored `worktree_path` as the working-directory context for read-only exploration. If no named workspace exists yet, plan from the current repo and let `$whip-start` or `whip task create --workspace <name>` materialize the workspace later.
 
 ## Step 3: Explore the codebase
 
@@ -36,6 +42,8 @@ Use the available read and inspection tools to understand:
 - Current whip task state, including anything already in progress
 
 Spend enough time here to make informed decisions. Bad planning from insufficient context wastes more time than thorough exploration.
+
+Do not materialize a new workspace during planning. Planning decides `global` vs named `workspace` and the workspace name. The first `whip task create --workspace <name>` during execution is responsible for ensuring workspace metadata and its worktree when needed.
 
 ## Step 4: Design the task graph
 
