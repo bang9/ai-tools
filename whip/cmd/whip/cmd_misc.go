@@ -23,17 +23,6 @@ func upgradeCmd() *cobra.Command {
 	}
 }
 
-func helloCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "hello",
-		Short: "Print hello world",
-		Args:  cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), "hello world")
-		},
-	}
-}
-
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",

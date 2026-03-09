@@ -27,7 +27,6 @@ func newRootCmd() *cobra.Command {
 		workspaceCmd(),
 		dashboardCmd(),
 		remoteCmd(),
-		helloCmd(),
 		upgradeCmd(),
 		versionCmd(),
 	)

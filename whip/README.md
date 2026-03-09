@@ -60,8 +60,8 @@ whip dashboard
 |---------|-------------|
 | `dashboard` | Live TUI dashboard |
 | `remote` | Start remote mode with web dashboard |
-| `hello` | Print hello world |
-
+| `upgrade` | Upgrade whip to the latest version |
+| `version` | Print version |
 ## Task Lifecycle
 
 ```
