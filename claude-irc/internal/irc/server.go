@@ -50,6 +50,12 @@ const (
 	maxHTTPMasterKeysSize           = 10 << 10
 )
 
+const (
+	maxHTTPJSONBodyBytes      int64 = 1 << 20
+	maxHTTPMessageContentSize       = 10 << 10
+	maxHTTPMasterKeysSize           = 10 << 10
+)
+
 // RunServer starts the HTTP API server and blocks until the context is cancelled.
 func RunServer(ctx context.Context, cfg ServerConfig) error {
 	token := cfg.Token
