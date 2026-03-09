@@ -44,6 +44,12 @@ const dashboardOperatorName = "user"
 const defaultServerBindHost = "127.0.0.1"
 const defaultServerAdvertiseHost = "localhost"
 
+const (
+	maxHTTPJSONBodyBytes      int64 = 1 << 20
+	maxHTTPMessageContentSize       = 10 << 10
+	maxHTTPMasterKeysSize           = 10 << 10
+)
+
 // RunServer starts the HTTP API server and blocks until the context is cancelled.
 func RunServer(ctx context.Context, cfg ServerConfig) error {
 	token := cfg.Token
@@ -376,8 +382,7 @@ func handlePostMessage(w http.ResponseWriter, r *http.Request, store *Store) {
 		From    string `json:"from"`
 		Content string `json:"content"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if !decodeLimitedJSONBody(w, r, &body, "invalid request body") {
 		return
 	}
 
@@ -391,6 +396,12 @@ func handlePostMessage(w http.ResponseWriter, r *http.Request, store *Store) {
 	}
 	if body.From != dashboardOperatorName {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only 'user' may send messages over HTTP"})
+		return
+	}
+	if len(body.Content) > maxHTTPMessageContentSize {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("content too large (%d bytes, max %d bytes)", len(body.Content), maxHTTPMessageContentSize),
+		})
 		return
 	}
 
@@ -603,12 +614,17 @@ func handleMasterKeys(w http.ResponseWriter, r *http.Request, sessionName string
 	var body struct {
 		Keys string `json:"keys"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	if !decodeLimitedJSONBody(w, r, &body, "invalid body") {
 		return
 	}
 	if body.Keys == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "keys required"})
+		return
+	}
+	if len(body.Keys) > maxHTTPMasterKeysSize {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("keys too large (%d bytes, max %d bytes)", len(body.Keys), maxHTTPMasterKeysSize),
+		})
 		return
 	}
 	// Split into literal text and trailing Enter if present
@@ -665,4 +681,20 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+func decodeLimitedJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}, invalidBodyMessage string) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxHTTPJSONBodyBytes)
+
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			return false
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": invalidBodyMessage})
+		return false
+	}
+
+	return true
 }

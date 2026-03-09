@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +25,22 @@ func setupTestServer(t *testing.T) (*httptest.Server, *Store, string) {
 
 	token := "test-token-abc123"
 	handler := buildHandler(store, token, shortCodeFromToken(token), "")
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	return ts, store, token
+}
+
+func setupTestServerWithMaster(t *testing.T, masterTmux string) (*httptest.Server, *Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := NewStoreWithBaseDir(dir)
+	if err != nil {
+		t.Fatalf("NewStoreWithBaseDir: %v", err)
+	}
+
+	token := "test-token-abc123"
+	handler := buildHandler(store, token, shortCodeFromToken(token), masterTmux)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
@@ -377,6 +394,50 @@ func TestAPIPostMessageValidation(t *testing.T) {
 	}
 }
 
+func TestAPIPostMessageRejectsOversizedBody(t *testing.T) {
+	ts, _, token := setupTestServer(t)
+
+	resp := doRequest(t, ts, token, "POST", "/api/messages", map[string]string{
+		"to":      "agent-1",
+		"from":    "user",
+		"content": strings.Repeat("a", int(maxHTTPJSONBodyBytes)),
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	decodeJSON(t, resp, &body)
+	if body["error"] != "request body too large" {
+		t.Fatalf("unexpected error: %q", body["error"])
+	}
+}
+
+func TestAPIPostMessageRejectsOversizedContent(t *testing.T) {
+	ts, _, token := setupTestServer(t)
+
+	content := strings.Repeat("a", maxHTTPMessageContentSize+1)
+	resp := doRequest(t, ts, token, "POST", "/api/messages", map[string]string{
+		"to":      "agent-1",
+		"from":    "user",
+		"content": content,
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	decodeJSON(t, resp, &body)
+	want := "content too large (10241 bytes, max 10240 bytes)"
+	if body["error"] != want {
+		t.Fatalf("unexpected error: %q", body["error"])
+	}
+}
+
 func TestAPIPostMessageRejectsNonUserSender(t *testing.T) {
 	ts, store, token := setupTestServer(t)
 
@@ -672,6 +733,48 @@ func TestAPITasksRejectInvalidID(t *testing.T) {
 	var body map[string]string
 	decodeJSON(t, resp, &body)
 	if body["error"] != "invalid identifier: invalid task id" {
+		t.Fatalf("unexpected error: %q", body["error"])
+	}
+}
+
+// --- Master ---
+
+func TestAPIMasterKeysRejectsOversizedBody(t *testing.T) {
+	ts, _, token := setupTestServerWithMaster(t, "master-session")
+
+	resp := doRequest(t, ts, token, "POST", "/api/master/keys", map[string]string{
+		"keys": strings.Repeat("a", int(maxHTTPJSONBodyBytes)),
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	decodeJSON(t, resp, &body)
+	if body["error"] != "request body too large" {
+		t.Fatalf("unexpected error: %q", body["error"])
+	}
+}
+
+func TestAPIMasterKeysRejectsOversizedKeys(t *testing.T) {
+	ts, _, token := setupTestServerWithMaster(t, "master-session")
+
+	keys := strings.Repeat("a", maxHTTPMasterKeysSize+1)
+	resp := doRequest(t, ts, token, "POST", "/api/master/keys", map[string]string{
+		"keys": keys,
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	decodeJSON(t, resp, &body)
+	want := "keys too large (10241 bytes, max 10240 bytes)"
+	if body["error"] != want {
 		t.Fatalf("unexpected error: %q", body["error"])
 	}
 }
