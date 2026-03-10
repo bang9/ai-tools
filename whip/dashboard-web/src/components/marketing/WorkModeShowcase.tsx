@@ -108,18 +108,18 @@ function WorkspaceVisual() {
             >
               <div className="flex items-center gap-2">
                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100/80 text-[9px] font-bold text-violet-600 dark:bg-violet-400/20 dark:text-violet-300">AI</span>
-                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085] dark:text-white/55">Workspace Lead</span>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085] dark:text-white/55">AI companion agent</span>
               </div>
               <div className="mt-1.5 text-sm font-semibold">Owns the run shape</div>
               <div className="mt-1.5 text-sm leading-7 text-[#667085] dark:text-white/75">
-                Dispatches workers, preserves stack order, and routes only the critical review moment back to you.
+                Dispatches lead and workers, preserves stack order, and routes only the critical review moment back to you.
               </div>
             </motion.div>
           </div>
         </div>
 
         <div className="px-5 py-5">
-          <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-[#94a3b8] dark:text-[#6878a0]">Workers</div>
+          <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-[#94a3b8] dark:text-[#6878a0]">Task lanes</div>
           <div className="grid grid-cols-2 gap-2.5">
             {stackedLanes.map(lane => (
               <motion.div

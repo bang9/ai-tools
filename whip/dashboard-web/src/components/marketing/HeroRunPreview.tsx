@@ -31,7 +31,7 @@ const steps: PreviewStep[] = [
   {
     id: 'plan',
     label: 'Plan',
-    summary: 'You describe the goal. The Workspace Lead shapes it into a stacked run.',
+    summary: 'You describe the goal. The AI companion agent shapes it into a stacked run.',
     command: 'whip task create "Incident replay workflow" --difficulty hard --review',
     dialogue: [
       {
@@ -40,7 +40,7 @@ const steps: PreviewStep[] = [
         tone: 'operator',
       },
       {
-        label: 'Workspace Lead',
+        label: 'Companion',
         text: 'I will shape this into a stacked run: shared event contract, replay API, timeline UI, and rollout review.',
         tone: 'companion',
       },
@@ -52,12 +52,12 @@ const steps: PreviewStep[] = [
       { title: 'Timeline UI', status: 'blocked', tone: 'planned' },
       { title: 'Rollout review', status: 'planned', tone: 'planned' },
     ],
-    insight: 'The run starts with a human-lead planning pass, not blind parallelism.',
+    insight: 'The run starts with a human-companion planning pass, not blind parallelism.',
   },
   {
     id: 'assign',
     label: 'Assign',
-    summary: 'The Workspace Lead dispatches workers where it is safe to fan out.',
+    summary: 'The companion agent dispatches sub agents where it is safe to fan out.',
     command: 'whip task assign api-lane && whip task assign contract-lane',
     dialogue: [
       {
@@ -66,28 +66,28 @@ const steps: PreviewStep[] = [
         tone: 'operator',
       },
       {
-        label: 'Workspace Lead',
+        label: 'Companion',
         text: 'Assigning the contract and API lanes first. Timeline UI will wait until the shared event shape is real.',
         tone: 'companion',
       },
     ],
-    companionStatus: 'Dispatching workers',
+    companionStatus: 'Dispatching sub agents',
     lanes: [
       { title: 'Event contract', status: 'in progress', tone: 'active' },
       { title: 'Replay API', status: 'in progress', tone: 'active' },
       { title: 'Timeline UI', status: 'waiting', tone: 'planned' },
       { title: 'Rollout review', status: 'queued', tone: 'planned' },
     ],
-    insight: 'Workers execute, but the Workspace Lead still owns routing and sequencing.',
+    insight: 'Sub agents execute, but the companion agent still owns routing and sequencing.',
   },
   {
     id: 'review',
     label: 'Review',
-    summary: 'The Workspace Lead escalates only the decisions that need a human.',
+    summary: 'The companion agent escalates only the decisions that need a human.',
     command: 'whip task approve contract-lane && whip task review export-lane',
     dialogue: [
       {
-        label: 'Workspace Lead',
+        label: 'Companion',
         text: 'The shared contract is stable. I am escalating the export lane because the format drift needs a human decision.',
         tone: 'companion',
       },
@@ -104,16 +104,16 @@ const steps: PreviewStep[] = [
       { title: 'Timeline UI', status: 'in progress', tone: 'active' },
       { title: 'Rollout review', status: 'queued', tone: 'planned' },
     ],
-    insight: 'The human reviews the inflection point. The Workspace Lead handles the rest.',
+    insight: 'The human reviews the inflection point. The companion agent handles the rest.',
   },
   {
     id: 'complete',
     label: 'Complete',
-    summary: 'All lanes converge. The Workspace Lead closes the run cleanly.',
+    summary: 'All lanes converge. The companion agent closes the run cleanly.',
     command: 'whip task complete replay-run --note "stack merged cleanly"',
     dialogue: [
       {
-        label: 'Workspace Lead',
+        label: 'Companion',
         text: 'All lanes are closed. The stack merged cleanly and the final state is ready to hand back.',
         tone: 'companion',
       },
@@ -289,7 +289,7 @@ export function HeroRunPreview() {
                 <div className="mb-4 rounded-2xl bg-[linear-gradient(135deg,rgba(196,181,253,0.30),rgba(221,214,254,0.15))] px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_4px_16px_rgba(139,92,246,0.08)] backdrop-blur-[12px] backdrop-saturate-[1.4] dark:bg-[linear-gradient(135deg,rgba(79,70,229,0.14),rgba(139,92,246,0.10))] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100/80 text-[9px] font-bold text-violet-600 dark:bg-violet-400/20 dark:text-violet-300">AI</span>
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085] dark:text-white/55">Workspace Lead</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085] dark:text-white/55">AI companion agent</span>
                   </div>
                   <div className="mt-1.5 text-sm font-semibold text-[#1e293b] dark:text-white/90">{step.companionStatus}</div>
                 </div>
@@ -313,7 +313,7 @@ export function HeroRunPreview() {
 
         {/* Command line */}
         <div className="bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.22))] px-5 py-3 font-mono text-[13px] text-[#1e293b] shadow-[inset_0_0.5px_0_rgba(255,255,255,0.25)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255,0.03))] dark:text-[#c4d5ff] dark:shadow-[inset_0_0.5px_0_rgba(255,255,255,0.04)] sm:px-6">
-          <span className="text-[#4f46e5] dark:text-[#818cf8]">lead@whip</span>
+          <span className="text-[#4f46e5] dark:text-[#818cf8]">companion@whip</span>
           <span className="mx-2 text-[#94a3b8] dark:text-[#6878a0]">$</span>
           <AnimatePresence mode="wait">
             <motion.span

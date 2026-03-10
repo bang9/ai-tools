@@ -111,7 +111,7 @@ func createCmd() *cobra.Command {
 	cmd.Flags().Lookup("difficulty").Shorthand = "d"
 	cmd.Flags().BoolVar(&review, "review", false, "Require review before completion (medium/hard only; always enabled for --role lead)")
 	cmd.Flags().StringVar(&backend, "backend", "", "AI backend (default: claude)")
-	cmd.Flags().StringVar(&role, "role", "", `Task role: "lead" creates a Workspace Lead that autonomously manages workers (requires --workspace, always review-gated)`)
+	cmd.Flags().StringVar(&role, "role", "", `Task role: "lead" creates a Workspace Lead that autonomously manages workers (requires --workspace)`)
 
 	return cmd
 }
