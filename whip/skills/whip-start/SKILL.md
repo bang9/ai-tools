@@ -244,11 +244,13 @@ Lead tasks follow this lifecycle: `in_progress → review → approved → compl
 When the lead submits itself for review (`whip task review <lead-id>`), inspect the workspace changes, then:
 
 ```bash
+# If changes look good:
 whip task approve <lead-id>    # review → approved
 whip task complete <lead-id>   # approved → completed (auto-drops workspace)
-```
 
-If changes need rework: `whip task request-changes <lead-id> --note "..."` sends the lead back to `in_progress`.
+# If changes need rework:
+whip task request-changes <lead-id> --note "..."  # review → in_progress (lead continues)
+```
 
 The Lead cannot self-approve or self-complete; only the master/user runs these commands. Completing the lead auto-drops the workspace when all tasks are terminal.
 
