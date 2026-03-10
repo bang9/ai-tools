@@ -47,8 +47,8 @@ const modes: Record<Mode, ModeConfig> = {
   workspace: {
     eyebrow: 'Workspace',
     title: 'Stacked task work',
-    description: 'When the work branches, the lead collaborates with one AI companion agent. The companion agent shapes the stack, assigns sub agents, manages dependencies, and escalates review only when it matters.',
-    tags: ['dependency-aware', 'stack order', 'review only when needed'],
+    description: 'When the work branches, you assign a Workspace Lead — an AI companion agent that autonomously shapes the stack, dispatches workers, manages dependencies, and escalates review only when it matters.',
+    tags: ['workspace lead', 'autonomous orchestration', 'dependency-aware', 'review only when needed'],
   },
 }
 
@@ -94,7 +94,7 @@ function WorkspaceVisual() {
         <div className="shadow-[inset_0_-1px_0_rgba(255,255,255,0.2)] dark:shadow-[inset_0_-1px_0_rgba(255,255,255,0.04)] lg:shadow-[inset_-1px_0_0_rgba(255,255,255,0.2)] lg:dark:shadow-[inset_-1px_0_0_rgba(255,255,255,0.04)]">
           <div className="px-5 py-5">
             <div className="rounded-2xl bg-white/40 px-4 py-4 text-[#334155] shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_4px_16px_rgba(76,94,160,0.05)] backdrop-blur-[12px] backdrop-saturate-[1.4] dark:bg-white/[0.04] dark:text-[#c4d5ff] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-[#94a3b8] dark:text-[#6878a0]">You + Companion Agent</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-[#94a3b8] dark:text-[#6878a0]">You → Workspace Lead</div>
               <div className="mt-2 text-sm leading-7">
                 "Ship the incident replay workflow."
                 <br />
@@ -108,18 +108,18 @@ function WorkspaceVisual() {
             >
               <div className="flex items-center gap-2">
                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100/80 text-[9px] font-bold text-violet-600 dark:bg-violet-400/20 dark:text-violet-300">AI</span>
-                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085] dark:text-white/55">AI companion agent</span>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085] dark:text-white/55">Workspace Lead</span>
               </div>
               <div className="mt-1.5 text-sm font-semibold">Owns the run shape</div>
               <div className="mt-1.5 text-sm leading-7 text-[#667085] dark:text-white/75">
-                Assigns sub agents, preserves stack order, and routes only the critical review moment back to you.
+                Dispatches workers, preserves stack order, and routes only the critical review moment back to you.
               </div>
             </motion.div>
           </div>
         </div>
 
         <div className="px-5 py-5">
-          <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-[#94a3b8] dark:text-[#6878a0]">Task lanes</div>
+          <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-[#94a3b8] dark:text-[#6878a0]">Workers</div>
           <div className="grid grid-cols-2 gap-2.5">
             {stackedLanes.map(lane => (
               <motion.div
