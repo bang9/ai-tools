@@ -1,6 +1,6 @@
 {
   "name": "webform",
-  "version": "v2.0.0",
+  "version": "v2.1.0",
   "description": "Dynamic browser form for collecting structured user input in Claude Code sessions",
   "author": {
     "name": "Airen Kang",

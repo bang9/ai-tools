@@ -1,6 +1,6 @@
 {
   "name": "vaultkey",
-  "version": "v2.0.0",
+  "version": "v2.1.0",
   "description": "Encrypted secrets manager for Claude Code sessions backed by a private Git repo",
   "author": {
     "name": "Airen Kang",

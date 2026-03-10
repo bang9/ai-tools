@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "A collection of tools for Claude Code to operate more efficiently",
-    "version": "v2.0.0"
+    "version": "v2.1.0"
   },
   "plugins": [
     {
       "name": "claude-irc",
       "source": "./claude-irc",
       "description": "IRC-inspired inter-session communication for Claude Code agents",
-      "version": "v2.0.0",
+      "version": "v2.1.0",
       "author": {
         "name": "Airen Kang"
       },
@@ -32,7 +32,7 @@
       "name": "redit",
       "source": "./redit",
       "description": "Remote Edit Layer - Local cache for efficiently editing remote documents",
-      "version": "v2.0.0",
+      "version": "v2.1.0",
       "author": {
         "name": "Airen Kang"
       },
@@ -52,7 +52,7 @@
       "name": "vaultkey",
       "source": "./vaultkey",
       "description": "Encrypted secrets manager for Claude Code sessions backed by a private Git repo",
-      "version": "v2.0.0",
+      "version": "v2.1.0",
       "author": {
         "name": "Airen Kang"
       },
@@ -71,7 +71,7 @@
       "name": "webform",
       "source": "./webform",
       "description": "Dynamic browser form for collecting structured user input in Claude Code sessions",
-      "version": "v2.0.0",
+      "version": "v2.1.0",
       "author": {
         "name": "Airen Kang"
       },
@@ -90,7 +90,7 @@
       "name": "whip",
       "source": "./whip",
       "description": "Task orchestrator for Claude Code — spawn and manage multiple task sessions",
-      "version": "v2.0.0",
+      "version": "v2.1.0",
       "author": {
         "name": "Airen Kang"
       },
