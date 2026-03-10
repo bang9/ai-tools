@@ -75,9 +75,12 @@ claude-irc inbox
 ## Decide Mode
 
 Look at the user's request:
-- **Solo agent**: One clear, self-contained piece of work
-- **Agent team**: Work that decomposes into 2 or more independent parallel tasks
-- **Ambiguous**: Default to solo. Do not over-decompose.
+- **Lead-managed workspace**: Named workspace with multiple tasks or a stacked lane → Lead Flow
+- **Solo agent**: One clear, self-contained piece of work → Solo Flow
+- **Direct team**: `global` workspace or explicit request to manage multiple agents directly → Team Flow
+- **Ambiguous**: Default to solo. If the user wants a named workspace, prefer Lead Flow over direct team management.
+
+Named workspaces should default to Lead Flow. Keep Team Flow for `global` work or when the user explicitly wants direct control of worker tasks from the master session.
 
 ## Choose Backend
 
@@ -120,6 +123,8 @@ Monitor the agent: review its initial plan when it arrives, respond to questions
 
 ## Team Flow
 
+Use Team Flow only for `global` work or when the user explicitly wants direct master control over worker tasks. For named workspaces, prefer Lead Flow.
+
 ### Step 1: Assemble the team
 
 Define each agent's role and scope. Each agent should:
@@ -138,10 +143,10 @@ Parallelization guardrails:
 
 Create all tasks, encode stack order if needed, then assign independent tasks. Downstream stack tasks auto-assign when their prerequisites complete.
 
-If you are continuing a named workspace, inspect it first with `whip workspace view <workspace-name>`. If it already has a `worktree_path`, use that path as the working-directory context for your own repo commands. If it does not exist yet, the first `whip task create --workspace <workspace-name>` below will ensure it.
+If you are using a named workspace for direct team control, inspect it first with `whip workspace view <workspace-name>`. If it already has a `worktree_path`, use that path as the working-directory context for your own repo commands. If it does not exist yet, the first `whip task create --workspace <workspace-name>` below will ensure it. For `global`, skip this step and omit `--workspace`.
 
 ```bash
-whip task create "<agent role/title>" --workspace <workspace-name> --backend <chosen-backend> --difficulty <level> --desc "## Objective
+whip task create "<agent role/title>" [--workspace <workspace-name>] --backend <chosen-backend> --difficulty <level> --desc "## Objective
 <what needs to be done>
 
 ## Scope
@@ -181,6 +186,76 @@ As agents complete:
 ### Step 5: Wrap up
 
 When all agents are done, summarize what was accomplished across the team. If this named workspace was temporary and the user wants it removed, run `whip workspace drop <workspace-name>` after all deliverables are accepted. Do not run `claude-irc quit`; stay connected for future dispatches.
+
+---
+
+## Lead Flow
+
+Use Lead Flow when the work belongs in a named workspace with multiple tasks. Create one lead task, give it the full workspace objective plus worker specs, and let that lead create, assign, and monitor workers inside the workspace.
+
+### Step 1: Create the lead task
+
+If you are continuing an existing named workspace, inspect it first with `whip workspace view <workspace-name>`. If it already has a `worktree_path`, use that path as the working-directory context for your own repo commands. If it does not exist yet, the first `whip task create --workspace <workspace-name>` below will ensure it.
+
+```bash
+whip task create "<workspace lead title>" --role lead --workspace <workspace-name> --backend <chosen-backend> --difficulty hard --desc "## Workspace Objective
+<overall outcome>
+
+## Worker Tasks
+
+### Worker 1: <title>
+- Backend: claude | codex
+- Difficulty: easy | medium | hard
+- Depends on: (none) | Worker 2, Worker 3
+- Scope:
+  - In: <files/areas to modify>
+  - Out: <what NOT to touch>
+- Objective: <specific deliverable>
+- Acceptance Criteria:
+  - <specific, verifiable condition>
+  - <specific, verifiable condition>
+
+### Worker 2: <title>
+..."
+```
+
+### Step 2: Assign the lead
+
+```bash
+whip task assign <lead-id>
+```
+
+### Step 3: Monitor the lead
+
+- Start `/loop 1m claude-irc inbox` so lead escalations surface while you work.
+- Use `whip task list` to monitor overall workspace state.
+- Review lead updates and answer questions promptly.
+
+### Step 4: Handle escalations from the lead
+
+- The Workspace Lead is autonomous for worker creation, assignment, coordination, and review handoffs.
+- If the lead needs user input, cross-task alignment, or policy decisions, answer it and let the lead continue.
+- Mirror important lead decisions or blockers into the main user chat.
+
+### Step 5: Complete the lead
+
+Once the lead has delivered the workspace result and any review-gated follow-up is done, the master session runs:
+
+```bash
+whip task complete <lead-id>
+```
+
+The Lead cannot self-complete; only master can complete the lead task.
+
+### Step 6: Optionally drop the workspace
+
+If the named workspace was temporary and the user wants it removed, run:
+
+```bash
+whip workspace drop <workspace-name>
+```
+
+Do not run `claude-irc quit`; stay connected for future dispatches.
 
 ---
 

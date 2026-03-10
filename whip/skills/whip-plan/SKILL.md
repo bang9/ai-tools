@@ -62,6 +62,12 @@ Decompose the work into tasks following these principles:
 - **Round 2**: Tasks that consume Round 1 outputs (clients, integrations, features using the API)
 - **Round 3**: Tasks that need Round 2 (UI pages consuming clients, CLI wiring everything together)
 
+### Lead role for named workspaces
+- Every named workspace gets a Workspace Lead.
+- The Lead is an autonomous orchestrator that receives all worker task specs in its description, creates, assigns, and monitors workers, and escalates to master when needed.
+- The lead task owns the workspace objective and should always be planned as `hard`.
+- For named workspaces, plan worker tasks as specs nested under the Workspace Lead instead of as separate top-level task specs.
+
 ### Task sizing
 - Each task should be completable by a single agent in one session
 - Too small = overhead of coordination exceeds the work
@@ -111,7 +117,7 @@ Present a clear, structured plan to the user:
 
 ### Task Graph
 
-Workspace: `global` | `<workspace-name>`
+Workspace: `global`
 
 Round 1 (parallel):
 - [easy][claude] Task A: <title> — <1-line scope>
@@ -124,11 +130,19 @@ Round 2 (after Round 1):
 Round 3 (after Round 2):
 - [medium][claude] Task E: <title> — <1-line scope> (depends on: C)
 
+Workspace: `<workspace-name>`
+Lead: [hard][codex] Workspace Lead — <1-line scope>
+  Workers managed by lead:
+  - [easy][claude] Task A: <title> — <1-line scope>
+  - [medium][codex] Task B: <title> — <1-line scope> (after: Task A)
+
 ### Stack Diagram
 
 A ──┬──→ C ──→ E
 B ──┘
 A ──→ D
+
+Lead ──→ Task A ──→ Task B
 
 ### Key Design Decisions
 - <why you split things this way>
@@ -156,6 +170,8 @@ Once the user approves, write the full plan content **directly to the plan mode 
 
 The plan file takes the high-level graph from plan mode and fleshes it out into concrete, agent-ready task specifications. Use the codebase knowledge gathered during exploration (Step 3) to fill in exact file paths, function signatures, API shapes, and existing code references. Each task must include enough detail for an agent to work independently — the agent won't have any of the planning context.
 
+For `global`, keep one top-level task spec per task. For a named workspace, emit a single Workspace Lead task spec whose description contains the workspace objective and all worker specs the lead will execute.
+
 ```markdown
 # <Project Title>
 
@@ -164,7 +180,7 @@ The plan file takes the high-level graph from plan mode and fleshes it out into 
 ### Task 1: <title>
 - **Backend**: claude | codex
 - **Difficulty**: easy | medium | hard
-- **Workspace**: global | <workspace-name>
+- **Workspace**: global
 - **Depends on**: (none) | Task 2, Task 3
 - **Scope**:
   - In: <files to create/modify>
@@ -186,7 +202,42 @@ The plan file takes the high-level graph from plan mode and fleshes it out into 
 ...
 ```
 
-**What makes a good task description:**
+For a named workspace, use this shape instead:
+
+```markdown
+# <Project Title>
+
+## Tasks
+
+### Workspace Lead: <workspace-name>
+- Role: lead
+- Backend: claude | codex
+- Difficulty: hard
+- Workspace: <workspace-name>
+- Description:
+
+  ## Workspace Objective
+  <overall workspace outcome>
+
+  ## Worker Tasks
+
+  ### Worker 1: <title>
+  - Backend: claude | codex
+  - Difficulty: easy | medium | hard
+  - Depends on: (none) | Worker 2, Worker 3
+  - Scope:
+    - In: <files to create/modify>
+    - Out: <files NOT to touch>
+  - Objective: <what needs to be done — be specific>
+  - Acceptance Criteria:
+    - <specific, verifiable condition>
+    - <specific, verifiable condition>
+
+  ### Worker 2: <title>
+  ...
+```
+
+**What makes a good task or worker description:**
 - Explicit backend choice when it matters or when the user specified one
 - File paths and function names, not vague references
 - Exact API shapes (request/response JSON, endpoint paths, headers)
