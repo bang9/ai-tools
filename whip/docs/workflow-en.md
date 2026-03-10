@@ -266,7 +266,7 @@ whip task complete <id> --note "JWT + refresh token auth. Files: src/auth/, src/
 
 When a task completes, `whip` checks if any downstream stack tasks are now unblocked and auto-assigns them.
 
-If the task was created with a review gate, the lifecycle is explicit:
+If the task was created with a review gate (always true for lead tasks), the lifecycle is explicit:
 
 ```bash
 # Agent side

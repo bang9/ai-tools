@@ -181,7 +181,7 @@ When all agents are done, summarize what was accomplished across the team. If th
 
 ## Lead Flow
 
-Use Lead Flow when the work belongs in a named workspace with multiple tasks. Create one lead task, give it the full workspace objective plus worker specs, and let that lead create, assign, and monitor workers inside the workspace.
+Use Lead Flow when the work belongs in a named workspace with multiple tasks. Create one lead task, give it the full workspace objective plus worker specs, and let that lead create, assign, and monitor workers inside the workspace. Lead tasks are always review-gated (enforced automatically — `--review` is implicit).
 
 ### Step 1: Create the lead task
 
@@ -227,23 +227,20 @@ whip task assign <lead-id>
 - If the lead needs user input, cross-task alignment, or policy decisions, answer it and let the lead continue.
 - Mirror important lead decisions or blockers into the main user chat.
 
-### Step 5: Complete the lead
+### Step 5: Review and complete the lead
 
-Once the lead has delivered the workspace result and any review-gated follow-up is done, the master session runs:
+Lead tasks follow this lifecycle: `in_progress → review → approved → completed`.
 
-```bash
-whip task complete <lead-id>
-```
-
-The Lead cannot self-complete; only master can complete the lead task.
-
-### Step 6: Optionally drop the workspace
-
-If the named workspace was temporary and the user wants it removed, run:
+When the lead submits itself for review (`whip task review <lead-id>`), inspect the workspace changes, then:
 
 ```bash
-whip workspace drop <workspace-name>
+whip task approve <lead-id>    # review → approved
+whip task complete <lead-id>   # approved → completed (auto-drops workspace)
 ```
+
+If changes need rework: `whip task request-changes <lead-id> --note "..."` sends the lead back to `in_progress`.
+
+The Lead cannot self-approve or self-complete; only the master/user runs these commands. Completing the lead auto-drops the workspace when all tasks are terminal.
 
 Do NOT run `claude-irc quit` — stay connected for future dispatches.
 

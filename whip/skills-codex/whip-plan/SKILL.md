@@ -67,6 +67,7 @@ Decompose the work into tasks following these principles.
 - Every named workspace gets a Workspace Lead.
 - The Lead is an autonomous orchestrator that receives all worker task specs in its description, creates, assigns, and monitors workers, and escalates to master when needed.
 - The lead task owns the workspace objective and should always be planned as `hard`.
+- Lead tasks are always review-gated (enforced automatically); lifecycle: `in_progress → review → approved → completed (auto-drops workspace)`.
 - For named workspaces, plan worker tasks as specs nested under the Workspace Lead instead of as separate top-level task specs.
 
 ### Task sizing

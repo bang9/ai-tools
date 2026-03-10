@@ -130,15 +130,26 @@ Workers commit to the workspace worktree branch. Before reporting completion to 
 3. If workers left unpushed commits, push them: ` + "`git push`" + `
 
 ## Workspace Completion
+
+Lead tasks are always review-gated. Follow this exact flow:
+
+` + "```" + `
+in_progress ──[you]──▶ review ──[master]──▶ approved ──[master]──▶ completed (auto-drops workspace)
+` + "```" + `
+
 When all workers are done and deliverables verified:
 1. Verify git state: all changes committed and pushed (see Git Workflow above)
 2. Summarize what was accomplished across the workspace
 `)
-	fmt.Fprintf(&b, "3. Report to Master: claude-irc msg %s \"Workspace %s complete. All changes committed and pushed. Summary: <deliverables>\"\n",
+	fmt.Fprintf(&b, "3. Report to Master via IRC: claude-irc msg %s \"Workspace %s complete. All changes committed and pushed to branch. Summary: <deliverables>. Ready for review.\"\n",
 		masterIRC, workspace)
-	b.WriteString(`4. **Do NOT run ` + "`whip task complete`" + ` on your own task — only the master/user can complete the lead task.**
-5. Stay connected and only run ` + "`claude-irc quit`" + ` after master confirms.
+	fmt.Fprintf(&b, "4. Submit yourself for review: `whip task review %s`\n", task.ID)
+	b.WriteString(`5. **Wait for Master.** Master will review your workspace, then run ` + "`approve`" + ` and ` + "`complete`" + `.
+6. **Do NOT run ` + "`whip task approve`" + ` or ` + "`whip task complete`" + ` on your own task.**
+7. Stay connected and only run ` + "`claude-irc quit`" + ` after master confirms.
+`)
 
+	b.WriteString(`
 ## Home Context
 - Home context (READ-ONLY): WHIP_HOME/home/ (default: ~/.whip/home/)
   - memory.md: User preferences and operational guidelines

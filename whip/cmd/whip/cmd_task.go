@@ -47,6 +47,7 @@ func createCmd() *cobra.Command {
 				if difficulty == "" {
 					difficulty = "hard"
 				}
+				review = true // lead tasks are always review-gated
 			}
 
 			description, err := resolveDescription(desc, file)
@@ -108,9 +109,9 @@ func createCmd() *cobra.Command {
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name (default: global)")
 	cmd.Flags().StringVar(&difficulty, "difficulty", "", "Task difficulty (hard, medium, easy)")
 	cmd.Flags().Lookup("difficulty").Shorthand = "d"
-	cmd.Flags().BoolVar(&review, "review", false, "Require review before completion (medium/hard only)")
+	cmd.Flags().BoolVar(&review, "review", false, "Require review before completion (medium/hard only; always enabled for --role lead)")
 	cmd.Flags().StringVar(&backend, "backend", "", "AI backend (default: claude)")
-	cmd.Flags().StringVar(&role, "role", "", `Task role: "lead" creates a Workspace Lead that autonomously manages workers (requires --workspace)`)
+	cmd.Flags().StringVar(&role, "role", "", `Task role: "lead" creates a Workspace Lead that autonomously manages workers (requires --workspace, always review-gated)`)
 
 	return cmd
 }
