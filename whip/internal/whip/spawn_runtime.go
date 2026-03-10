@@ -50,9 +50,18 @@ func AutoAssignDependents(store *Store, completedID string) ([]string, error) {
 			continue
 		}
 
-		masterIRC := WorkspaceMasterIRCName(dep.WorkspaceName())
-		if dep.WorkspaceName() == GlobalWorkspaceName {
-			masterIRC = DefaultMasterIRCName(cfg)
+		var masterIRC string
+		if dep.WorkspaceName() != GlobalWorkspaceName && dep.Role != TaskRoleLead {
+			lead, err := store.FindWorkspaceLead(dep.WorkspaceName())
+			if err == nil && lead != nil && lead.IRCName != "" {
+				masterIRC = lead.IRCName
+			}
+		}
+		if masterIRC == "" {
+			masterIRC = WorkspaceMasterIRCName(dep.WorkspaceName())
+			if dep.WorkspaceName() == GlobalWorkspaceName {
+				masterIRC = DefaultMasterIRCName(cfg)
+			}
 		}
 
 		dep, err = AssignTask(store, dep.ID, LaunchSource{Actor: "auto", Command: "auto-assign"}, masterIRC)

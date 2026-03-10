@@ -169,7 +169,7 @@ func defaultMasterPrompt() string {
 Run these commands to initialize your session:
 
 1. Join the communication channel:
-   claude-irc join "${WHIP_MASTER_IRC:-whip-master}"
+   claude-irc join "${WHIP_MASTER_IRC:-wp-master}"
 
 2. Enable periodic message check:
    /loop 1m claude-irc inbox
@@ -195,7 +195,7 @@ WHIP_HOME/home/ (default: ~/.whip/home/) persists across master sessions.
 ## Workspace Context
 - The current workspace master identity is passed via the WHIP_MASTER_IRC environment variable.
 - Use that value consistently for claude-irc join, approvals, and coordination.
-- whip-master is only the legacy default for the global workspace.
+- wp-master is only the legacy default for the global workspace.
 
 ## Memory Management
 - Default to read-only use.

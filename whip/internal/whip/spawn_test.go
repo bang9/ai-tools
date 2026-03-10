@@ -16,7 +16,7 @@ func TestTerminationCommand_Tmux(t *testing.T) {
 	task.ShellPID = 1234
 
 	cmd := terminationCommand(task)
-	if !strings.Contains(cmd, "tmux kill-session -t 'whip-abc12'") {
+	if !strings.Contains(cmd, "tmux kill-session -t 'wp-abc12'") {
 		t.Fatalf("terminationCommand() = %q, want tmux session kill", cmd)
 	}
 }

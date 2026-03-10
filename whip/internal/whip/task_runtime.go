@@ -52,7 +52,7 @@ func AssignTask(store *Store, id string, source LaunchSource, masterIRC string) 
 
 		prev = captureTaskRuntimeSnapshot(task)
 		from := task.Status
-		resolvedMasterIRC := resolveTaskMasterIRC(task, masterIRC)
+		resolvedMasterIRC := resolveTaskMasterIRC(store, task, masterIRC)
 		prepareAssignedTask(task, resolvedMasterIRC)
 		task.RecordEvent(source.Actor, source.Command, "assigned", from, task.Status, fmt.Sprintf("irc=%s master=%s", task.IRCName, task.MasterIRCName))
 		return nil
@@ -220,16 +220,31 @@ func requireTaskStatuses(task *Task, allowed ...TaskStatus) error {
 	return fmt.Errorf("task %s is %s; expected %s", task.ID, task.Status, FormatTaskStatusSet(allowed))
 }
 
-func resolveTaskMasterIRC(task *Task, masterIRC string) string {
+func resolveTaskMasterIRC(store *Store, task *Task, masterIRC string) string {
 	masterIRC = strings.TrimSpace(masterIRC)
-	if masterIRC == "" {
+	if masterIRC != "" {
+		return masterIRC
+	}
+	// Lead tasks report to workspace master (human Master)
+	if task.Role == TaskRoleLead {
 		return WorkspaceMasterIRCName(task.WorkspaceName())
 	}
-	return masterIRC
+	// Worker tasks in named workspaces: route to Lead if active
+	if task.WorkspaceName() != GlobalWorkspaceName {
+		lead, err := store.FindWorkspaceLead(task.WorkspaceName())
+		if err == nil && lead != nil && lead.IRCName != "" {
+			return lead.IRCName
+		}
+	}
+	return WorkspaceMasterIRCName(task.WorkspaceName())
 }
 
 func prepareAssignedTask(task *Task, masterIRC string) {
-	task.IRCName = "whip-" + task.ID
+	if task.Role == TaskRoleLead {
+		task.IRCName = WorkspaceLeadIRCName(task.WorkspaceName())
+	} else {
+		task.IRCName = "wp-" + task.ID
+	}
 	task.MasterIRCName = masterIRC
 	if task.Backend == "" {
 		task.Backend = DefaultBackendName

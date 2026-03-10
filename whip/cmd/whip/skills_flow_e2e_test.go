@@ -106,7 +106,7 @@ func TestWhipStartSoloFlowRegression(t *testing.T) {
 	}
 
 	ircLog := readIRCLog(t, h.fake.ircLogPath)
-	if !strings.Contains(ircLog, "msg target=whip-"+normalID+" text=Broadcast to active task") {
+	if !strings.Contains(ircLog, "msg target=wp-"+normalID+" text=Broadcast to active task") {
 		t.Fatalf("broadcast log missing normal task message:\n%s", ircLog)
 	}
 
@@ -169,10 +169,10 @@ func TestWhipStartReviewFlowRegression(t *testing.T) {
 	}
 
 	ircLog := readIRCLog(t, h.fake.ircLogPath)
-	if !strings.Contains(ircLog, "msg target=whip-"+reviewID+" text=Task "+reviewID+" needs changes.") {
+	if !strings.Contains(ircLog, "msg target=wp-"+reviewID+" text=Task "+reviewID+" needs changes.") {
 		t.Fatalf("request-changes log missing review notification:\n%s", ircLog)
 	}
-	if !strings.Contains(ircLog, "msg target=whip-"+reviewID+" text=Task "+reviewID+" approved.") {
+	if !strings.Contains(ircLog, "msg target=wp-"+reviewID+" text=Task "+reviewID+" approved.") {
 		t.Fatalf("approval log missing review notification:\n%s", ircLog)
 	}
 

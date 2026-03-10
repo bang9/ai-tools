@@ -15,7 +15,7 @@ func (m DashboardModel) ircPeers() []peerInfo {
 		if p.Name == "user" {
 			continue
 		}
-		if strings.HasPrefix(p.Name, "whip-master") {
+		if strings.HasPrefix(p.Name, "wp-master") {
 			cp := p
 			master = &cp
 		} else if p.Online {

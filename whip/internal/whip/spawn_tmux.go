@@ -6,7 +6,7 @@ import (
 )
 
 func tmuxSessionName(taskID string) string {
-	return "whip-" + taskID
+	return "wp-" + taskID
 }
 
 func SpawnTmuxSession(sessionName string, shellCmd string) error {
