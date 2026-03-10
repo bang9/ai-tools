@@ -28,6 +28,9 @@ func TestCodexBackend_GeneratePrompt(t *testing.T) {
 	if !strings.Contains(prompt, "projects.md: Project registry with paths and tech stacks") {
 		t.Fatalf("prompt should reference projects.md")
 	}
+	if strings.Contains(prompt, "Workspace Lead") {
+		t.Fatalf("worker prompt should not use the lead identity")
+	}
 }
 
 func TestClaudeBackend_GeneratePrompt(t *testing.T) {
@@ -58,6 +61,9 @@ func TestClaudeBackend_GeneratePrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "projects.md: Project registry with paths and tech stacks") {
 		t.Error("prompt should reference projects.md")
+	}
+	if strings.Contains(prompt, "Workspace Lead") {
+		t.Error("worker prompt should not use the lead identity")
 	}
 }
 
@@ -99,5 +105,59 @@ func TestReviewPrompt_IncludesRequestChangesFlow(t *testing.T) {
 	codexPrompt := (&CodexBackend{}).GeneratePrompt(task)
 	if !strings.Contains(codexPrompt, "continue from the task's returned in_progress state") {
 		t.Fatalf("Codex review prompt should mention resuming after request-changes")
+	}
+}
+
+func TestClaudeBackend_GeneratePrompt_LeadTask(t *testing.T) {
+	b := &ClaudeBackend{}
+	task := NewTask("Workspace rollout", "Break this work into worker tasks and manage the workspace.", "/tmp")
+	task.Role = TaskRoleLead
+	task.Workspace = "issue-sweep"
+	task.IRCName = WorkspaceLeadIRCName(task.Workspace)
+	task.MasterIRCName = WorkspaceMasterIRCName(task.Workspace)
+
+	prompt := b.GeneratePrompt(task)
+
+	for _, want := range []string{
+		"Workspace Lead",
+		"whip workspace view issue-sweep",
+		"whip task list --workspace issue-sweep",
+		"whip task create \"<title>\" --workspace issue-sweep",
+		"whip task dep <downstream-task-id> --after <upstream-task-id>",
+		"whip task assign <task-id>",
+		"whip task approve <task-id>",
+		"whip task request-changes <task-id> --note",
+		"Do NOT run `whip task complete` on your own task",
+		"memory.md: User preferences and operational guidelines",
+		"projects.md: Project registry with paths and tech stacks",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("lead prompt missing %q", want)
+		}
+	}
+
+	if !strings.Contains(prompt, "resume management — do NOT re-create them") {
+		t.Fatalf("lead prompt should include the recovery check")
+	}
+}
+
+func TestCodexBackend_GeneratePrompt_LeadTask(t *testing.T) {
+	b := &CodexBackend{}
+	task := NewTask("Workspace rollout", "Break this work into worker tasks and manage the workspace.", "/tmp")
+	task.Role = TaskRoleLead
+	task.Workspace = "issue-sweep"
+	task.IRCName = WorkspaceLeadIRCName(task.Workspace)
+	task.MasterIRCName = WorkspaceMasterIRCName(task.Workspace)
+
+	prompt := b.GeneratePrompt(task)
+
+	if !strings.Contains(prompt, "Workspace Lead") {
+		t.Fatalf("lead prompt should use the lead identity")
+	}
+	if !strings.Contains(prompt, "Run claude-irc inbox now") {
+		t.Fatalf("Codex lead prompt should include manual inbox guidance")
+	}
+	if strings.Contains(prompt, "/loop 1m claude-irc inbox") {
+		t.Fatalf("Codex lead prompt should not contain Claude-only loop command")
 	}
 }

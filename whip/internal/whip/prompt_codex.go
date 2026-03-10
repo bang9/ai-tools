@@ -3,18 +3,7 @@ package whip
 import "strings"
 
 func generateCodexPrompt(task *Task) string {
-	prompt := generateClaudePrompt(task)
-	old := `
-4. Enable periodic message check:
-   /loop 1m claude-irc inbox
-`
-	new := `
-4. Check for new messages manually throughout the task:
-   - Run claude-irc inbox now
-   - Run claude-irc inbox after each meaningful chunk of work
-   - Run claude-irc inbox before status changes or when you think the lead replied
-`
-	prompt = strings.Replace(prompt, old, new, 1)
+	prompt := replaceClaudeLoopWithManualInbox(generateClaudePrompt(task))
 	if task.Review {
 		prompt += `
 
@@ -27,4 +16,18 @@ Because this backend may not stay attached through approval/finalization, treat 
 `
 	}
 	return prompt
+}
+
+func replaceClaudeLoopWithManualInbox(prompt string) string {
+	old := `
+4. Enable periodic message check:
+   /loop 1m claude-irc inbox
+`
+	new := `
+4. Check for new messages manually throughout the task:
+   - Run claude-irc inbox now
+   - Run claude-irc inbox after each meaningful chunk of work
+   - Run claude-irc inbox before status changes or when you think the lead replied
+`
+	return strings.Replace(prompt, old, new, 1)
 }

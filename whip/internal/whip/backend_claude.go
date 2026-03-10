@@ -13,6 +13,9 @@ type ClaudeBackend struct{}
 func (b *ClaudeBackend) Name() string { return "claude" }
 
 func (b *ClaudeBackend) GeneratePrompt(task *Task) string {
+	if task.Role == TaskRoleLead {
+		return generateClaudeLeadPrompt(task)
+	}
 	return generateClaudePrompt(task)
 }
 

@@ -13,6 +13,9 @@ type CodexBackend struct{}
 func (b *CodexBackend) Name() string { return "codex" }
 
 func (b *CodexBackend) GeneratePrompt(task *Task) string {
+	if task.Role == TaskRoleLead {
+		return generateCodexLeadPrompt(task)
+	}
 	return generateCodexPrompt(task)
 }
 
