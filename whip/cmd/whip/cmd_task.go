@@ -12,7 +12,7 @@ import (
 )
 
 func createCmd() *cobra.Command {
-	var desc, file, cwd, difficulty, backend, workspace string
+	var desc, file, cwd, difficulty, backend, workspace, role string
 	var review bool
 
 	cmd := &cobra.Command{
@@ -37,6 +37,17 @@ func createCmd() *cobra.Command {
 			if err := whip.ValidateWorkspaceName(workspace); err != nil {
 				return err
 			}
+			if role != "" && role != whip.TaskRoleLead {
+				return fmt.Errorf("invalid role %q: must be \"lead\" or omitted", role)
+			}
+			if role == whip.TaskRoleLead {
+				if whip.NormalizeWorkspaceName(workspace) == whip.GlobalWorkspaceName {
+					return fmt.Errorf("--role lead requires a named workspace (use --workspace)")
+				}
+				if difficulty == "" {
+					difficulty = "hard"
+				}
+			}
 
 			description, err := resolveDescription(desc, file)
 			if err != nil {
@@ -56,6 +67,15 @@ func createCmd() *cobra.Command {
 			}
 
 			workspace = whip.NormalizeWorkspaceName(workspace)
+			if role == whip.TaskRoleLead {
+				existingLead, err := store.FindWorkspaceLead(workspace)
+				if err != nil {
+					return err
+				}
+				if existingLead != nil {
+					return fmt.Errorf("workspace %q already has an active lead task %s", workspace, existingLead.ID)
+				}
+			}
 			if workspace != whip.GlobalWorkspaceName {
 				_, resolvedCWD, err := store.EnsureWorkspace(workspace, cwd)
 				if err != nil {
@@ -69,6 +89,7 @@ func createCmd() *cobra.Command {
 			task.Difficulty = difficulty
 			task.Review = review
 			task.Backend = backend
+			task.Role = role
 			task.RecordEvent("cli", "create", "created", "", task.Status, title)
 			if err := store.SaveTask(task); err != nil {
 				return err
@@ -88,6 +109,7 @@ func createCmd() *cobra.Command {
 	cmd.Flags().Lookup("difficulty").Shorthand = "d"
 	cmd.Flags().BoolVar(&review, "review", false, "Require review before completion (medium/hard only)")
 	cmd.Flags().StringVar(&backend, "backend", "", "AI backend (default: claude)")
+	cmd.Flags().StringVar(&role, "role", "", "Task role (lead)")
 
 	return cmd
 }
@@ -115,14 +137,15 @@ func listCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tWORKSPACE\tTITLE\tSTATUS\tIRC\tPID\tUPDATED")
+			fmt.Fprintln(w, "ID\tWORKSPACE\tTITLE\tSTATUS\tROLE\tIRC\tPID\tUPDATED")
 			for _, t := range tasks {
 				pid := formatShellPID(t)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 					t.ID,
 					t.WorkspaceName(),
 					truncate(t.Title, 30),
 					t.Status,
+					t.Role,
 					t.IRCName,
 					pid,
 					timeAgo(t.UpdatedAt),
@@ -167,6 +190,9 @@ func viewCmd() *cobra.Command {
 			fmt.Printf("Difficulty:  %s\n", diff)
 			if task.Review {
 				fmt.Printf("Review:      yes\n")
+			}
+			if task.Role != "" {
+				fmt.Printf("Role:        %s\n", task.Role)
 			}
 			fmt.Printf("CWD:         %s\n", task.CWD)
 			backend := task.Backend
