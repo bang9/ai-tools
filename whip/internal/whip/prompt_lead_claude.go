@@ -137,7 +137,13 @@ Before declaring the workspace done:
 `)
 	fmt.Fprintf(&b, "- Verify `whip task list --workspace %s` shows every required worker task delivered or intentionally closed.\n", workspace)
 	b.WriteString("- Confirm the actual deliverables exist and match the workspace objective.\n")
-	fmt.Fprintf(&b, "- Report the final summary to the master via claude-irc (%s) and record it in a lead note.\n", masterIRC)
+	b.WriteString(`- **Commit and push all changes** before reporting completion:
+  1. Create a feature branch from the current worktree state (e.g., ` + "`git checkout -b <descriptive-branch-name>`" + `)
+  2. Stage and commit all workspace changes
+  3. Push the branch to the remote (` + "`git push -u origin <branch-name>`" + `)
+`)
+	fmt.Fprintf(&b, "- Report the final summary to the master via claude-irc (%s). **Include the branch name and push status** so the master can verify.\n", masterIRC)
+	b.WriteString("- Record the summary in a lead note.\n")
 	b.WriteString("**Do NOT run `whip task complete` on your own task — only the master/user can complete the lead task. Stay connected and claude-irc quit only after master confirms.**\n")
 
 	b.WriteString(`

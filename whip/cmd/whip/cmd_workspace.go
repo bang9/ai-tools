@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"text/tabwriter"
 
@@ -137,63 +136,18 @@ func workspaceDropCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := whip.NormalizeWorkspaceName(args[0])
-			if name == whip.GlobalWorkspaceName {
-				return fmt.Errorf("global is not a named workspace")
-			}
 
 			store, err := whip.NewStore()
 			if err != nil {
 				return err
 			}
 
-			tasks, err := store.ListTasks()
+			count, err := whip.DropWorkspace(store, name, force)
 			if err != nil {
 				return err
 			}
 
-			var workspaceTasks []*whip.Task
-			for _, task := range tasks {
-				if task.WorkspaceName() == name {
-					workspaceTasks = append(workspaceTasks, task)
-				}
-			}
-
-			if !force {
-				for _, task := range workspaceTasks {
-					if task.Status.IsActive() {
-						return fmt.Errorf("workspace %s has active task %s (%s); rerun with --force", name, task.ID, task.Title)
-					}
-				}
-			}
-
-			for _, task := range workspaceTasks {
-				if task.Runner == "tmux" && whip.IsTmuxSession(task.ID) {
-					_ = whip.KillTmuxSession(task.ID)
-				}
-				if task.ShellPID > 0 && whip.IsProcessAlive(task.ShellPID) {
-					_ = whip.KillProcess(task.ShellPID)
-				}
-				if err := store.DeleteTask(task.ID); err != nil {
-					return err
-				}
-			}
-
-			workspace, err := store.LoadWorkspace(name)
-			if err != nil && !strings.Contains(err.Error(), "not found") {
-				return err
-			}
-			if workspace != nil {
-				if err := whip.RemoveWorkspaceWorktree(workspace); err != nil {
-					return err
-				}
-			}
-
-			if err := store.DeleteWorkspace(name); err != nil {
-				return err
-			}
-
-			_ = exec.Command("claude-irc", "clean").Run()
-			fmt.Fprintf(os.Stderr, "Dropped workspace %s (%d task(s))\n", name, len(workspaceTasks))
+			fmt.Fprintf(os.Stderr, "Dropped workspace %s (%d task(s))\n", name, count)
 			return nil
 		},
 	}

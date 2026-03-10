@@ -166,6 +166,17 @@ func completeCmd() *cobra.Command {
 				}
 			}
 
+			// Auto-drop workspace when a lead task completes
+			if task.Role == whip.TaskRoleLead && task.WorkspaceName() != whip.GlobalWorkspaceName {
+				wsName := task.WorkspaceName()
+				count, err := whip.DropWorkspace(store, wsName, false)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-drop workspace %s failed: %v\n", wsName, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "Auto-dropped workspace %s (%d task(s))\n", wsName, count)
+				}
+			}
+
 			return nil
 		},
 	}
