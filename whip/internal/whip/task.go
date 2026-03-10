@@ -2,6 +2,8 @@ package whip
 
 import "time"
 
+const TaskRoleLead = "lead"
+
 type Note struct {
 	Timestamp time.Time `json:"timestamp"`
 	Status    string    `json:"status"`
@@ -35,6 +37,7 @@ type Task struct {
 	Notes         []Note      `json:"notes,omitempty"`
 	Difficulty    string      `json:"difficulty,omitempty"`
 	Review        bool        `json:"review,omitempty"`
+	Role          string      `json:"role,omitempty"`
 	DependsOn     []string    `json:"depends_on"`
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
@@ -57,6 +60,10 @@ func NewTask(title, description, cwd string) *Task {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+}
+
+func (t *Task) IsLead() bool {
+	return t.Role == TaskRoleLead
 }
 
 func (t *Task) WorkspaceName() string {

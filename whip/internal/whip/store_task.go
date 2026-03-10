@@ -190,6 +190,23 @@ func (s *Store) GetDependents(id string) ([]*Task, error) {
 	return deps, nil
 }
 
+func (s *Store) FindWorkspaceLead(workspace string) (*Task, error) {
+	workspace = NormalizeWorkspaceName(workspace)
+	if workspace == GlobalWorkspaceName {
+		return nil, nil
+	}
+	tasks, err := s.ListTasks()
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		if t.WorkspaceName() == workspace && t.Role == TaskRoleLead && t.Status.IsActive() {
+			return t, nil
+		}
+	}
+	return nil, nil
+}
+
 // AreDependenciesMet checks if all dependencies of a task are completed.
 func (s *Store) AreDependenciesMet(task *Task) (bool, []string, error) {
 	var unmet []string

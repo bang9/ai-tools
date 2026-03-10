@@ -10,7 +10,7 @@ const (
 	GlobalWorkspaceName   = "global"
 	workspacesDir         = "workspaces"
 	workspaceFile         = "workspace.json"
-	DefaultGlobalMasterIRCName = "whip-master"
+	DefaultGlobalMasterIRCName = "wp-master"
 )
 
 var workspaceNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
@@ -40,6 +40,14 @@ func WorkspaceMasterIRCName(workspace string) string {
 		return DefaultGlobalMasterIRCName
 	}
 	return DefaultGlobalMasterIRCName + "-" + workspace
+}
+
+func WorkspaceLeadIRCName(workspace string) string {
+	workspace = NormalizeWorkspaceName(workspace)
+	if workspace == GlobalWorkspaceName {
+		return ""
+	}
+	return "wp-lead-" + workspace
 }
 
 func WorkspaceMasterSessionName(workspace string) string {
