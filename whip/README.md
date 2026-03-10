@@ -30,6 +30,13 @@ whip workspace view issue-sweep
 whip dashboard
 ```
 
+```bash
+# lead-managed workspace — the lead autonomously spawns and coordinates workers
+whip task create "Refactor auth system" --workspace auth-refactor --role lead --desc "Refactor auth to middleware pattern, update tests, write docs"
+whip task assign <task-id>
+# The lead session handles worker creation, IRC coordination, and review internally
+```
+
 ## Task Lifecycle
 
 ```text
@@ -75,7 +82,7 @@ For the exact CLI surface, use:
 
 | Command | Description |
 |---------|-------------|
-| `task create <title> [--desc/--file/stdin] [--workspace <name>]` | Create a task in `global` or a named workspace |
+| `task create <title> [--desc/--file/stdin] [--workspace <name>] [--role lead]` | Create a task in `global` or a named workspace; `--role lead` creates a Workspace Lead |
 | `task list` | List all tasks with status |
 | `task view <id>` | View task details |
 | `task lifecycle [id] [--format json]` | Show the full state machine or valid next actions for one task |
@@ -110,6 +117,36 @@ Workspace execution model:
 
 When continuing a named workspace, start with `whip workspace view <name>` and prefer its stored `worktree_path` for later repo inspection, tests, and review commands.
 
+## Workspace Lead
+
+Whip supports a **3-tier orchestration model**: master → lead → worker.
+
+In the default 2-tier model, the master session creates tasks and directly manages each worker agent. In the 3-tier model, the master creates a single **Workspace Lead** task that autonomously handles worker creation, IRC coordination, reviews, and progress reporting.
+
+```
+2-tier:  Master → Worker A, Worker B, Worker C
+3-tier:  Master → Lead → Worker A, Worker B, Worker C
+```
+
+Use the lead model when:
+- The workspace has many tasks and coordinating them manually is overhead
+- You want autonomous orchestration — the lead decides how to decompose and schedule work
+- You prefer a single point of contact instead of managing multiple agents directly
+
+Create a lead task with `--role lead`:
+
+```bash
+whip task create "Refactor auth system" --workspace auth-refactor --role lead --desc "..."
+whip task assign <lead-id>
+```
+
+The lead session receives a specialized prompt that enables it to:
+- Decompose the objective into worker tasks
+- Spawn and assign workers within the workspace
+- Coordinate workers via IRC, relay context, and manage reviews
+- Report aggregated progress back to the master
+- Only the master completes the lead task — the lead does not self-complete
+
 ## Dashboard
 
 `whip dashboard` opens the live TUI for:
@@ -142,8 +179,8 @@ Highlights:
 
 | Skill | Description |
 |-------|-------------|
-| `/whip-plan` | Decompose work into a `global` task or a stacked workspace plan |
-| `/whip-start` | Dispatch agents in `global` or a named workspace |
+| `/whip-plan` | Decompose work into a `global` task, a stacked workspace plan, or a lead-managed workspace |
+| `/whip-start` | Dispatch agents in `global` or a named workspace; supports `--role lead` for lead-managed workspaces |
 | `/whip-lesson-learn` | Write a real-world whip case-study under `.whip/lesson-learn/` |
 
 ## More Docs

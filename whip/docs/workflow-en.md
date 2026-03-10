@@ -4,12 +4,13 @@ This document describes how `whip` and `claude-irc` work together to orchestrate
 
 ## Overview
 
-The workflow follows a **master-agent** pattern:
+The workflow follows a **master-agent** pattern with two orchestration tiers:
 
-1. The **master session** (you, interacting with Claude Code) creates tasks, assigns them, and coordinates
-2. Each **agent session** runs in its own Terminal tab, works autonomously on a task, and communicates back via IRC
-3. `whip` manages task lifecycle (`whip task ...`) and workspace lifecycle (`whip workspace ...`)
-4. `claude-irc` provides the communication layer between sessions
+1. **2-tier (master → worker)**: The master session creates tasks, assigns workers directly, and coordinates them
+2. **3-tier (master → lead → worker)**: The master creates a Workspace Lead that autonomously spawns workers, coordinates them via IRC, and reports back
+3. Each **agent session** runs in its own Terminal tab, works autonomously on a task, and communicates back via IRC
+4. `whip` manages task lifecycle (`whip task ...`) and workspace lifecycle (`whip workspace ...`)
+5. `claude-irc` provides the communication layer between sessions
 
 ```mermaid
 sequenceDiagram
@@ -42,6 +43,38 @@ sequenceDiagram
     Agent->>IRC: quit
     Agent->>Whip: task complete <id> --note "summary"
     Whip-->>Master: Dependent tasks auto-assigned
+```
+
+In the 3-tier model, the lead acts as an intermediary orchestrator:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Master as Master Session
+    participant Whip as whip CLI
+    participant IRC as claude-irc
+    participant Lead as Lead Session
+    participant Worker as Worker Session(s)
+
+    User->>Master: Describe work to be done
+    Master->>Whip: task create --role lead --workspace <name>
+    Master->>Whip: task assign <lead-id>
+    Whip->>Lead: New Terminal tab with lead prompt
+
+    Lead->>IRC: join wp-lead-<workspace>
+    Lead->>Whip: task create (worker tasks)
+    Lead->>Whip: task assign (workers)
+    Whip->>Worker: New Terminal tabs with worker prompts
+
+    loop Lead coordination
+        Worker->>IRC: msg wp-lead-<workspace> "Progress..."
+        Lead->>IRC: msg wp-<worker-id> "Feedback..."
+        Lead->>IRC: msg wp-master-<workspace> "Status update..."
+    end
+
+    Worker->>Whip: task complete <id>
+    Lead->>IRC: msg wp-master-<workspace> "All workers done. Summary..."
+    Master->>Whip: task complete <lead-id>
 ```
 
 ## Key Concepts
@@ -335,16 +368,36 @@ Workspace execution model:
 - `git-worktree`: the first `whip task create --workspace <name>` runs in git, so whip ensures `WHIP_HOME/workspaces/<name>/worktree` and all task `cwd`s resolve inside it
 - `direct-cwd`: the first `whip task create --workspace <name>` runs outside git, so tasks keep using the provided `cwd` and `worktree_path` may be empty
 
-Key differences from Solo Flow:
+### Lead Flow
 
-| Aspect | Solo Flow | Team Flow |
-|--------|-----------|-----------|
-| Agents | 1 | 2+ parallel |
-| Planning | Minimal | Define roles, interfaces, ownership |
-| Stack order | None | Encode with `whip task dep` |
-| Execution model | Direct current cwd | `git-worktree` when in git, `direct-cwd` otherwise |
-| Communication | Master <-> Agent | Master <-> Agents + relay between agents |
-| Coordination | Low | Master relays context, manages interfaces |
+For workspaces where you want autonomous orchestration:
+
+```bash
+# Master creates a single lead task
+whip task create "Refactor auth system" --workspace auth-refactor --role lead --desc "..."
+whip task assign <lead-id>
+
+# The lead handles everything: decomposition, worker creation, coordination, reviews
+# Master monitors via dashboard or IRC
+whip dashboard
+```
+
+- One lead agent manages the entire workspace
+- The lead creates workers, coordinates them, and reports aggregated progress
+- The master only interacts with the lead, not individual workers
+- Only the master completes the lead task
+
+Key differences across all flows:
+
+| Aspect | Solo Flow | Team Flow | Lead Flow |
+|--------|-----------|-----------|-----------|
+| Agents | 1 | 2+ parallel | 1 lead + N workers |
+| Planning | Minimal | Define roles, interfaces, ownership | Lead decomposes autonomously |
+| Stack order | None | Encode with `whip task dep` | Lead manages internally |
+| Execution model | Direct current cwd | `git-worktree` when in git, `direct-cwd` otherwise | `git-worktree` (same as Team) |
+| Communication | Master <-> Agent | Master <-> Agents + relay between agents | Master <-> Lead <-> Workers |
+| Coordination | Low | Master relays context, manages interfaces | Lead handles all coordination |
+| Master overhead | Low | High (manage each agent) | Low (single point of contact) |
 
 ```mermaid
 flowchart TB
@@ -369,8 +422,21 @@ flowchart TB
         T_A4 --> T_Done[All completed]
     end
 
+    subgraph "Lead Flow"
+        L_Create[whip task create --role lead] --> L_Assign[whip task assign lead]
+        L_Assign --> L_Lead[Lead Session]
+        L_Lead --> L_W1[Worker A]
+        L_Lead --> L_W2[Worker B]
+        L_Lead --> L_W3[Worker C]
+        L_W1 --> L_Report[Lead reports to master]
+        L_W2 --> L_Report
+        L_W3 --> L_Report
+        L_Report --> L_Done[Master completes lead]
+    end
+
     Master --> S_Create
     Master --> T_Create
+    Master --> L_Create
 ```
 
 ---
@@ -480,7 +546,7 @@ whip task clean
 
 | Command | Description |
 |---------|-------------|
-| `whip task create <title> [--desc/--file/stdin] [--workspace <name>]` | Create a new task |
+| `whip task create <title> [--desc/--file/stdin] [--workspace <name>] [--role lead]` | Create a new task; `--role lead` creates a Workspace Lead |
 | `whip task list` | List all tasks with status |
 | `whip task view <id>` | View task details |
 | `whip task lifecycle [id] [--format json]` | Show the full state machine or valid next actions |

@@ -26,6 +26,21 @@ Workspace execution model:
 - `git-worktree`: first `whip task create --workspace <name>` ran inside git, so whip maintains `WHIP_HOME/workspaces/<name>/worktree`.
 - `direct-cwd`: first `whip task create --workspace <name>` ran outside git, so tasks keep using the provided cwd.
 
+## Workspace Lead
+
+Whip supports a 3-tier model: **master → lead → worker**.
+
+- A **Workspace Lead** is a task created with `--role lead` inside a named workspace.
+- The lead session autonomously decomposes work, spawns workers, coordinates them via IRC, manages reviews, and reports progress back to the master.
+- The master creates and assigns the lead task; the lead handles everything else within the workspace.
+- Only the master completes the lead task — the lead does not self-complete.
+- Worker tasks in a lead-managed workspace route their master IRC to the lead automatically.
+
+When to use the lead model:
+- Multi-task workspaces where manual coordination is overhead
+- When you want fire-and-forget orchestration from a single task
+- When the master should not manage individual workers
+
 ## Task Lifecycle
 
 Statuses:
@@ -71,6 +86,16 @@ whip task dep <deploy-id> --after <auth-id>
 whip task assign <auth-id>
 whip dashboard
 claude-irc inbox
+```
+
+```bash
+# lead-managed workspace — master delegates orchestration to a lead
+claude-irc join wp-master-auth-refactor
+whip task create "Refactor auth system" --workspace auth-refactor --role lead --desc "Refactor auth to middleware pattern, update tests, write docs"
+whip task assign <lead-id>
+# The lead autonomously creates workers, coordinates via IRC, and reports back
+# Monitor via dashboard or claude-irc inbox
+whip dashboard
 ```
 
 Useful operational commands:

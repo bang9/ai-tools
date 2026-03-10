@@ -4,12 +4,13 @@
 
 ## 개요
 
-워크플로우는 **마스터-에이전트** 패턴을 따릅니다:
+워크플로우는 **마스터-에이전트** 패턴을 따르며 두 가지 오케스트레이션 계층을 지원합니다:
 
-1. **마스터 세션** (사용자가 Claude Code와 대화하는 세션)이 태스크를 생성, 배정, 조율
-2. 각 **에이전트 세션**은 별도의 터미널 탭에서 실행되며, 태스크를 자율적으로 수행하고 IRC로 마스터와 통신
-3. `whip`이 태스크 라이프사이클(`whip task ...`)과 workspace 라이프사이클(`whip workspace ...`)을 관리
-4. `claude-irc`가 세션 간 통신 레이어를 제공
+1. **2-tier (마스터 → 워커)**: 마스터 세션이 태스크를 생성하고 워커를 직접 관리 및 조율
+2. **3-tier (마스터 → 리드 → 워커)**: 마스터가 Workspace Lead를 생성하면, 리드가 자율적으로 워커를 스폰하고 IRC로 조율하며 진행 상황을 보고
+3. 각 **에이전트 세션**은 별도의 터미널 탭에서 실행되며, 태스크를 자율적으로 수행하고 IRC로 통신
+4. `whip`이 태스크 라이프사이클(`whip task ...`)과 workspace 라이프사이클(`whip workspace ...`)을 관리
+5. `claude-irc`가 세션 간 통신 레이어를 제공
 
 ```mermaid
 sequenceDiagram
@@ -42,6 +43,38 @@ sequenceDiagram
     Agent->>IRC: quit
     Agent->>Whip: task complete <id> --note "요약"
     Whip-->>Master: downstream 태스크 자동 배정
+```
+
+3-tier 모델에서는 리드가 중간 오케스트레이터 역할을 합니다:
+
+```mermaid
+sequenceDiagram
+    participant User as 사용자
+    participant Master as 마스터 세션
+    participant Whip as whip CLI
+    participant IRC as claude-irc
+    participant Lead as 리드 세션
+    participant Worker as 워커 세션
+
+    User->>Master: 작업 내용 설명
+    Master->>Whip: task create --role lead --workspace <name>
+    Master->>Whip: task assign <lead-id>
+    Whip->>Lead: 새 터미널 탭 + 리드 프롬프트
+
+    Lead->>IRC: join wp-lead-<workspace>
+    Lead->>Whip: task create (워커 태스크)
+    Lead->>Whip: task assign (워커들)
+    Whip->>Worker: 새 터미널 탭 + 워커 프롬프트
+
+    loop 리드 조율
+        Worker->>IRC: msg wp-lead-<workspace> "진행 상황..."
+        Lead->>IRC: msg wp-<worker-id> "피드백..."
+        Lead->>IRC: msg wp-master-<workspace> "상태 보고..."
+    end
+
+    Worker->>Whip: task complete <id>
+    Lead->>IRC: msg wp-master-<workspace> "모든 워커 완료. 요약..."
+    Master->>Whip: task complete <lead-id>
 ```
 
 ## 핵심 개념
@@ -332,16 +365,36 @@ Workspace execution model:
 - `git-worktree`: 첫 `whip task create --workspace <name>`가 git 안에서 실행되면 whip이 `WHIP_HOME/workspaces/<name>/worktree`를 보장하고 모든 task `cwd`를 그 안으로 resolve
 - `direct-cwd`: 첫 `whip task create --workspace <name>`가 git 밖에서 실행되면 task들이 전달된 `cwd`를 그대로 사용하고 `worktree_path`는 비어 있을 수 있음
 
-Solo Flow와의 주요 차이점:
+### Lead Flow
 
-| 항목 | Solo Flow | Team Flow |
-|------|-----------|-----------|
-| 에이전트 | 1개 | 2개 이상 병렬 |
-| 계획 | 최소 | 역할, 인터페이스, 소유권 정의 |
-| 스택 순서 | 없음 | `whip task dep`으로 인코딩 |
-| 실행 모델 | 현재 cwd 직접 사용 | git이면 `git-worktree`, 아니면 `direct-cwd` |
-| 통신 | 마스터 <-> 에이전트 | 마스터 <-> 에이전트들 + 에이전트 간 중계 |
-| 조율 | 낮음 | 마스터가 컨텍스트 전달, 인터페이스 관리 |
+자율 오케스트레이션이 필요한 workspace에 적합합니다:
+
+```bash
+# 마스터가 리드 태스크 하나만 생성
+whip task create "Auth 시스템 리팩터링" --workspace auth-refactor --role lead --desc "..."
+whip task assign <lead-id>
+
+# 리드가 모든 것을 처리: 분해, 워커 생성, 조율, 리뷰
+# 마스터는 대시보드나 IRC로 모니터링
+whip dashboard
+```
+
+- 리드 에이전트 하나가 전체 workspace를 관리
+- 리드가 워커를 생성하고 조율하며 집계된 진행 상황을 보고
+- 마스터는 리드와만 소통하고 개별 워커와는 직접 소통하지 않음
+- 리드 태스크의 완료는 마스터만 가능
+
+모든 플로우의 주요 차이점:
+
+| 항목 | Solo Flow | Team Flow | Lead Flow |
+|------|-----------|-----------|-----------|
+| 에이전트 | 1개 | 2개 이상 병렬 | 리드 1개 + 워커 N개 |
+| 계획 | 최소 | 역할, 인터페이스, 소유권 정의 | 리드가 자율적으로 분해 |
+| 스택 순서 | 없음 | `whip task dep`으로 인코딩 | 리드가 내부적으로 관리 |
+| 실행 모델 | 현재 cwd 직접 사용 | git이면 `git-worktree`, 아니면 `direct-cwd` | `git-worktree` (Team과 동일) |
+| 통신 | 마스터 <-> 에이전트 | 마스터 <-> 에이전트들 + 에이전트 간 중계 | 마스터 <-> 리드 <-> 워커들 |
+| 조율 | 낮음 | 마스터가 컨텍스트 전달, 인터페이스 관리 | 리드가 모든 조율 담당 |
+| 마스터 부담 | 낮음 | 높음 (각 에이전트 직접 관리) | 낮음 (단일 접점) |
 
 ```mermaid
 flowchart TB
@@ -366,8 +419,21 @@ flowchart TB
         T_A4 --> T_Done[전체 완료]
     end
 
+    subgraph "Lead Flow"
+        L_Create[whip task create --role lead] --> L_Assign[리드 배정]
+        L_Assign --> L_Lead[리드 세션]
+        L_Lead --> L_W1[워커 A]
+        L_Lead --> L_W2[워커 B]
+        L_Lead --> L_W3[워커 C]
+        L_W1 --> L_Report[리드가 마스터에 보고]
+        L_W2 --> L_Report
+        L_W3 --> L_Report
+        L_Report --> L_Done[마스터가 리드 완료]
+    end
+
     Master --> S_Create
     Master --> T_Create
+    Master --> L_Create
 ```
 
 ---
@@ -472,7 +538,7 @@ whip task clean
 | `whip task complete <id>` | `in_progress|approved -> completed` |
 | `whip task fail <id>` | `assigned|in_progress|review|approved -> failed` |
 | `whip task cancel <id>` | `created|assigned|in_progress|review|approved|failed -> canceled` |
-| `whip task create <title> [--desc/--file/stdin] [--workspace <name>]` | 새 태스크 생성 |
+| `whip task create <title> [--desc/--file/stdin] [--workspace <name>] [--role lead]` | 새 태스크 생성; `--role lead`로 Workspace Lead 생성 |
 | `whip task list` | 모든 태스크 상태 확인 |
 | `whip task view <id>` | 태스크 상세 보기 |
 | `whip task lifecycle [id] [--format json]` | 전체 상태 머신 또는 특정 태스크의 다음 액션 확인 |
