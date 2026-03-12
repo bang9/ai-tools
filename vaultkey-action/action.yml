@@ -29,13 +29,20 @@ runs:
     - name: Resolve version
       id: version
       shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
+        semver_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+        if [ "$INPUT_VERSION" = "latest" ]; then
           VERSION=$(curl -sfSL https://api.github.com/repos/bang9/ai-tools/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
         else
-          VERSION="${{ inputs.version }}"
+          VERSION="$INPUT_VERSION"
         fi
-        echo "tag=$VERSION" >> $GITHUB_OUTPUT
+        if ! printf '%s\n' "$VERSION" | grep -Eq "$semver_tag_pattern"; then
+          echo "Invalid vaultkey version: $VERSION" >&2
+          exit 1
+        fi
+        printf 'tag=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
 
     - name: Cache vaultkey binary
       id: cache
@@ -47,36 +54,108 @@ runs:
     - name: Install vaultkey
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
-      run: |
-        curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/vaultkey/install.sh | bash
+      run: VAULTKEY_VERSION="${{ steps.version.outputs.tag }}" bash "${{ github.action_path }}/../vaultkey/install.sh"
 
     - name: Add to PATH
       shell: bash
-      run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+      run: printf '%s\n' "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Set vault password
       shell: bash
-      run: echo "VAULTKEY_PASSWORD=${{ inputs.password }}" >> $GITHUB_ENV
+      env:
+        INPUT_PASSWORD: ${{ inputs.password }}
+      run: |
+        escape_workflow_command() {
+          local value="$1"
+          value="${value//'%'/'%25'}"
+          value="${value//$'\r'/'%0D'}"
+          value="${value//$'\n'/'%0A'}"
+          printf '%s' "$value"
+        }
+
+        password="$INPUT_PASSWORD"
+        delimiter="VAULTKEY_PASSWORD_${RANDOM}_${RANDOM}_$$"
+
+        echo "::add-mask::$(escape_workflow_command "$password")"
+        {
+          printf 'VAULTKEY_PASSWORD<<%s\n' "$delimiter"
+          printf '%s\n' "$password"
+          printf '%s\n' "$delimiter"
+        } >> "$GITHUB_ENV"
 
     - name: Init vault
       shell: bash
-      run: vaultkey init --ci https://${{ inputs.gh-pat }}@github.com/${{ inputs.vault-repo }}.git
       env:
+        INPUT_VAULT_REPO: ${{ inputs.vault-repo }}
         VAULTKEY_PASSWORD: ${{ inputs.password }}
+        VAULTKEY_GH_PAT: ${{ inputs.gh-pat }}
+        GIT_TERMINAL_PROMPT: "0"
+        GIT_ASKPASS: ${{ runner.temp }}/vaultkey-askpass.sh
+      run: |
+        if ! printf '%s\n' "$INPUT_VAULT_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+          echo "Invalid vault repository: $INPUT_VAULT_REPO" >&2
+          exit 1
+        fi
+        askpass_path="$RUNNER_TEMP/vaultkey-askpass.sh"
+        cat > "$askpass_path" <<'EOF'
+        #!/bin/bash
+        case "$1" in
+          *Username*) printf '%s\n' "x-access-token" ;;
+          *Password*) printf '%s\n' "$VAULTKEY_GH_PAT" ;;
+          *) exit 1 ;;
+        esac
+        EOF
+        chmod 700 "$askpass_path"
+        trap 'rm -f "$askpass_path"' EXIT
+        vaultkey init --ci "https://github.com/${INPUT_VAULT_REPO}.git"
 
     - name: Load secrets
       if: inputs.secrets != ''
       shell: bash
+      env:
+        INPUT_SECRETS: ${{ inputs.secrets }}
+        VAULTKEY_PASSWORD: ${{ inputs.password }}
       run: |
+        escape_workflow_command() {
+          local value="$1"
+          value="${value//'%'/'%25'}"
+          value="${value//$'\r'/'%0D'}"
+          value="${value//$'\n'/'%0A'}"
+          printf '%s' "$value"
+        }
+
+        write_github_env() {
+          local name="$1" value="$2" delimiter
+          delimiter="VAULTKEY_ENV_${RANDOM}_${RANDOM}_$$"
+          {
+            printf '%s<<%s\n' "$name" "$delimiter"
+            printf '%s\n' "$value"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_ENV"
+        }
+
         while IFS= read -r line; do
           [ -z "$line" ] && continue
+          case "$line" in
+            *=*" "*) ;;
+            *)
+              echo "Invalid secrets entry: $line" >&2
+              exit 1
+              ;;
+          esac
           ENV_NAME="${line%%=*}"
           SPEC="${line#*=}"
+          if ! printf '%s\n' "$ENV_NAME" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; then
+            echo "Invalid environment variable name: $ENV_NAME" >&2
+            exit 1
+          fi
           SCOPE="${SPEC%% *}"
           KEY="${SPEC#* }"
+          if [ -z "$SCOPE" ] || [ -z "$KEY" ] || [ "$KEY" = "$SPEC" ]; then
+            echo "Invalid secret spec for $ENV_NAME: $SPEC" >&2
+            exit 1
+          fi
           VALUE=$(vaultkey get "$SCOPE" "$KEY")
-          echo "::add-mask::$VALUE"
-          echo "$ENV_NAME=$VALUE" >> $GITHUB_ENV
-        done <<< "${{ inputs.secrets }}"
-      env:
-        VAULTKEY_PASSWORD: ${{ inputs.password }}
+          echo "::add-mask::$(escape_workflow_command "$VALUE")"
+          write_github_env "$ENV_NAME" "$VALUE"
+        done <<< "$INPUT_SECRETS"

@@ -1,8 +1,11 @@
 package vaultkey
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -216,5 +219,54 @@ func TestVaultFilePermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm != 0600 {
 		t.Errorf("vault file permissions: got %o, want 0600", perm)
+	}
+}
+
+func TestLoadVaultRejectsSymlink(t *testing.T) {
+	repo := tempRepo(t)
+
+	salt := make([]byte, saltSize)
+	payload, err := json.Marshal(VaultFile{
+		Version: vaultVersion,
+		Salt:    base64.StdEncoding.EncodeToString(salt),
+		Scopes:  map[string]map[string]EncryptedValue{},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	target := filepath.Join(repo, "actual-vault.json")
+	if err := os.WriteFile(target, payload, 0600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	link := filepath.Join(repo, vaultFileName)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err = LoadVault(repo, "pw")
+	if err == nil {
+		t.Fatal("expected symlinked vault path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
+func TestCreateVaultRejectsBrokenSymlink(t *testing.T) {
+	repo := tempRepo(t)
+
+	link := filepath.Join(repo, vaultFileName)
+	if err := os.Symlink(filepath.Join(repo, "missing-vault.json"), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := CreateVault(repo, "pw")
+	if err == nil {
+		t.Fatal("expected create to fail when vault path is a symlink")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected existing-path error, got %v", err)
 	}
 }

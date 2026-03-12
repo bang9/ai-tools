@@ -60,7 +60,7 @@ func initCmd() *cobra.Command {
 				return fmt.Errorf("repo already exists at %s (delete it first to reinit)", repoPath)
 			}
 
-			fmt.Fprintf(os.Stderr, "Cloning %s...\n", repoURL)
+			fmt.Fprintf(os.Stderr, "Cloning %s...\n", vaultkey.RedactURLCredentials(repoURL))
 			if err := vaultkey.GitClone(repoURL, repoPath); err != nil {
 				return err
 			}

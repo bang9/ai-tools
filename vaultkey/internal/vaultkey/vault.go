@@ -32,22 +32,25 @@ type EncryptedValue struct {
 }
 
 type VaultFile struct {
-	Version int                                `json:"version"`
-	Salt    string                             `json:"salt"`
+	Version int                                  `json:"version"`
+	Salt    string                               `json:"salt"`
 	Scopes  map[string]map[string]EncryptedValue `json:"scopes"`
 }
 
 type Vault struct {
-	path     string
-	password string
-	data     VaultFile
-	key      []byte
+	path string
+	data VaultFile
+	key  []byte
 }
 
 func LoadVault(repoPath, password string) (*Vault, error) {
 	vaultPath := filepath.Join(repoPath, vaultFileName)
 
-	v := &Vault{path: vaultPath, password: password}
+	if err := ensurePathNotSymlink(vaultPath); err != nil {
+		return nil, fmt.Errorf("checking vault path: %w", err)
+	}
+
+	v := &Vault{path: vaultPath}
 
 	raw, err := os.ReadFile(vaultPath)
 	if err != nil {
@@ -77,8 +80,10 @@ func LoadVault(repoPath, password string) (*Vault, error) {
 func CreateVault(repoPath, password string) (*Vault, error) {
 	vaultPath := filepath.Join(repoPath, vaultFileName)
 
-	if _, err := os.Stat(vaultPath); err == nil {
+	if _, err := os.Lstat(vaultPath); err == nil {
 		return nil, fmt.Errorf("vault already exists at %s", vaultPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("checking vault path: %w", err)
 	}
 
 	salt := make([]byte, saltSize)
@@ -87,9 +92,8 @@ func CreateVault(repoPath, password string) (*Vault, error) {
 	}
 
 	v := &Vault{
-		path:     vaultPath,
-		password: password,
-		key:      deriveKey(password, salt),
+		path: vaultPath,
+		key:  deriveKey(password, salt),
 		data: VaultFile{
 			Version: vaultVersion,
 			Salt:    base64.StdEncoding.EncodeToString(salt),
@@ -213,7 +217,7 @@ func (v *Vault) save() error {
 	}
 	raw = append(raw, '\n')
 
-	if err := os.WriteFile(v.path, raw, 0600); err != nil {
+	if err := writeFileAtomically(v.path, raw, 0600); err != nil {
 		return fmt.Errorf("writing vault: %w", err)
 	}
 	return nil
