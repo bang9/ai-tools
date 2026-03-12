@@ -250,14 +250,14 @@ runs:
           fi
 
           askpass_path="$RUNNER_TEMP/vaultkey-askpass.sh"
-          cat > "$askpass_path" <<'EOF'
-          #!/bin/bash
-          case "$1" in
-            *Username*) printf '%s\n' "x-access-token" ;;
-            *Password*) printf '%s\n' "$VAULTKEY_GH_PAT" ;;
-            *) exit 1 ;;
-          esac
-          EOF
+          {
+            printf '%s\n' '#!/bin/bash'
+            printf '%s\n' 'case "$1" in'
+            printf '%s\n' '  *Username*) printf '\''%s\n'\'' "x-access-token" ;;'
+            printf '%s\n' '  *Password*) printf '\''%s\n'\'' "$VAULTKEY_GH_PAT" ;;'
+            printf '%s\n' '  *) exit 1 ;;'
+            printf '%s\n' 'esac'
+          } > "$askpass_path"
           chmod 700 "$askpass_path"
           trap 'rm -f "$askpass_path"' EXIT
           repo_url="https://github.com/${INPUT_VAULT_REPO}.git"
