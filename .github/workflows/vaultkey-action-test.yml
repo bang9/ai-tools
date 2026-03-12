@@ -62,6 +62,16 @@ jobs:
           git -C "$HOME/.vaultkey/repo" config user.email "github-actions[bot]@users.noreply.github.com"
           "$seed_binary" set "$TEST_SCOPE" "$TEST_KEY" "$TEST_VALUE"
 
+      - name: Build local vaultkey binary
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin"
+          cd vaultkey
+          go build -o "$HOME/.local/bin/vaultkey" ./cmd/vaultkey
+          cd ..
+          chmod 755 "$HOME/.local/bin/vaultkey"
+
       - name: Run vaultkey action
         uses: ./vaultkey-action
         with:
@@ -69,7 +79,7 @@ jobs:
           password: test-password
           secrets: |
             TEST_SECRET=app TEST_SECRET
-          version: latest
+          skip-install: true
 
       - name: Verify loaded secrets
         env:

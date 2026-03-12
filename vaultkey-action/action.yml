@@ -27,11 +27,16 @@ inputs:
     description: "vaultkey version to install (default: latest)"
     required: false
     default: "latest"
+  skip-install:
+    description: "Skip cache/install steps and use an already-available vaultkey binary on PATH"
+    required: false
+    default: "false"
 runs:
   using: "composite"
   steps:
     - name: Resolve version
       id: version
+      if: inputs.skip-install != 'true'
       shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
@@ -50,6 +55,7 @@ runs:
 
     - name: Cache vaultkey binary
       id: cache
+      if: inputs.skip-install != 'true'
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
       with:
         path: |
@@ -59,7 +65,7 @@ runs:
 
     - name: Verify cached vaultkey binary
       id: verify-cache
-      if: steps.cache.outputs.cache-hit == 'true'
+      if: inputs.skip-install != 'true' && steps.cache.outputs.cache-hit == 'true'
       shell: bash
       env:
         RESOLVED_VERSION: ${{ steps.version.outputs.tag }}
@@ -188,13 +194,21 @@ runs:
         printf 'valid=true\n' >> "$GITHUB_OUTPUT"
 
     - name: Install vaultkey
-      if: steps.cache.outputs.cache-hit != 'true' || steps.verify-cache.outputs.valid != 'true'
+      if: inputs.skip-install != 'true' && (steps.cache.outputs.cache-hit != 'true' || steps.verify-cache.outputs.valid != 'true')
       shell: bash
       run: VAULTKEY_VERSION="${{ steps.version.outputs.tag }}" bash "${{ github.action_path }}/../vaultkey/install.sh"
 
     - name: Add to PATH
       shell: bash
       run: printf '%s\n' "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Verify vaultkey binary
+      shell: bash
+      run: |
+        if ! command -v vaultkey >/dev/null 2>&1; then
+          echo "vaultkey binary not found on PATH" >&2
+          exit 1
+        fi
 
     - name: Set vault password
       shell: bash
