@@ -1,8 +1,9 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 REPO="bang9/ai-tools"
 INSTALL_DIR="$HOME/.local/bin"
+SEMVER_TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,58 +43,62 @@ detect_arch() {
 }
 
 get_latest_version() {
-    local version
-    version=$(curl -sfSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    local payload version
+
+    if ! payload=$(download_text "https://api.github.com/repos/${REPO}/releases/latest"); then
+        error "Failed to fetch latest release metadata from GitHub"
+    fi
+    version=$(printf '%s\n' "$payload" | awk -F'"' '$2 == "tag_name" { print $4; exit }')
     if [ -z "$version" ]; then
         error "Failed to fetch latest version from GitHub"
     fi
-    echo "$version"
+    validate_version_tag "$version" "latest release version"
+    printf '%s\n' "$version"
 }
 
-download_file() {
-    local url="$1" dest="$2"
+download_text() {
+    local url="$1"
     if command -v curl &> /dev/null; then
-        curl -fsSL -o "$dest" "$url"
+        curl -fsSL "$url"
         return $?
     fi
     if command -v wget &> /dev/null; then
-        wget -q -O "$dest" "$url"
+        wget -q -O - "$url"
         return $?
     fi
     error "Neither curl nor wget is installed"
 }
 
-download_optional_file() {
-    local url="$1" dest="$2"
-    local http_code output
+validate_version_tag() {
+    local version="$1" source_label="$2"
 
-    if command -v curl &> /dev/null; then
-        if ! http_code=$(curl -sSL -w '%{http_code}' -o "$dest" "$url"); then
-            rm -f "$dest"
-            return 1
-        fi
-        case "$http_code" in
-            200) return 0 ;;
-            404)
-                rm -f "$dest"
-                return 2
-                ;;
-        esac
-        rm -f "$dest"
-        return 1
+    case "$version" in
+        *$'\n'*|*$'\r'*)
+            error "Invalid ${source_label}: must be a single-line semver tag"
+            ;;
+    esac
+
+    if ! printf '%s\n' "$version" | grep -Eq "$SEMVER_TAG_PATTERN"; then
+        error "Invalid ${source_label}: must be a semver tag, got ${version}"
     fi
+}
 
-    if command -v wget &> /dev/null; then
-        if output=$(wget -q -S -O "$dest" "$url" 2>&1); then
+download_file() {
+    local url="$1" dest="$2"
+    if command -v curl &> /dev/null; then
+        if curl -fsSL -o "$dest" "$url"; then
             return 0
         fi
         rm -f "$dest"
-        if printf '%s\n' "$output" | grep -Eq 'HTTP/[0-9.]+\s+404'; then
-            return 2
-        fi
         return 1
     fi
-
+    if command -v wget &> /dev/null; then
+        if wget -q -O "$dest" "$url"; then
+            return 0
+        fi
+        rm -f "$dest"
+        return 1
+    fi
     error "Neither curl nor wget is installed"
 }
 
@@ -128,56 +133,54 @@ lookup_checksum() {
     ' "$manifest"
 }
 
-install_binary_with_optional_checksum() {
-    local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
-    local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
-    local expected_checksum actual_checksum checksum_status
+cleanup_install_artifacts() {
+    rm -f "$1" "$2"
+}
 
-    if download_optional_file "$checksum_url" "$manifest"; then
-        expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
-        if [ -z "$expected_checksum" ]; then
-            warn "Checksum entry not found for ${asset_name}"
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
-    else
-        checksum_status=$?
-        if [ "$checksum_status" -eq 2 ]; then
-            warn "Checksum manifest not found for ${asset_name}; installing without checksum verification"
-            rm -f "$manifest"
-            expected_checksum=""
-        else
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
+install_binary_with_checksum() {
+    local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
+    local tmp manifest
+    local expected_checksum actual_checksum
+
+    tmp=$(mktemp "${dest}.tmp.XXXXXX")
+    manifest=$(mktemp "${dest}.checksums.XXXXXX")
+
+    if ! download_file "$checksum_url" "$manifest"; then
+        warn "Failed to download checksum manifest for ${asset_name}"
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
+    fi
+
+    expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+    if [ -z "$expected_checksum" ]; then
+        warn "Checksum entry not found for ${asset_name}"
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
     fi
 
     if ! download_file "$download_url" "$tmp"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
-    if [ -n "$expected_checksum" ]; then
-        if ! actual_checksum=$(sha256_file "$tmp"); then
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
+    if ! actual_checksum=$(sha256_file "$tmp"); then
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
+    fi
 
-        if [ "$actual_checksum" != "$expected_checksum" ]; then
-            warn "Checksum mismatch for ${asset_name}"
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
+    if [ "$actual_checksum" != "$expected_checksum" ]; then
+        warn "Checksum mismatch for ${asset_name}"
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
     fi
 
     if ! chmod +x "$tmp"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
-    rm -f "$dest"
-    if ! mv "$tmp" "$dest"; then
-        rm -f "$tmp" "$manifest"
+    if ! mv -f "$tmp" "$dest"; then
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
@@ -188,9 +191,9 @@ install_binary_with_optional_checksum() {
 ensure_path() {
     local shell_profile=""
 
-    if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
         shell_profile="$HOME/.zshrc"
-    elif [ -n "$BASH_VERSION" ] || [ "$(basename "$SHELL")" = "bash" ]; then
+    elif [ -n "${BASH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "bash" ]; then
         if [ -f "$HOME/.bash_profile" ]; then
             shell_profile="$HOME/.bash_profile"
         else
@@ -230,9 +233,8 @@ install_binary() {
     local checksum_url="https://github.com/${REPO}/releases/download/${version}/${checksum_name}"
 
     step "Installing ${name} ${version}..."
-    if ! install_binary_with_optional_checksum "$download_url" "$checksum_url" "$download_name" "${INSTALL_DIR}/${binary_name}"; then
-        warn "Failed to download ${name}. It will be installed on first use via plugin hook."
-        return 1
+    if ! install_binary_with_checksum "$download_url" "$checksum_url" "$download_name" "${INSTALL_DIR}/${binary_name}"; then
+        error "Failed to install ${name}. Verify the ${download_name} release asset and ${checksum_name} manifest for ${version}."
     fi
     info "  ${name} installed"
     return 0
@@ -265,7 +267,7 @@ main() {
 
     for tool in claude-irc webform rewind; do
         if ! command -v "$tool" &> /dev/null && ! [ -x "${INSTALL_DIR}/$tool" ]; then
-            install_binary "$tool" "$os" "$arch" "$version" || true
+            install_binary "$tool" "$os" "$arch" "$version"
         else
             info "  $tool already installed"
         fi
