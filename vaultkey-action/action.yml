@@ -3,10 +3,14 @@ description: "Install vaultkey CLI and clone vault repo"
 inputs:
   gh-pat:
     description: "GitHub PAT with read access to the vault repo"
-    required: true
+    required: false
   vault-repo:
     description: "Vault repo (e.g. your-user/your-secrets-repo)"
-    required: true
+    required: false
+  vault-url:
+    description: "Optional full git URL override for tests or non-GitHub remotes (e.g. file:///tmp/vault.git)"
+    required: false
+    default: ""
   password:
     description: "Vault password (sets VAULTKEY_PASSWORD env for subsequent steps)"
     required: true
@@ -219,27 +223,47 @@ runs:
       shell: bash
       env:
         INPUT_VAULT_REPO: ${{ inputs.vault-repo }}
+        INPUT_VAULT_URL: ${{ inputs.vault-url }}
         VAULTKEY_PASSWORD: ${{ inputs.password }}
         VAULTKEY_GH_PAT: ${{ inputs.gh-pat }}
         GIT_TERMINAL_PROMPT: "0"
         GIT_ASKPASS: ${{ runner.temp }}/vaultkey-askpass.sh
       run: |
-        if ! printf '%s\n' "$INPUT_VAULT_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-          echo "Invalid vault repository: $INPUT_VAULT_REPO" >&2
-          exit 1
-        fi
-        askpass_path="$RUNNER_TEMP/vaultkey-askpass.sh"
-        cat > "$askpass_path" <<'EOF'
-        #!/bin/bash
-        case "$1" in
-          *Username*) printf '%s\n' "x-access-token" ;;
-          *Password*) printf '%s\n' "$VAULTKEY_GH_PAT" ;;
-          *) exit 1 ;;
+        case "$INPUT_VAULT_URL" in
+          *$'\n'*|*$'\r'*)
+            echo "Invalid vault URL: must be a single line" >&2
+            exit 1
+            ;;
         esac
-        EOF
-        chmod 700 "$askpass_path"
-        trap 'rm -f "$askpass_path"' EXIT
-        vaultkey init --ci "https://github.com/${INPUT_VAULT_REPO}.git"
+
+        repo_url=""
+        if [ -n "$INPUT_VAULT_URL" ]; then
+          repo_url="$INPUT_VAULT_URL"
+        else
+          if ! printf '%s\n' "$INPUT_VAULT_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid vault repository: $INPUT_VAULT_REPO" >&2
+            exit 1
+          fi
+          if [ -z "$VAULTKEY_GH_PAT" ]; then
+            echo "gh-pat is required when vault-url is not provided" >&2
+            exit 1
+          fi
+
+          askpass_path="$RUNNER_TEMP/vaultkey-askpass.sh"
+          cat > "$askpass_path" <<'EOF'
+          #!/bin/bash
+          case "$1" in
+            *Username*) printf '%s\n' "x-access-token" ;;
+            *Password*) printf '%s\n' "$VAULTKEY_GH_PAT" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$askpass_path"
+          trap 'rm -f "$askpass_path"' EXIT
+          repo_url="https://github.com/${INPUT_VAULT_REPO}.git"
+        fi
+
+        vaultkey init --ci "$repo_url"
 
     - name: Load secrets
       if: inputs.secrets != ''

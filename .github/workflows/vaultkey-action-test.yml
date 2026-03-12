@@ -1,0 +1,89 @@
+name: "vaultkey-action: Test"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vaultkey-action/**'
+      - 'vaultkey/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'vaultkey-action/**'
+      - 'vaultkey/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.21'
+          cache-dependency-path: vaultkey/go.sum
+
+      - name: Seed local vault remote
+        env:
+          TEST_PASSWORD: test-password
+          TEST_SCOPE: app
+          TEST_KEY: TEST_SECRET
+          TEST_VALUE: smoke-secret-value
+        run: |
+          set -euo pipefail
+
+          remote_repo="$RUNNER_TEMP/vault-remote.git"
+          seed_home="$RUNNER_TEMP/vault-seed-home"
+          seed_binary="$RUNNER_TEMP/vaultkey-seed"
+
+          git init --bare "$remote_repo"
+
+          cd vaultkey
+          go build -o "$seed_binary" ./cmd/vaultkey
+          cd ..
+
+          mkdir -p "$seed_home"
+          export HOME="$seed_home"
+          export VAULTKEY_PASSWORD="$TEST_PASSWORD"
+
+          "$seed_binary" init --ci "file://$remote_repo"
+          git -C "$HOME/.vaultkey/repo" config user.name "github-actions[bot]"
+          git -C "$HOME/.vaultkey/repo" config user.email "github-actions[bot]@users.noreply.github.com"
+          "$seed_binary" set "$TEST_SCOPE" "$TEST_KEY" "$TEST_VALUE"
+
+      - name: Run vaultkey action
+        uses: ./vaultkey-action
+        with:
+          vault-url: file://${{ runner.temp }}/vault-remote.git
+          password: test-password
+          secrets: |
+            TEST_SECRET=app TEST_SECRET
+          version: latest
+
+      - name: Verify loaded secrets
+        env:
+          EXPECTED_SECRET: smoke-secret-value
+        run: |
+          set -euo pipefail
+
+          if [ "${TEST_SECRET:-}" != "$EXPECTED_SECRET" ]; then
+            echo "TEST_SECRET mismatch" >&2
+            exit 1
+          fi
+
+          output=$(vaultkey get app TEST_SECRET)
+          if [ "$output" != "$EXPECTED_SECRET" ]; then
+            echo "vaultkey get returned unexpected value" >&2
+            exit 1
+          fi
