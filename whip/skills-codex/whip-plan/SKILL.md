@@ -27,6 +27,9 @@ Your job is to:
 - Keep backend choice explicit when it affects quality, portability, or reproducibility.
 - Do not materialize a new workspace during planning. Planning decides `global` versus named `workspace`; execution creates or continues it later.
 - Present planning artifacts in the conversation and in the saved plan. Do not rely on client-only bindings or hidden planner context.
+- Keep phase boundaries explicit in the conversation. Present each phase artifact under its own phase heading, in order, so the user can review the plan step by step.
+- Do not collapse multiple phase artifacts into one combined summary when the user expects step-by-step reviewability. Be concise within a phase, not across phase boundaries.
+- Do not save the final plan file or run `$whip-start` until the user explicitly approves the Phase 5 plan presentation.
 - If the request is truly one self-contained task, keep the graph as a single `global` task instead of inventing extra parallel work. Still record why no split was needed.
 
 ## Phase 1 - Mental Model
@@ -54,6 +57,8 @@ Produce a brief artifact in the conversation before exploring. Use this minimal 
 - Working assumptions:
 - Candidate workspace model: global | workspace(<name>)
 ```
+
+Present this as its own Phase 1 artifact before moving to exploration. Do not merge it with later-phase artifacts in the same review checkpoint.
 
 When you pick a named workspace, remember that execution later resolves to one of two workspace models:
 - `git-worktree` if the first `whip task create --workspace <name>` runs inside git
@@ -99,6 +104,8 @@ Produce a brief exploration artifact in the conversation:
 - Risks, gaps, or hidden dependencies:
 ```
 
+Present this as its own Phase 2 artifact. Do not collapse it into the Mental Model or later planning phases.
+
 ### Phase complete only when
 
 - you can name the codebase or workflow areas that matter
@@ -132,6 +139,8 @@ When feedback is needed, produce a brief artifact in the conversation:
 - Recommendation:
 - User decision or recorded assumption:
 ```
+
+Keep feedback as its own phase artifact when it is needed so the user can react before you finalize the graph.
 
 ### Phase complete only when
 
@@ -228,6 +237,8 @@ Record the result in the conversation:
 - Final verdict:
 ```
 
+Present the simulation separately from the earlier exploration/feedback artifacts so the user can review the task graph validation on its own.
+
 ### Phase complete only when
 
 - ownership, dependencies, and round structure are explicit
@@ -286,6 +297,7 @@ Save the approved plan to:
 ### Present the plan to the user
 
 Present a concise but concrete plan summary before saving or executing.
+Keep the Phase 5 plan presentation separate from earlier phase artifacts and separate from any save/execute step. The user should be able to review the proposed plan on its own.
 
 ```text
 ## Plan: <project title>
@@ -330,7 +342,7 @@ Show the rendered output directly in the plan presentation. Each node `id` shoul
 - `~/.whip/plans/<plan-backend>-<descriptive-slug>.md`
 ```
 
-The user may approve, request changes, or ask questions. Do not save or execute until the user explicitly approves.
+The user may approve, request changes, or ask questions. Do not save or execute until the user explicitly approves. Do not pre-save a draft plan file and do not run `$whip-start` as part of the approval request.
 
 ### Phase complete only when
 
@@ -341,6 +353,7 @@ The user may approve, request changes, or ask questions. Do not save or execute 
 ## Phase 6 - Execution
 
 After approval, save the plan as a self-contained document and hand it off to `$whip-start`.
+Approval must already be explicit in the conversation. If the user asks follow-up questions or requests changes, stay in planning mode, present the revised phase artifact(s) separately, and ask again instead of saving early.
 
 ### Write the plan file
 

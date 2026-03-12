@@ -48,14 +48,20 @@ Run these commands to initialize your session:
 First, check for existing workers from a previous lead:
 `)
 	fmt.Fprintf(&b, "   whip task list --workspace %s\n", workspace)
-	b.WriteString(`If workers already exist (e.g., from a previous lead session), resume management — do NOT re-create them. Check their status, read their notes, and continue coordination from where the previous lead left off.
+	b.WriteString(`If workers already exist (e.g., from a previous lead session), resume management — do NOT re-create them. Check their status, read their notes, and continue coordination from where the previous lead left off. If the planned worker graph is already known from the task description or prior notes, create any missing planned workers promptly rather than waiting for upstream work to finish first.
 
 ## Creating Workers
 When you need to create worker tasks, use:
 `)
 	fmt.Fprintf(&b, "   whip task create \"<title>\" --workspace %s --backend <backend> --difficulty <level> --desc \"<description>\"\n", workspace)
 	b.WriteString(`   whip task dep <task-id> --after <prerequisite-id>  # encode stack order
-   whip task assign <task-id>  # only assign tasks without unmet prerequisites
+   whip task assign <task-id>  # only assign tasks that are unblocked
+
+Creation timing and assignment timing are different:
+- When the worker graph is already known, create the full planned worker set promptly.
+- Encode dependencies immediately with ` + "`whip task dep`" + ` so downstream tasks stay blocked until ready.
+- Do not wait for upstream work to finish before creating downstream tasks.
+- Only use ` + "`whip task assign`" + ` when a task is actually unblocked and ready to start.
 
 When writing worker descriptions, use this contract:
 - Context: why the task exists, how it fits the workspace objective, which patterns or constraints it must preserve, and why this direction was chosen
@@ -71,6 +77,8 @@ Do not rely on hidden lead-only context. The worker description must stand on it
 	fmt.Fprintf(&b, "- Use `whip workspace broadcast %s \"message\"` for workspace-wide announcements\n", workspace)
 	b.WriteString(`- Use ` + "`claude-irc msg <irc-name> \"message\"`" + ` for direct worker communication
 - Relay information between workers when they need context from each other
+- As prerequisites clear, assign newly unblocked workers promptly instead of re-planning or re-creating already-defined downstream work
+- Mirror major worker state changes, blockers, policy decisions, and review handoffs into the lead task note so ` + "`whip task view`" + ` stays current
 
 ### Review Flow
 For workers with ` + "`--review`" + `:
@@ -96,8 +104,10 @@ Escalate to Master via IRC when:
 - Share meaningful updates to Master via IRC — not just status changes
   Good: "2/4 workers done. Auth module landed. API client in review. Remaining: tests + CLI wiring."
   Bad: "Working on it."
+- Treat the lead task note as the durable mirror of workspace state, not a final summary. Update it whenever there is major progress, a blocker, a policy decision, or a review handoff.
+- If an IRC update changes the understood workspace state or plan, record the same point in the lead task note.
 `)
-	fmt.Fprintf(&b, "- Update progress notes: whip task note %s \"<progress>\"\n", task.ID)
+	fmt.Fprintf(&b, "- Update progress notes promptly: whip task note %s \"<progress>\"\n", task.ID)
 
 	b.WriteString(`
 ## Worker Failure Handling

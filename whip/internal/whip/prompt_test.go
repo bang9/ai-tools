@@ -164,6 +164,39 @@ func TestCodexBackend_GenerateLeadPrompt(t *testing.T) {
 	}
 }
 
+func TestLeadPrompt_SeparatesCreationFromAssignmentAndMirrorsProgress(t *testing.T) {
+	task := NewTask("Lead Task", "Worker specs here", "/tmp")
+	task.Role = TaskRoleLead
+	task.Workspace = "my-ws"
+	task.IRCName = "wp-lead-my-ws"
+	task.MasterIRCName = "wp-master-my-ws"
+
+	cases := []struct {
+		name   string
+		prompt string
+	}{
+		{name: "claude", prompt: (&ClaudeBackend{}).GeneratePrompt(task)},
+		{name: "codex", prompt: (&CodexBackend{}).GeneratePrompt(task)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, want := range []string{
+				"create any missing planned workers promptly",
+				"create the full planned worker set promptly",
+				"Do not wait for upstream work to finish before creating downstream tasks.",
+				"Only use `whip task assign` when a task is actually unblocked and ready to start.",
+				"Mirror major worker state changes, blockers, policy decisions, and review handoffs into the lead task note",
+				"Treat the lead task note as the durable mirror of workspace state",
+			} {
+				if !strings.Contains(tc.prompt, want) {
+					t.Fatalf("lead prompt missing %q", want)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkerPromptUnchangedWhenLeadExists(t *testing.T) {
 	worker := NewTask("Worker task", "Implement the feature", "/tmp")
 	worker.IRCName = "wp-abc12345"

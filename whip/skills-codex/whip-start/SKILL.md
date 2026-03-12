@@ -282,6 +282,7 @@ whip task assign <lead-id> --master-irc <resolved-master-irc>
 - Run `claude-irc inbox` after each meaningful action or when you expect a lead escalation.
 - Once the lead is terminal or you are about to quit, stop polling.
 - Use `whip task list` to monitor overall workspace state.
+- Use `whip task view <lead-id>` and the lead task notes as the durable status mirror; the lead is expected to mirror major progress, blockers, policy decisions, and review handoffs there, not only in IRC.
 - Review lead updates and answer questions promptly.
 
 ### Step 4: Handle escalations from the lead
