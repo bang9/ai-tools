@@ -1,9 +1,10 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 REPO="bang9/ai-tools"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="redit"
+SEMVER_TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
 # Colors
 RED='\033[0;31m'
@@ -50,6 +51,14 @@ get_latest_version() {
     version=$(curl -sfSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
     if [ -z "$version" ]; then
         error "Failed to fetch latest version from GitHub"
+    fi
+    case "$version" in
+        *$'\n'*|*$'\r'*)
+            error "Invalid release version: must be a single-line semver tag"
+            ;;
+    esac
+    if ! printf '%s' "$version" | grep -Eq "$SEMVER_TAG_PATTERN"; then
+        error "Invalid release version: must match semver tag format"
     fi
     echo "$version"
 }
@@ -98,47 +107,53 @@ lookup_checksum() {
     ' "$manifest"
 }
 
+cleanup_install_artifacts() {
+    rm -f "$1" "$2"
+}
+
 install_verified_binary() {
     local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
-    local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
+    local tmp manifest
     local expected_checksum actual_checksum
 
+    tmp=$(mktemp "${dest}.tmp.XXXXXX")
+    manifest=$(mktemp "${dest}.checksums.XXXXXX")
+
     if ! download_file "$checksum_url" "$manifest"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
     expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
     if [ -z "$expected_checksum" ]; then
         warn "Checksum entry not found for ${asset_name}"
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
     if ! download_file "$download_url" "$tmp"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
     if ! actual_checksum=$(sha256_file "$tmp"); then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
     if [ "$actual_checksum" != "$expected_checksum" ]; then
         warn "Checksum mismatch for ${asset_name}"
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
     if ! chmod +x "$tmp"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
-    rm -f "$dest"
-    if ! mv "$tmp" "$dest"; then
-        rm -f "$tmp" "$manifest"
+    if ! mv -f "$tmp" "$dest"; then
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
@@ -149,10 +164,15 @@ install_verified_binary() {
 # Add to PATH via shell profile
 ensure_path() {
     local shell_profile=""
+    local shell_name=""
 
-    if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+    if [ -n "${SHELL:-}" ]; then
+        shell_name="$(basename "$SHELL")"
+    fi
+
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$shell_name" = "zsh" ]; then
         shell_profile="$HOME/.zshrc"
-    elif [ -n "$BASH_VERSION" ] || [ "$(basename "$SHELL")" = "bash" ]; then
+    elif [ -n "${BASH_VERSION:-}" ] || [ "$shell_name" = "bash" ]; then
         if [ -f "$HOME/.bash_profile" ]; then
             shell_profile="$HOME/.bash_profile"
         else
