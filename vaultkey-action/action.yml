@@ -56,7 +56,7 @@ runs:
     - name: Cache vaultkey binary
       id: cache
       if: inputs.skip-install != 'true'
-      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+      uses: actions/cache@v5
       with:
         path: |
           ~/.local/bin/vaultkey
