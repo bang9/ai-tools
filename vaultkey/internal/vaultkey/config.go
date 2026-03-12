@@ -24,8 +24,13 @@ func ConfigPath() string {
 }
 
 func LoadConfig() (*Config, error) {
+	configDir := ConfigDir()
+	if err := EnsurePathNotSymlink(configDir); err != nil {
+		return nil, fmt.Errorf("checking config dir: %w", err)
+	}
+
 	configPath := ConfigPath()
-	if err := ensurePathNotSymlink(configPath); err != nil {
+	if err := EnsurePathNotSymlink(configPath); err != nil {
 		return nil, fmt.Errorf("checking config path: %w", err)
 	}
 
@@ -46,6 +51,9 @@ func LoadConfig() (*Config, error) {
 
 func SaveConfig(cfg *Config) error {
 	dir := ConfigDir()
+	if err := EnsurePathNotSymlink(dir); err != nil {
+		return fmt.Errorf("checking config dir: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}

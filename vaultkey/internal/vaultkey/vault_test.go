@@ -266,7 +266,7 @@ func TestCreateVaultRejectsBrokenSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected create to fail when vault path is a symlink")
 	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("expected existing-path error, got %v", err)
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
 	}
 }

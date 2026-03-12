@@ -46,7 +46,10 @@ type Vault struct {
 func LoadVault(repoPath, password string) (*Vault, error) {
 	vaultPath := filepath.Join(repoPath, vaultFileName)
 
-	if err := ensurePathNotSymlink(vaultPath); err != nil {
+	if err := EnsurePathNotSymlink(repoPath); err != nil {
+		return nil, fmt.Errorf("checking repo path: %w", err)
+	}
+	if err := EnsurePathNotSymlink(vaultPath); err != nil {
 		return nil, fmt.Errorf("checking vault path: %w", err)
 	}
 
@@ -79,6 +82,12 @@ func LoadVault(repoPath, password string) (*Vault, error) {
 
 func CreateVault(repoPath, password string) (*Vault, error) {
 	vaultPath := filepath.Join(repoPath, vaultFileName)
+	if err := EnsurePathNotSymlink(repoPath); err != nil {
+		return nil, fmt.Errorf("checking repo path: %w", err)
+	}
+	if err := EnsurePathNotSymlink(vaultPath); err != nil {
+		return nil, fmt.Errorf("checking vault path: %w", err)
+	}
 
 	if _, err := os.Lstat(vaultPath); err == nil {
 		return nil, fmt.Errorf("vault already exists at %s", vaultPath)

@@ -46,13 +46,145 @@ runs:
 
     - name: Cache vaultkey binary
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
       with:
-        path: ~/.local/bin/vaultkey
+        path: |
+          ~/.local/bin/vaultkey
+          ~/.local/bin/vaultkey.exe
         key: vaultkey-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.tag }}
 
+    - name: Verify cached vaultkey binary
+      id: verify-cache
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        RESOLVED_VERSION: ${{ steps.version.outputs.tag }}
+      run: |
+        set -euo pipefail
+
+        download_text() {
+          local url="$1"
+          if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$url"
+            return $?
+          fi
+          if command -v wget >/dev/null 2>&1; then
+            wget -q -O - "$url"
+            return $?
+          fi
+          echo "Neither curl nor wget is installed" >&2
+          return 1
+        }
+
+        sha256_file() {
+          local file="$1"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$file" | awk '{print $1}'
+            return $?
+          fi
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$file" | awk '{print $1}'
+            return $?
+          fi
+          if command -v openssl >/dev/null 2>&1; then
+            openssl dgst -sha256 "$file" | awk '{print $NF}'
+            return $?
+          fi
+          echo "No SHA-256 tool found (tried sha256sum, shasum, openssl)" >&2
+          return 1
+        }
+
+        lookup_checksum() {
+          local manifest="$1" asset_name="$2"
+          awk -v name="$asset_name" '
+            NF >= 2 {
+              file = $2
+              sub(/^\*/, "", file)
+              if (file == name) {
+                print $1
+                exit
+              }
+            }
+          ' "$manifest"
+        }
+
+        invalidate_cache() {
+          rm -f "$HOME/.local/bin/vaultkey" "$HOME/.local/bin/vaultkey.exe"
+          printf 'valid=false\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        case "$RUNNER_OS" in
+          Linux)
+            os="linux"
+            binary="$HOME/.local/bin/vaultkey"
+            ;;
+          macOS)
+            os="darwin"
+            binary="$HOME/.local/bin/vaultkey"
+            ;;
+          Windows)
+            os="windows"
+            binary="$HOME/.local/bin/vaultkey.exe"
+            ;;
+          *)
+            echo "Unsupported runner OS: $RUNNER_OS" >&2
+            invalidate_cache
+            ;;
+        esac
+
+        case "$RUNNER_ARCH" in
+          X64)
+            arch="amd64"
+            ;;
+          ARM64)
+            arch="arm64"
+            ;;
+          *)
+            echo "Unsupported runner arch: $RUNNER_ARCH" >&2
+            invalidate_cache
+            ;;
+        esac
+
+        if [ ! -x "$binary" ]; then
+          echo "Cached vaultkey binary is missing or not executable; reinstalling." >&2
+          invalidate_cache
+        fi
+
+        asset_name="vaultkey-${os}-${arch}"
+        if [ "$os" = "windows" ]; then
+          asset_name="${asset_name}.exe"
+        fi
+
+        manifest_url="https://github.com/bang9/ai-tools/releases/download/${RESOLVED_VERSION}/vaultkey-checksums.txt"
+        manifest=$(mktemp)
+        trap 'rm -f "$manifest"' EXIT
+
+        if ! download_text "$manifest_url" > "$manifest"; then
+          echo "Failed to download checksum manifest for cached vaultkey; reinstalling." >&2
+          invalidate_cache
+        fi
+
+        expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+        if [ -z "$expected_checksum" ]; then
+          echo "Checksum entry missing for cached vaultkey asset ${asset_name}; reinstalling." >&2
+          invalidate_cache
+        fi
+
+        if ! actual_checksum=$(sha256_file "$binary"); then
+          echo "Failed to hash cached vaultkey binary; reinstalling." >&2
+          invalidate_cache
+        fi
+
+        if [ "$actual_checksum" != "$expected_checksum" ]; then
+          echo "Cached vaultkey checksum mismatch; reinstalling." >&2
+          invalidate_cache
+        fi
+
+        printf 'valid=true\n' >> "$GITHUB_OUTPUT"
+
     - name: Install vaultkey
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache.outputs.cache-hit != 'true' || steps.verify-cache.outputs.valid != 'true'
       shell: bash
       run: VAULTKEY_VERSION="${{ steps.version.outputs.tag }}" bash "${{ github.action_path }}/../vaultkey/install.sh"
 

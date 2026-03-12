@@ -244,4 +244,4 @@ main() {
     info "vaultkey ${version} installed successfully!"
 }
 
-main
+main "$@"

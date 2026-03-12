@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-func ensurePathNotSymlink(path string) error {
+func EnsurePathNotSymlink(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -24,7 +24,7 @@ func ensurePathNotSymlink(path string) error {
 }
 
 func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
-	if err := ensurePathNotSymlink(path); err != nil {
+	if err := EnsurePathNotSymlink(path); err != nil {
 		return err
 	}
 
