@@ -39,7 +39,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.21'
+          go-version-file: redit/go.mod
           cache-dependency-path: redit/go.sum
 
       - name: Build binaries
