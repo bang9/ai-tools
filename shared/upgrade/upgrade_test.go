@@ -132,12 +132,10 @@ func TestDownloadBinaryVerifiedInstall(t *testing.T) {
 		t.Fatalf("expected installed content %q, got %q", binaryContent, content)
 	}
 
-	if _, err := os.Stat(destPath + ".tmp"); !os.IsNotExist(err) {
-		t.Fatalf("tmp file should not remain after successful install")
-	}
+	assertNoTempArtifacts(t, destPath)
 }
 
-func TestDownloadBinaryWithoutChecksumManifestFallsBackToUnverifiedInstall(t *testing.T) {
+func TestDownloadBinaryWithoutChecksumManifestReturnsError(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "test-tool")
 	oldContent := []byte("old-binary-content")
@@ -159,21 +157,23 @@ func TestDownloadBinaryWithoutChecksumManifestFallsBackToUnverifiedInstall(t *te
 		}
 	}))
 
-	if err := DownloadBinary("test/repo", "v1.2.3", "test-tool", destPath); err != nil {
-		t.Fatalf("DownloadBinary returned error: %v", err)
+	err := DownloadBinary("test/repo", "v1.2.3", "test-tool", destPath)
+	if err == nil {
+		t.Fatal("expected checksum manifest error")
+	}
+	if !strings.Contains(err.Error(), "checksum manifest missing") {
+		t.Fatalf("expected checksum manifest error, got %v", err)
 	}
 
 	content, err := os.ReadFile(destPath)
 	if err != nil {
-		t.Fatalf("failed to read installed binary: %v", err)
+		t.Fatalf("old binary should still exist after failed download: %v", err)
 	}
-	if string(content) != string(binaryContent) {
-		t.Fatalf("expected installed content %q, got %q", binaryContent, content)
+	if string(content) != string(oldContent) {
+		t.Fatalf("old binary content should be unchanged, got %q", content)
 	}
 
-	if _, err := os.Stat(destPath + ".tmp"); !os.IsNotExist(err) {
-		t.Fatalf("tmp file should not remain after successful install")
-	}
+	assertNoTempArtifacts(t, destPath)
 }
 
 func TestDownloadBinaryChecksumMismatchPreservesOldBinary(t *testing.T) {
@@ -212,9 +212,7 @@ func TestDownloadBinaryChecksumMismatchPreservesOldBinary(t *testing.T) {
 		t.Fatalf("old binary content should be unchanged, got %q", content)
 	}
 
-	if _, statErr := os.Stat(destPath + ".tmp"); !os.IsNotExist(statErr) {
-		t.Fatalf("tmp file should be cleaned up after checksum mismatch")
-	}
+	assertNoTempArtifacts(t, destPath)
 }
 
 func TestDownloadBinaryMissingChecksumEntryReturnsError(t *testing.T) {
@@ -347,6 +345,72 @@ func TestRunToolList(t *testing.T) {
 	}
 }
 
+func TestRunReturnsErrorForPartialUpgradeFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	selfPath := filepath.Join(tmpDir, installedBinaryName("test-tool"))
+	if err := os.WriteFile(selfPath, []byte("old-self-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldExecutable := osExecutable
+	osExecutable = func() (string, error) {
+		return selfPath, nil
+	}
+	t.Cleanup(func() {
+		osExecutable = oldExecutable
+	})
+
+	selfBinaryContent := []byte("verified-self-binary")
+	selfAssetName := platformBinaryName("test-tool")
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/repos/test/repo/releases/latest":
+			fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
+		case "/releases/test/repo/v1.2.3/test-tool-checksums.txt":
+			fmt.Fprintf(w, "%s  %s\n", sha256Hex(selfBinaryContent), selfAssetName)
+		case "/releases/test/repo/v1.2.3/" + selfAssetName:
+			w.Write(selfBinaryContent)
+		case "/releases/test/repo/v1.2.3/companion-tool-checksums.txt":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	err := Run(Config{
+		Repo:           "test/repo",
+		BinaryName:     "test-tool",
+		Version:        "v1.0.0",
+		CompanionTools: []string{"companion-tool"},
+	})
+	if err == nil {
+		t.Fatal("expected partial upgrade failure")
+	}
+	if !strings.Contains(err.Error(), "upgrade incomplete") {
+		t.Fatalf("expected upgrade incomplete error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "companion-tool") {
+		t.Fatalf("expected failing tool to be named in error, got %v", err)
+	}
+
+	content, readErr := os.ReadFile(selfPath)
+	if readErr != nil {
+		t.Fatalf("failed to read updated self binary: %v", readErr)
+	}
+	if string(content) != string(selfBinaryContent) {
+		t.Fatalf("expected self binary content %q, got %q", selfBinaryContent, content)
+	}
+
+	companionPath := filepath.Join(tmpDir, installedBinaryName("companion-tool"))
+	if _, statErr := os.Stat(companionPath); !os.IsNotExist(statErr) {
+		t.Fatalf("companion binary should not be installed after failed upgrade")
+	}
+
+	assertNoTempArtifacts(t, selfPath)
+	assertNoTempArtifacts(t, companionPath)
+}
+
 func TestIsHTTPStatus(t *testing.T) {
 	err := &httpStatusError{
 		statusCode: http.StatusNotFound,
@@ -391,4 +455,16 @@ func withTestServer(t *testing.T, handler http.Handler) {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func assertNoTempArtifacts(t *testing.T, destPath string) {
+	t.Helper()
+
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(destPath), filepath.Base(destPath)+".tmp-*"))
+	if err != nil {
+		t.Fatalf("failed to inspect temp artifacts: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("unexpected temp artifacts remain: %v", matches)
+	}
 }

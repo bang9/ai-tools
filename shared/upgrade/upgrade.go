@@ -35,6 +35,8 @@ var (
 	releaseAssetURL = func(repo, version, asset string) string {
 		return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, version, asset)
 	}
+
+	osExecutable = os.Executable
 )
 
 type httpStatusError struct {
@@ -73,16 +75,19 @@ func GetLatestVersion(repo string) (string, error) {
 }
 
 // DownloadBinary downloads a release binary to destPath using the safe download
-// pattern: download to tmp file, verify its checksum when available, then move it into place.
+// pattern: require a published checksum, verify the download, then move it into place.
 func DownloadBinary(repo, version, binaryName, destPath string) error {
 	platformBinary := platformBinaryName(binaryName)
-	expectedChecksum, hasChecksum, err := fetchExpectedChecksum(repo, version, binaryName, platformBinary)
+	expectedChecksum, err := fetchExpectedChecksum(repo, version, binaryName, platformBinary)
 	if err != nil {
 		return err
 	}
 
 	downloadURL := releaseAssetURL(repo, version, platformBinary)
-	tmpPath := destPath + ".tmp"
+	tmpPath, err := createTempDownloadPath(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp download path for %s: %w", binaryName, err)
+	}
 	defer os.Remove(tmpPath)
 
 	// Download to temporary file
@@ -90,25 +95,16 @@ func DownloadBinary(repo, version, binaryName, destPath string) error {
 		return fmt.Errorf("download failed for %s: %w", binaryName, err)
 	}
 
-	if hasChecksum {
-		actualChecksum, err := sha256File(tmpPath)
-		if err != nil {
-			return fmt.Errorf("checksum calculation failed for %s: %w", binaryName, err)
-		}
-		if !strings.EqualFold(actualChecksum, expectedChecksum) {
-			return fmt.Errorf(
-				"checksum mismatch for %s: expected %s, got %s",
-				binaryName,
-				expectedChecksum,
-				actualChecksum,
-			)
-		}
-	} else {
-		fmt.Fprintf(
-			os.Stderr,
-			"Warning: checksum manifest missing for %s %s; installing without verification\n",
+	actualChecksum, err := sha256File(tmpPath)
+	if err != nil {
+		return fmt.Errorf("checksum calculation failed for %s: %w", binaryName, err)
+	}
+	if !strings.EqualFold(actualChecksum, expectedChecksum) {
+		return fmt.Errorf(
+			"checksum mismatch for %s: expected %s, got %s",
 			binaryName,
-			version,
+			expectedChecksum,
+			actualChecksum,
 		)
 	}
 
@@ -154,22 +150,27 @@ func checksumManifestName(binaryName string) string {
 	return binaryName + "-checksums.txt"
 }
 
-func fetchExpectedChecksum(repo, version, binaryName, assetName string) (string, bool, error) {
+func fetchExpectedChecksum(repo, version, binaryName, assetName string) (string, error) {
 	manifestURL := releaseAssetURL(repo, version, checksumManifestName(binaryName))
 	manifest, err := downloadBytes(manifestURL)
 	if err != nil {
 		if isHTTPStatus(err, http.StatusNotFound) {
-			return "", false, nil
+			return "", fmt.Errorf(
+				"checksum manifest missing for %s %s: %w",
+				binaryName,
+				version,
+				err,
+			)
 		}
-		return "", false, fmt.Errorf("failed to fetch checksum manifest for %s: %w", binaryName, err)
+		return "", fmt.Errorf("failed to fetch checksum manifest for %s: %w", binaryName, err)
 	}
 
 	checksum, err := checksumForAsset(manifest, assetName)
 	if err != nil {
-		return "", true, fmt.Errorf("failed to read checksum for %s: %w", assetName, err)
+		return "", fmt.Errorf("failed to read checksum for %s: %w", assetName, err)
 	}
 
-	return checksum, true, nil
+	return checksum, nil
 }
 
 func checksumForAsset(manifest []byte, assetName string) (string, error) {
@@ -238,6 +239,21 @@ func downloadToFile(url, destPath string) error {
 	return file.Close()
 }
 
+func createTempDownloadPath(destPath string) (string, error) {
+	tmpFile, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+".tmp-*")
+	if err != nil {
+		return "", err
+	}
+
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+
+	return tmpPath, nil
+}
+
 func isHTTPStatus(err error, statusCode int) bool {
 	var statusErr *httpStatusError
 	return errors.As(err, &statusErr) && statusErr.statusCode == statusCode
@@ -273,7 +289,7 @@ func Run(cfg Config) error {
 	}
 
 	// Resolve current binary path
-	binPath, err := os.Executable()
+	binPath, err := osExecutable()
 	if err != nil {
 		binPath = filepath.Join(os.Getenv("HOME"), ".local", "bin", installedBinaryName(cfg.BinaryName))
 	}
@@ -286,6 +302,8 @@ func Run(cfg Config) error {
 	// Build list: self first, then companions
 	tools := []string{cfg.BinaryName}
 	tools = append(tools, cfg.CompanionTools...)
+	var failures []error
+	updatedCount := 0
 
 	for idx, tool := range tools {
 		destPath := filepath.Join(installDir, installedBinaryName(tool))
@@ -295,9 +313,18 @@ func Run(cfg Config) error {
 		fmt.Fprintf(os.Stderr, "Downloading %s %s...\n", tool, latestVersion)
 		if err := DownloadBinary(cfg.Repo, latestVersion, tool, destPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			failures = append(failures, fmt.Errorf("%s: %w", tool, err))
 			continue
 		}
+		updatedCount++
 		fmt.Fprintf(os.Stderr, "  %s updated\n", tool)
+	}
+
+	if len(failures) > 0 {
+		if updatedCount > 0 {
+			fmt.Fprintf(os.Stderr, "Updated %d/%d tools before failure\n", updatedCount, len(tools))
+		}
+		return fmt.Errorf("upgrade incomplete: %w", errors.Join(failures...))
 	}
 
 	fmt.Fprintf(os.Stderr, "Updated to %s\n", latestVersion)

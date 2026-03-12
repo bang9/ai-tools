@@ -4,12 +4,14 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/generate-ensure-binary.sh'
       - 'scripts/lib/**'
       - '**/ensure-binary.conf'
       - '**/ensure-binary.sh'
   pull_request:
     branches: [main]
     paths:
+      - 'scripts/generate-ensure-binary.sh'
       - 'scripts/lib/**'
       - '**/ensure-binary.conf'
       - '**/ensure-binary.sh'
@@ -18,12 +20,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Check ensure-binary.sh freshness
         run: ./scripts/generate-ensure-binary.sh --check

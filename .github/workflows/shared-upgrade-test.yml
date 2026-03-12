@@ -1,15 +1,13 @@
-name: "redit: Test"
+name: "shared/upgrade: Test"
 
 on:
   push:
     branches: [main]
     paths:
-      - 'redit/**'
       - 'shared/upgrade/**'
   pull_request:
     branches: [main]
     paths:
-      - 'redit/**'
       - 'shared/upgrade/**'
 
 concurrency:
@@ -31,10 +29,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: '1.21'
-          cache-dependency-path: redit/go.sum
+          go-version-file: shared/upgrade/go.mod
+          cache-dependency-path: shared/upgrade/go.mod
 
       - name: Run tests
         run: |
-          cd redit
+          cd shared/upgrade
           go test ./...
