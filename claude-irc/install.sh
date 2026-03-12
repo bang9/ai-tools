@@ -1,9 +1,10 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 REPO="bang9/ai-tools"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="claude-irc"
+SEMVER_TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,7 +19,6 @@ detect_os() {
     case "$(uname -s)" in
         Darwin) echo "darwin" ;;
         Linux)  echo "linux" ;;
-        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
         *) error "Unsupported operating system: $(uname -s)" ;;
     esac
 }
@@ -42,9 +42,12 @@ detect_arch() {
 
 get_latest_version() {
     local version
-    version=$(curl -sfSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    version=$(curl -sfSL "https://api.github.com/repos/${REPO}/releases/latest" | awk -F'"' '$2 == "tag_name" { print $4; exit }')
     if [ -z "$version" ]; then
         error "Failed to fetch latest version from GitHub"
+    fi
+    if ! printf '%s\n' "$version" | grep -Eq "$SEMVER_TAG_PATTERN"; then
+        error "Invalid release version from GitHub: $version"
     fi
     echo "$version"
 }
@@ -59,41 +62,8 @@ download_file() {
         wget -q -O "$dest" "$url"
         return $?
     fi
-    error "Neither curl nor wget is installed"
-}
-
-download_optional_file() {
-    local url="$1" dest="$2"
-    local http_code output
-
-    if command -v curl &> /dev/null; then
-        if ! http_code=$(curl -sSL -w '%{http_code}' -o "$dest" "$url"); then
-            rm -f "$dest"
-            return 1
-        fi
-        case "$http_code" in
-            200) return 0 ;;
-            404)
-                rm -f "$dest"
-                return 2
-                ;;
-        esac
-        rm -f "$dest"
-        return 1
-    fi
-
-    if command -v wget &> /dev/null; then
-        if output=$(wget -q -S -O "$dest" "$url" 2>&1); then
-            return 0
-        fi
-        rm -f "$dest"
-        if printf '%s\n' "$output" | grep -Eq 'HTTP/[0-9.]+\s+404'; then
-            return 2
-        fi
-        return 1
-    fi
-
-    error "Neither curl nor wget is installed"
+    echo "Neither curl nor wget is installed" >&2
+    return 1
 }
 
 sha256_file() {
@@ -110,7 +80,8 @@ sha256_file() {
         openssl dgst -sha256 "$file" | awk '{print $NF}'
         return $?
     fi
-    error "No SHA-256 tool found (tried sha256sum, shasum, openssl)"
+    echo "No SHA-256 tool found (tried sha256sum, shasum, openssl)" >&2
+    return 1
 }
 
 lookup_checksum() {
@@ -127,56 +98,54 @@ lookup_checksum() {
     ' "$manifest"
 }
 
-install_binary_with_optional_checksum() {
-    local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
-    local tmp="${dest}.tmp.$$" manifest="${tmp}.checksums"
-    local expected_checksum actual_checksum checksum_status
+cleanup_install_artifacts() {
+    rm -f "$1" "$2"
+}
 
-    if download_optional_file "$checksum_url" "$manifest"; then
-        expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
-        if [ -z "$expected_checksum" ]; then
-            warn "Checksum entry not found for ${asset_name}"
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
-    else
-        checksum_status=$?
-        if [ "$checksum_status" -eq 2 ]; then
-            warn "Checksum manifest not found for ${asset_name}; installing without checksum verification"
-            rm -f "$manifest"
-            expected_checksum=""
-        else
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
+install_binary_with_checksum() {
+    local download_url="$1" checksum_url="$2" asset_name="$3" dest="$4"
+    local tmp manifest
+    local expected_checksum actual_checksum
+
+    tmp=$(mktemp "${dest}.tmp.XXXXXX")
+    manifest=$(mktemp "${dest}.checksums.XXXXXX")
+
+    if ! download_file "$checksum_url" "$manifest"; then
+        echo "Failed to download checksum manifest: ${checksum_url}" >&2
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
+    fi
+
+    expected_checksum=$(lookup_checksum "$manifest" "$asset_name")
+    if [ -z "$expected_checksum" ]; then
+        echo "Checksum entry not found for ${asset_name} in ${checksum_url}" >&2
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
     fi
 
     if ! download_file "$download_url" "$tmp"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
-    if [ -n "$expected_checksum" ]; then
-        if ! actual_checksum=$(sha256_file "$tmp"); then
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
+    if ! actual_checksum=$(sha256_file "$tmp"); then
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
+    fi
 
-        if [ "$actual_checksum" != "$expected_checksum" ]; then
-            warn "Checksum mismatch for ${asset_name}"
-            rm -f "$tmp" "$manifest"
-            return 1
-        fi
+    if [ "$actual_checksum" != "$expected_checksum" ]; then
+        echo "Checksum mismatch for ${asset_name}: expected ${expected_checksum}, got ${actual_checksum}" >&2
+        cleanup_install_artifacts "$tmp" "$manifest"
+        return 1
     fi
 
     if ! chmod +x "$tmp"; then
-        rm -f "$tmp" "$manifest"
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
-    rm -f "$dest"
-    if ! mv "$tmp" "$dest"; then
-        rm -f "$tmp" "$manifest"
+    if ! mv -f "$tmp" "$dest"; then
+        cleanup_install_artifacts "$tmp" "$manifest"
         return 1
     fi
 
@@ -203,9 +172,11 @@ ensure_path() {
 
     if [ -n "$shell_profile" ]; then
         if ! grep -q "$INSTALL_DIR" "$shell_profile" 2>/dev/null; then
-            echo "" >> "$shell_profile"
-            echo "# Added by claude-irc installer" >> "$shell_profile"
-            echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$shell_profile"
+            {
+                echo ""
+                echo "# Added by claude-irc installer"
+                echo "export PATH=\"$INSTALL_DIR:\$PATH\""
+            } >> "$shell_profile"
             warn "Added $INSTALL_DIR to PATH in $shell_profile"
             warn "Run 'source $shell_profile' or restart your terminal to use claude-irc"
         fi
@@ -226,10 +197,6 @@ main() {
 
     binary_name="claude-irc-${os}-${arch}"
     checksum_name="${BINARY_NAME}-checksums.txt"
-    if [ "$os" = "windows" ]; then
-        binary_name="${binary_name}.exe"
-        BINARY_NAME="claude-irc.exe"
-    fi
 
     download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}"
     checksums_url="https://github.com/${REPO}/releases/download/${version}/${checksum_name}"
@@ -242,7 +209,7 @@ main() {
     mkdir -p "$INSTALL_DIR"
 
     info "Downloading ${binary_name}..."
-    if ! install_binary_with_optional_checksum "$download_url" "$checksums_url" "$binary_name" "${INSTALL_DIR}/${BINARY_NAME}"; then
+    if ! install_binary_with_checksum "$download_url" "$checksums_url" "$binary_name" "${INSTALL_DIR}/${BINARY_NAME}"; then
         error "Download failed. Check if the release exists: https://github.com/${REPO}/releases/tag/${version}"
     fi
 

@@ -38,3 +38,8 @@ jobs:
         run: |
           cd claude-irc
           go test ./...
+
+      - name: Build release binaries
+        run: |
+          cd claude-irc
+          make cross VERSION=test

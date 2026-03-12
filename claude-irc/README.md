@@ -10,6 +10,8 @@ When running multiple Claude Code sessions in parallel (e.g., one on server code
 
 `claude-irc` creates a machine-wide shared communication channel. Sessions "join" the channel, send messages, and detect each other's online presence via Unix sockets.
 
+Supported platforms: macOS (`darwin-arm64`, `darwin-amd64`) and Linux (`linux-amd64`). Windows is not supported yet.
+
 ## Quick Start
 
 ```bash

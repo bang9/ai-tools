@@ -46,23 +46,15 @@ jobs:
         run: |
           cd claude-irc
           VERSION="$RELEASE_VERSION"
-          LDFLAGS="-s -w -X main.version=${VERSION}"
-          mkdir -p dist
-          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/claude-irc-darwin-arm64 ./cmd/claude-irc
-          GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-irc-darwin-amd64 ./cmd/claude-irc
-          GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-irc-linux-amd64 ./cmd/claude-irc
+          make cross VERSION="$VERSION"
 
       - name: Generate checksums
         run: |
           cd claude-irc/dist
-          sha256sum * > claude-irc-checksums.txt
+          sha256sum claude-irc-* > claude-irc-checksums.txt
 
       - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$RELEASE_VERSION" \
-            claude-irc/dist/claude-irc-darwin-arm64 \
-            claude-irc/dist/claude-irc-darwin-amd64 \
-            claude-irc/dist/claude-irc-linux-amd64 \
-            claude-irc/dist/claude-irc-checksums.txt
+          gh release upload "$RELEASE_VERSION" claude-irc/dist/*
