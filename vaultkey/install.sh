@@ -47,6 +47,14 @@ get_latest_version() {
     if [ -z "$version" ]; then
         error "Failed to fetch latest version from GitHub"
     fi
+    case "$version" in
+        *$'\n'*|*$'\r'*)
+            error "Invalid release version: must be a single-line semver tag"
+            ;;
+    esac
+    if ! printf '%s\n' "$version" | grep -Eq "$SEMVER_TAG_PATTERN"; then
+        error "Invalid release version: must match semver tag format"
+    fi
     echo "$version"
 }
 
@@ -165,10 +173,15 @@ install_verified_binary() {
 
 ensure_path() {
     local shell_profile=""
+    local shell_name=""
 
-    if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+    if [ -n "${SHELL:-}" ]; then
+        shell_name="$(basename "$SHELL")"
+    fi
+
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$shell_name" = "zsh" ]; then
         shell_profile="$HOME/.zshrc"
-    elif [ -n "$BASH_VERSION" ] || [ "$(basename "$SHELL")" = "bash" ]; then
+    elif [ -n "${BASH_VERSION:-}" ] || [ "$shell_name" = "bash" ]; then
         if [ -f "$HOME/.bash_profile" ]; then
             shell_profile="$HOME/.bash_profile"
         else

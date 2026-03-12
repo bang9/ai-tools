@@ -155,10 +155,15 @@ install_binary_with_checksum() {
 
 ensure_path() {
     local shell_profile=""
+    local shell_name=""
 
-    if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+    if [ -n "${SHELL:-}" ]; then
+        shell_name="$(basename "$SHELL")"
+    fi
+
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$shell_name" = "zsh" ]; then
         shell_profile="$HOME/.zshrc"
-    elif [ -n "$BASH_VERSION" ] || [ "$(basename "$SHELL")" = "bash" ]; then
+    elif [ -n "${BASH_VERSION:-}" ] || [ "$shell_name" = "bash" ]; then
         if [ -f "$HOME/.bash_profile" ]; then
             shell_profile="$HOME/.bash_profile"
         else
