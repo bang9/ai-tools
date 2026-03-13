@@ -19,10 +19,11 @@ import (
 
 // Config holds the upgrade configuration for a tool.
 type Config struct {
-	Repo           string   // GitHub repo (e.g., "bang9/ai-tools")
-	BinaryName     string   // Tool binary name (e.g., "claude-irc")
-	Version        string   // Current version (set via -ldflags)
-	CompanionTools []string // Additional tools to upgrade alongside self
+	Repo                  string                                       // GitHub repo (e.g., "bang9/ai-tools")
+	BinaryName            string                                       // Tool binary name (e.g., "claude-irc")
+	Version               string                                       // Current version (set via -ldflags)
+	CompanionTools        []string                                     // Additional tools to upgrade alongside self
+	ResolveCompanionTools func(repo, version string) ([]string, error) // Optional callback to resolve companions for the target version
 }
 
 var (
@@ -274,6 +275,18 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+func resolveCompanionTools(cfg Config, latestVersion string) ([]string, error) {
+	if cfg.ResolveCompanionTools != nil {
+		return cfg.ResolveCompanionTools(cfg.Repo, latestVersion)
+	}
+	return cfg.CompanionTools, nil
+}
+
+func buildToolList(binaryName string, companionTools []string) []string {
+	tools := []string{binaryName}
+	return append(tools, companionTools...)
+}
+
 // Run performs the full upgrade flow: check version, download self, download companions.
 func Run(cfg Config) error {
 	fmt.Fprintln(os.Stderr, "Checking for updates...")
@@ -288,6 +301,11 @@ func Run(cfg Config) error {
 		return nil
 	}
 
+	companionTools, err := resolveCompanionTools(cfg, latestVersion)
+	if err != nil {
+		return fmt.Errorf("failed to resolve companion tools: %w", err)
+	}
+
 	// Resolve current binary path
 	binPath, err := osExecutable()
 	if err != nil {
@@ -300,8 +318,7 @@ func Run(cfg Config) error {
 	installDir := filepath.Dir(binPath)
 
 	// Build list: self first, then companions
-	tools := []string{cfg.BinaryName}
-	tools = append(tools, cfg.CompanionTools...)
+	tools := buildToolList(cfg.BinaryName, companionTools)
 	var failures []error
 	updatedCount := 0
 

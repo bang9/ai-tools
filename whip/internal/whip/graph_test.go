@@ -216,7 +216,26 @@ func TestTasksToGraphNodes(t *testing.T) {
 	if nodes[0].ID != "abc123" || nodes[0].Title != "Auth module" {
 		t.Errorf("unexpected node 0: %+v", nodes[0])
 	}
+	if nodes[1].Status != string(StatusInProgress) {
+		t.Errorf("unexpected status: %+v", nodes[1])
+	}
 	if nodes[1].DependsOn[0] != "abc123" {
 		t.Errorf("unexpected deps: %+v", nodes[1].DependsOn)
+	}
+}
+
+func TestTasksToGraphNodes_FiltersMissingDependencies(t *testing.T) {
+	tasks := []*Task{
+		{ID: "child", Title: "Child", DependsOn: []string{"parent", "missing"}},
+		{ID: "parent", Title: "Parent"},
+	}
+
+	nodes := TasksToGraphNodes(tasks)
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(nodes))
+	}
+
+	if got := nodes[0].DependsOn; len(got) != 1 || got[0] != "parent" {
+		t.Fatalf("expected missing dependencies to be filtered, got %+v", got)
 	}
 }

@@ -1,0 +1,4 @@
+# Required companion tools for whip.
+claude-irc
+webform
+rewind

@@ -53,6 +53,48 @@ func TestConfigWithCompanionTools(t *testing.T) {
 	}
 }
 
+func TestResolveCompanionTools(t *testing.T) {
+	t.Run("falls back to config companions", func(t *testing.T) {
+		cfg := Config{
+			CompanionTools: []string{"claude-irc", "webform", "rewind"},
+		}
+
+		got, err := resolveCompanionTools(cfg, "v1.2.3")
+		if err != nil {
+			t.Fatalf("resolveCompanionTools returned error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 tools, got %d", len(got))
+		}
+		if got[0] != "claude-irc" || got[1] != "webform" || got[2] != "rewind" {
+			t.Fatalf("unexpected companion tools: %v", got)
+		}
+	})
+
+	t.Run("uses resolver for target version", func(t *testing.T) {
+		cfg := Config{
+			Repo: "bang9/ai-tools",
+			ResolveCompanionTools: func(repo, version string) ([]string, error) {
+				if repo != "bang9/ai-tools" {
+					t.Fatalf("expected repo bang9/ai-tools, got %s", repo)
+				}
+				if version != "v1.2.3" {
+					t.Fatalf("expected version v1.2.3, got %s", version)
+				}
+				return []string{"claude-irc", "webform", "rewind"}, nil
+			},
+		}
+
+		got, err := resolveCompanionTools(cfg, "v1.2.3")
+		if err != nil {
+			t.Fatalf("resolveCompanionTools returned error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 tools, got %d", len(got))
+		}
+	})
+}
+
 func TestGetLatestVersion(t *testing.T) {
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/repos/test/repo/releases/latest" {
@@ -326,8 +368,7 @@ func TestRunToolList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tools := []string{tt.cfg.BinaryName}
-			tools = append(tools, tt.cfg.CompanionTools...)
+			tools := buildToolList(tt.cfg.BinaryName, tt.cfg.CompanionTools)
 
 			if len(tools) != len(tt.wantTools) {
 				t.Fatalf("expected %d tools, got %d", len(tt.wantTools), len(tools))

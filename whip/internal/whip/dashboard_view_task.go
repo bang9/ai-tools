@@ -35,6 +35,9 @@ func (m DashboardModel) renderListView(w int) string {
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render("  " + m.listModeTitle()))
 	b.WriteString("\n\n")
 
+	b.WriteString(m.renderTable())
+	b.WriteString("\n")
+
 	if len(m.tasks) == 0 {
 		empty := "  No tasks yet — create one with: whip task create \"title\" --desc \"description\""
 		if m.listMode == listModeArchived {
@@ -46,8 +49,6 @@ func (m DashboardModel) renderListView(w int) string {
 			Render(empty))
 		b.WriteString("\n")
 	} else {
-		b.WriteString(m.renderTable())
-		b.WriteString("\n")
 		b.WriteString(" " + lipgloss.NewStyle().Foreground(colorPrimary).Render(strings.Repeat("━", w-2)))
 		b.WriteString("\n")
 		b.WriteString(m.renderSummary())

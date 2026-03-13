@@ -14,10 +14,10 @@ func upgradeCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return upgrade.Run(upgrade.Config{
-				Repo:           "bang9/ai-tools",
-				BinaryName:     "whip",
-				Version:        version,
-				CompanionTools: []string{"claude-irc", "webform", "rewind"},
+				Repo:                  "bang9/ai-tools",
+				BinaryName:            "whip",
+				Version:               version,
+				ResolveCompanionTools: fetchWhipCompanionTools,
 			})
 		},
 	}

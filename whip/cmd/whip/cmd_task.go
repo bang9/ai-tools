@@ -118,6 +118,7 @@ func createCmd() *cobra.Command {
 
 func listCmd() *cobra.Command {
 	var showArchive bool
+	var showGraph bool
 
 	cmd := &cobra.Command{
 		Use:     "list",
@@ -139,6 +140,15 @@ func listCmd() *cobra.Command {
 			}
 			if err != nil {
 				return err
+			}
+			if showGraph {
+				if len(tasks) == 0 {
+					fmt.Println("Empty graph.")
+					return nil
+				}
+
+				fmt.Println(whip.RenderGraph(whip.TasksToGraphNodes(tasks)))
+				return nil
 			}
 			if len(tasks) == 0 {
 				if showArchive {
@@ -194,6 +204,7 @@ func listCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&showArchive, "archive", false, "List archived tasks instead of active tasks")
+	cmd.Flags().BoolVar(&showGraph, "graph", false, "Render the listed tasks as an ASCII dependency graph")
 	return cmd
 }
 

@@ -74,9 +74,9 @@ func RenderGraph(nodes []GraphNode) string {
 
 	// Render boxes
 	const (
-		padH = 1  // horizontal padding inside box
+		padH = 1 // horizontal padding inside box
 		maxW = 20
-		hGap = 4  // horizontal gap between boxes
+		hGap = 4 // horizontal gap between boxes
 	)
 
 	// Calculate box widths per node
@@ -329,21 +329,21 @@ const (
 )
 
 var dirToRune = map[int]rune{
-	dirUp | dirDown:                       '│',
-	dirLeft | dirRight:                    '─',
-	dirUp | dirRight:                      '└',
-	dirUp | dirLeft:                       '┘',
-	dirDown | dirRight:                    '┌',
-	dirDown | dirLeft:                     '┐',
-	dirUp | dirDown | dirRight:            '├',
-	dirUp | dirDown | dirLeft:             '┤',
-	dirDown | dirLeft | dirRight:          '┬',
-	dirUp | dirLeft | dirRight:            '┴',
-	dirUp | dirDown | dirLeft | dirRight:  '┼',
-	dirUp:    '│',
-	dirDown:  '│',
-	dirLeft:  '─',
-	dirRight: '─',
+	dirUp | dirDown:                      '│',
+	dirLeft | dirRight:                   '─',
+	dirUp | dirRight:                     '└',
+	dirUp | dirLeft:                      '┘',
+	dirDown | dirRight:                   '┌',
+	dirDown | dirLeft:                    '┐',
+	dirUp | dirDown | dirRight:           '├',
+	dirUp | dirDown | dirLeft:            '┤',
+	dirDown | dirLeft | dirRight:         '┬',
+	dirUp | dirLeft | dirRight:           '┴',
+	dirUp | dirDown | dirLeft | dirRight: '┼',
+	dirUp:                                '│',
+	dirDown:                              '│',
+	dirLeft:                              '─',
+	dirRight:                             '─',
 }
 
 func renderConnectors(parentGroup, childGroup []string, boxWidth map[string]int, hGap int, xPos map[string]int, layers map[string]int, nodeMap map[string]*GraphNode, nodes []GraphNode, passthroughs map[string]map[int]bool, currentLayer int) string {
@@ -508,13 +508,25 @@ func renderConnectors(parentGroup, childGroup []string, boxWidth map[string]int,
 
 // TasksToGraphNodes converts a slice of Tasks to GraphNodes for rendering.
 func TasksToGraphNodes(tasks []*Task) []GraphNode {
+	taskIDs := make(map[string]struct{}, len(tasks))
+	for _, t := range tasks {
+		taskIDs[t.ID] = struct{}{}
+	}
+
 	nodes := make([]GraphNode, len(tasks))
 	for i, t := range tasks {
+		deps := make([]string, 0, len(t.DependsOn))
+		for _, dep := range t.DependsOn {
+			if _, ok := taskIDs[dep]; ok {
+				deps = append(deps, dep)
+			}
+		}
+
 		nodes[i] = GraphNode{
 			ID:        t.ID,
 			Title:     t.Title,
 			Status:    string(t.Status),
-			DependsOn: t.DependsOn,
+			DependsOn: deps,
 		}
 	}
 	return nodes

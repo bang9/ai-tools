@@ -11,10 +11,47 @@ ENABLE_WINDOWS="false"
 SUPPORTED_PLATFORMS="darwin-arm64 darwin-amd64 linux-amd64"
 BUILD_TARGET="./cmd/whip"
 
-# Ensure required companion tools (claude-irc, webform, rewind) are at expected version.
+trim_companion_tool_line() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+load_companion_tools() {
+    local script_dir companion_file line trimmed
+
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    companion_file="$script_dir/companion-tools.txt"
+
+    if [ ! -f "$companion_file" ]; then
+        echo "Error: whip companion tool definition not found: $companion_file" >&2
+        return 1
+    fi
+
+    WHIP_COMPANION_TOOLS=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"
+        trimmed="$(trim_companion_tool_line "$line")"
+        if [ -n "$trimmed" ]; then
+            WHIP_COMPANION_TOOLS+=("$trimmed")
+        fi
+    done < "$companion_file"
+
+    if [ "${#WHIP_COMPANION_TOOLS[@]}" -eq 0 ]; then
+        echo "Error: no whip companion tools defined in $companion_file" >&2
+        return 1
+    fi
+}
+
+# Ensure required companion tools from companion-tools.txt are at expected version.
 post_install_hook() {
     local auto_upgrade_companions="${WHIP_AUTO_UPGRADE_COMPANIONS:-0}"
-    for tool in claude-irc webform rewind; do
+    local tool
+
+    load_companion_tools || return 1
+
+    for tool in "${WHIP_COMPANION_TOOLS[@]}"; do
         TOOL_PATH=""
         if command -v "$tool" &> /dev/null; then
             TOOL_PATH="$(command -v "$tool")"

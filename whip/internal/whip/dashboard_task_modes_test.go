@@ -7,6 +7,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func assertEmptyListViewTable(t *testing.T, output, emptyMessage string) {
+	t.Helper()
+
+	headerIdx := strings.Index(output, "WORKSPACE")
+	if headerIdx == -1 {
+		t.Fatalf("list view missing task table header: %s", output)
+	}
+
+	emptyIdx := strings.Index(output, emptyMessage)
+	if emptyIdx == -1 {
+		t.Fatalf("list view missing empty-state message %q: %s", emptyMessage, output)
+	}
+
+	if headerIdx > emptyIdx {
+		t.Fatalf("table header should render before empty-state message: %s", output)
+	}
+
+	if !strings.Contains(output[headerIdx:emptyIdx], "─") {
+		t.Fatalf("list view missing table divider before empty-state message: %s", output)
+	}
+}
+
 func TestDashboardTabSwitchesBetweenActiveAndArchivedLists(t *testing.T) {
 	store := tempStore(t)
 
@@ -113,6 +135,24 @@ func TestDashboardListFooterGatesModeSpecificActions(t *testing.T) {
 	if !strings.Contains(archivedFooter, "tab active") {
 		t.Fatalf("archived footer missing active toggle: %s", archivedFooter)
 	}
+}
+
+func TestDashboardListViewShowsTableHeaderForEmptyActiveList(t *testing.T) {
+	store := tempStore(t)
+
+	m := NewDashboardModel(store, "test")
+	m.listMode = listModeActive
+
+	assertEmptyListViewTable(t, m.renderListView(120), "No tasks yet")
+}
+
+func TestDashboardListViewShowsTableHeaderForEmptyArchivedList(t *testing.T) {
+	store := tempStore(t)
+
+	m := NewDashboardModel(store, "test")
+	m.listMode = listModeArchived
+
+	assertEmptyListViewTable(t, m.renderListView(120), "No archived tasks.")
 }
 
 func TestDashboardDetailFooterGatesArchiveAndDelete(t *testing.T) {

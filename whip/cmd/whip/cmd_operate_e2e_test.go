@@ -7,6 +7,75 @@ import (
 	whiplib "github.com/bang9/ai-tools/whip/internal/whip"
 )
 
+func TestTaskListDefaultOutputRemainsTable(t *testing.T) {
+	h := newSkillFlowHarness(t)
+
+	task := whiplib.NewTask("Table", "desc", "/tmp")
+	if err := h.store.SaveTask(task); err != nil {
+		t.Fatalf("SaveTask table: %v", err)
+	}
+
+	listOutput, _, err := execWhipCLICapture(t, "task", "list")
+	if err != nil {
+		t.Fatalf("task list: %v", err)
+	}
+	if !strings.Contains(listOutput, "WORKSPACE") {
+		t.Fatalf("task list should keep table headers:\n%s", listOutput)
+	}
+	if !strings.Contains(listOutput, task.ID) {
+		t.Fatalf("task list missing task row:\n%s", listOutput)
+	}
+	if strings.Contains(listOutput, "┌") {
+		t.Fatalf("default task list should not render graph output:\n%s", listOutput)
+	}
+}
+
+func TestTaskListGraphRendersDependencies(t *testing.T) {
+	h := newSkillFlowHarness(t)
+
+	root := whiplib.NewTask("Root", "desc", "/tmp")
+	root.Status = whiplib.StatusCompleted
+	if err := h.store.SaveTask(root); err != nil {
+		t.Fatalf("SaveTask root: %v", err)
+	}
+
+	child := whiplib.NewTask("Child", "desc", "/tmp")
+	child.Status = whiplib.StatusInProgress
+	child.DependsOn = []string{root.ID}
+	if err := h.store.SaveTask(child); err != nil {
+		t.Fatalf("SaveTask child: %v", err)
+	}
+
+	graphOutput, _, err := execWhipCLICapture(t, "task", "list", "--graph")
+	if err != nil {
+		t.Fatalf("task list --graph: %v", err)
+	}
+	if !strings.Contains(graphOutput, root.ID+": Root") {
+		t.Fatalf("graph output missing root node:\n%s", graphOutput)
+	}
+	if !strings.Contains(graphOutput, child.ID+": Child") {
+		t.Fatalf("graph output missing child node:\n%s", graphOutput)
+	}
+	if !strings.Contains(graphOutput, "┌") || !strings.Contains(graphOutput, "▼") {
+		t.Fatalf("graph output should render ASCII boxes and connectors:\n%s", graphOutput)
+	}
+	if strings.Contains(graphOutput, "WORKSPACE") {
+		t.Fatalf("graph output should not include the table header:\n%s", graphOutput)
+	}
+}
+
+func TestTaskListGraphEmptyState(t *testing.T) {
+	_ = newSkillFlowHarness(t)
+
+	graphOutput, _, err := execWhipCLICapture(t, "task", "list", "--graph")
+	if err != nil {
+		t.Fatalf("task list --graph: %v", err)
+	}
+	if graphOutput != "Empty graph.\n" {
+		t.Fatalf("task list --graph empty state = %q, want %q", graphOutput, "Empty graph.\n")
+	}
+}
+
 func TestTaskArchiveAndDeleteSemantics(t *testing.T) {
 	h := newSkillFlowHarness(t)
 

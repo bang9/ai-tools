@@ -3,7 +3,10 @@ set -euo pipefail
 
 REPO="bang9/ai-tools"
 INSTALL_DIR="$HOME/.local/bin"
+COMPANION_TOOLS_PATH="whip/scripts/companion-tools.txt"
+LEGACY_COMPANION_TOOLS_PATH="whip/scripts/ensure-binary.conf"
 SEMVER_TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+COMPANION_TOOL_NAME_PATTERN='^[a-z0-9][a-z0-9-]*$'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +18,82 @@ info() { echo -e "${GREEN}$1${NC}"; }
 warn() { echo -e "${YELLOW}$1${NC}"; }
 error() { echo -e "${RED}$1${NC}" >&2; exit 1; }
 step() { echo -e "${CYAN}→${NC} $1"; }
+
+trim_whitespace() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+append_companion_tool() {
+    local tool="$1" existing
+
+    if ! printf '%s\n' "$tool" | grep -Eq "$COMPANION_TOOL_NAME_PATTERN"; then
+        error "Invalid whip companion tool name: ${tool}"
+    fi
+
+    for existing in "${COMPANION_TOOLS[@]:-}"; do
+        if [ "$existing" = "$tool" ]; then
+            error "Duplicate whip companion tool name: ${tool}"
+        fi
+    done
+
+    COMPANION_TOOLS+=("$tool")
+}
+
+parse_companion_tools_payload() {
+    local payload="$1" source="$2" line trimmed
+
+    COMPANION_TOOLS=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"
+        trimmed="$(trim_whitespace "$line")"
+        if [ -n "$trimmed" ]; then
+            append_companion_tool "$trimmed"
+        fi
+    done <<EOF
+$payload
+EOF
+
+    if [ "${#COMPANION_TOOLS[@]}" -eq 0 ]; then
+        error "No whip companion tools defined in ${source}"
+    fi
+}
+
+load_legacy_companion_tools() {
+    local version="$1" url payload legacy_spec
+    local legacy_tools=()
+    local tool
+
+    url="https://raw.githubusercontent.com/${REPO}/${version}/${LEGACY_COMPANION_TOOLS_PATH}"
+    if ! payload=$(download_text "$url" 2>/dev/null); then
+        return 1
+    fi
+
+    legacy_spec=$(printf '%s\n' "$payload" | awk '
+        /^[[:space:]]*for[[:space:]]+tool[[:space:]]+in[[:space:]]+/ {
+            line = $0
+            sub(/^[[:space:]]*for[[:space:]]+tool[[:space:]]+in[[:space:]]+/, "", line)
+            sub(/[[:space:]]*;[[:space:]]*do[[:space:]]*$/, "", line)
+            print line
+            exit
+        }
+    ')
+    if [ -z "$legacy_spec" ]; then
+        return 1
+    fi
+
+    read -r -a legacy_tools <<< "$legacy_spec"
+    COMPANION_TOOLS=()
+    for tool in "${legacy_tools[@]}"; do
+        append_companion_tool "$tool"
+    done
+
+    if [ "${#COMPANION_TOOLS[@]}" -eq 0 ]; then
+        return 1
+    fi
+}
 
 detect_os() {
     case "$(uname -s)" in
@@ -67,6 +146,22 @@ download_text() {
         return $?
     fi
     error "Neither curl nor wget is installed"
+}
+
+load_companion_tools() {
+    local version="$1" url payload
+
+    url="https://raw.githubusercontent.com/${REPO}/${version}/${COMPANION_TOOLS_PATH}"
+    if payload=$(download_text "$url" 2>/dev/null); then
+        parse_companion_tools_payload "$payload" "$url"
+        return 0
+    fi
+
+    if load_legacy_companion_tools "$version"; then
+        return 0
+    fi
+
+    error "Failed to resolve whip companion tools for ${version}. Tried ${url} and https://raw.githubusercontent.com/${REPO}/${version}/${LEGACY_COMPANION_TOOLS_PATH}"
 }
 
 validate_version_tag() {
@@ -250,6 +345,7 @@ main() {
     os=$(detect_os)
     arch=$(detect_arch)
     version=$(get_latest_version)
+    load_companion_tools "$version"
 
     echo "  Version:      $version"
     echo "  Platform:     ${os}/${arch}"
@@ -265,7 +361,7 @@ main() {
     echo ""
     step "Installing required tools..."
 
-    for tool in claude-irc webform rewind; do
+    for tool in "${COMPANION_TOOLS[@]}"; do
         if ! command -v "$tool" &> /dev/null && ! [ -x "${INSTALL_DIR}/$tool" ]; then
             install_binary "$tool" "$os" "$arch" "$version"
         else
