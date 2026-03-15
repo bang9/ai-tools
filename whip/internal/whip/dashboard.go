@@ -269,7 +269,7 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case peersMsg:
 		m.peers = []peerInfo(msg)
-		if m.ircSelectedPeer != "" {
+		if m.view == viewIRC || m.view == viewIRCMsg || m.ircSelectedPeer != "" {
 			rows := m.ircRows()
 			if findPeerIndex(rows, m.ircSelectedPeer) < 0 {
 				m.ircSelectedPeer = firstPeerName(rows)
