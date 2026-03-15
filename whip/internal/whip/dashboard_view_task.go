@@ -365,7 +365,11 @@ func (m DashboardModel) renderListFooter() string {
 	}
 
 	line1 := "  " + footerKey("↑↓", "navigate") + dot + footerKey("←/→", "expand/collapse")
-	line2 := "  " + footerKey("enter", "detail") + dot + footerKey("tab", m.toggleModeLabel()) + dot + footerKey("i", "irc") + dot + remoteHint + dot + footerKey("q", "quit")
+	line2 := "  " + footerKey("enter", "detail") + dot + footerKey("tab", m.toggleModeLabel())
+	if m.listMode == listModeActive {
+		line2 += dot + footerKey("i", "irc")
+	}
+	line2 += dot + remoteHint + dot + footerKey("q", "quit")
 	if m.listMode == listModeActive {
 		line2 += dot + footerKey("c", "clean")
 	} else if m.canDeleteTask(m.currentListTask()) {

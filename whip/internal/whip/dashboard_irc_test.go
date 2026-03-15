@@ -860,6 +860,48 @@ func TestIRC_CursorNavigationMultipleGroups(t *testing.T) {
 	}
 }
 
+func TestIRC_PeerDisappearsReselectsOnRefresh(t *testing.T) {
+	store := tempStore(t)
+	m := NewDashboardModel(store, "test")
+	m.peers = []peerInfo{
+		{Name: "wp-master-ws1", Online: true},
+		{Name: "wp-lead-ws1", Online: true},
+	}
+	m.view = viewIRC
+	m.ircSelectedPeer = "wp-lead-ws1"
+
+	// Peer disappears
+	model, _ := m.Update(peersMsg([]peerInfo{
+		{Name: "wp-master-ws1", Online: true},
+	}))
+	dm := model.(DashboardModel)
+	if dm.ircSelectedPeer != "wp-master-ws1" {
+		t.Errorf("expected fallback to wp-master-ws1, got %q", dm.ircSelectedPeer)
+	}
+}
+
+func TestIRC_EmptyPeersRepopulateReselects(t *testing.T) {
+	store := tempStore(t)
+	m := NewDashboardModel(store, "test")
+	m.peers = []peerInfo{{Name: "peer-a", Online: true}}
+	m.view = viewIRC
+	m.ircSelectedPeer = "peer-a"
+
+	// Peers become empty
+	model, _ := m.Update(peersMsg(nil))
+	dm := model.(DashboardModel)
+	if dm.ircSelectedPeer != "" {
+		t.Errorf("expected empty selection when no peers, got %q", dm.ircSelectedPeer)
+	}
+
+	// Peers return
+	model, _ = dm.Update(peersMsg([]peerInfo{{Name: "peer-b", Online: true}}))
+	dm = model.(DashboardModel)
+	if dm.ircSelectedPeer != "peer-b" {
+		t.Errorf("expected reselect to peer-b, got %q", dm.ircSelectedPeer)
+	}
+}
+
 // Test helpers for grouped IRC rows
 
 func filterPeerRows(rows []ircRow) []ircRow {
