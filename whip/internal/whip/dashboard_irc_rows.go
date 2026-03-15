@@ -22,7 +22,7 @@ type ircRow struct {
 const ungroupedLabel = "Ungrouped"
 
 func classifyRole(name string) string {
-	if strings.HasPrefix(name, MasterIRCPrefix) {
+	if name == MasterIRCPrefix || strings.HasPrefix(name, MasterIRCPrefix+"-") {
 		return "master"
 	}
 	if strings.HasPrefix(name, LeadIRCPrefix+"-") {
@@ -135,7 +135,9 @@ func (m DashboardModel) ircRows() []ircRow {
 	sort.Strings(onlineGroups)
 	sort.Strings(offlineGroups)
 
-	ordered := append(onlineGroups, offlineGroups...)
+	ordered := make([]string, 0, len(onlineGroups)+len(offlineGroups)+1)
+	ordered = append(ordered, onlineGroups...)
+	ordered = append(ordered, offlineGroups...)
 	if _, ok := groups[ungroupedLabel]; ok {
 		ordered = append(ordered, ungroupedLabel)
 	}
@@ -174,12 +176,12 @@ func nextPeerIndex(rows []ircRow, current, dir int) int {
 	return current
 }
 
-// firstPeerIndex returns the index of the first ircRowPeer, or 0 if none.
+// firstPeerIndex returns the index of the first ircRowPeer, or len(rows) if none.
 func firstPeerIndex(rows []ircRow) int {
 	for i, r := range rows {
 		if r.kind == ircRowPeer {
 			return i
 		}
 	}
-	return 0
+	return len(rows)
 }

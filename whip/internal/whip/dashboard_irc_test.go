@@ -780,6 +780,7 @@ func TestIRC_RoleClassification(t *testing.T) {
 		{"whip-worker1", "worker"},
 		{"wp-abc123", "worker"},
 		{"random-peer", "worker"},
+		{"wp-masterblaster", "worker"}, // must not match master prefix without "-"
 	}
 	for _, tt := range tests {
 		got := classifyRole(tt.name)
