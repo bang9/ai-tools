@@ -48,16 +48,12 @@ func (m DashboardModel) updateIRC(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "backspace", "left":
 		m.view = viewList
 	case "up", "k":
-		if len(rows) > 0 {
-			m.ircCursor = nextPeerIndex(rows, m.ircCursor, -1)
-		}
+		m.ircSelectedPeer = adjacentPeer(rows, m.ircSelectedPeer, -1)
 	case "down", "j":
-		if len(rows) > 0 {
-			m.ircCursor = nextPeerIndex(rows, m.ircCursor, +1)
-		}
+		m.ircSelectedPeer = adjacentPeer(rows, m.ircSelectedPeer, +1)
 	case "enter":
-		if len(rows) > 0 && m.ircCursor < len(rows) && rows[m.ircCursor].kind == ircRowPeer {
-			m.ircTarget = rows[m.ircCursor].peer.Name
+		if m.ircSelectedPeer != "" && findPeerIndex(rows, m.ircSelectedPeer) >= 0 {
+			m.ircTarget = m.ircSelectedPeer
 			m.ircInput = ""
 			m.ircLastSendErr = nil
 			m.ircLastSendAt = time.Time{}

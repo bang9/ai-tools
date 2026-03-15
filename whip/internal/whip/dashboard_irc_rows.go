@@ -154,14 +154,41 @@ func (m DashboardModel) ircRows() []ircRow {
 	return rows
 }
 
-// nextPeerIndex finds the next ircRowPeer index in the given direction, wrapping around.
-// dir should be +1 (down) or -1 (up).
-func nextPeerIndex(rows []ircRow, current, dir int) int {
+// findPeerIndex returns the row index for the named peer, or -1 if not found.
+func findPeerIndex(rows []ircRow, name string) int {
+	for i, r := range rows {
+		if r.kind == ircRowPeer && r.peer.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstPeerName returns the name of the first ircRowPeer, or "" if none.
+func firstPeerName(rows []ircRow) string {
+	for _, r := range rows {
+		if r.kind == ircRowPeer {
+			return r.peer.Name
+		}
+	}
+	return ""
+}
+
+// adjacentPeer returns the peer name in the given direction (+1 down, -1 up) from current.
+// Skips headers and wraps around. Returns current if no other peer exists.
+func adjacentPeer(rows []ircRow, current string, dir int) string {
 	n := len(rows)
 	if n == 0 {
-		return 0
+		return current
 	}
-	idx := current
+	start := findPeerIndex(rows, current)
+	if start < 0 {
+		if name := firstPeerName(rows); name != "" {
+			return name
+		}
+		return current
+	}
+	idx := start
 	for range n {
 		idx += dir
 		if idx < 0 {
@@ -170,30 +197,8 @@ func nextPeerIndex(rows []ircRow, current, dir int) int {
 			idx = 0
 		}
 		if rows[idx].kind == ircRowPeer {
-			return idx
+			return rows[idx].peer.Name
 		}
 	}
 	return current
-}
-
-// firstPeerIndex returns the index of the first ircRowPeer, or len(rows) if none.
-func firstPeerIndex(rows []ircRow) int {
-	for i, r := range rows {
-		if r.kind == ircRowPeer {
-			return i
-		}
-	}
-	return len(rows)
-}
-
-// clampIRCCursor ensures ircCursor points to a peer row after group structure changes.
-func (m *DashboardModel) clampIRCCursor() {
-	rows := m.ircRows()
-	if len(rows) == 0 {
-		m.ircCursor = 0
-		return
-	}
-	if m.ircCursor >= len(rows) || rows[m.ircCursor].kind != ircRowPeer {
-		m.ircCursor = firstPeerIndex(rows)
-	}
 }

@@ -28,14 +28,14 @@ func (m DashboardModel) renderIRCView(w int) string {
 	if !hasPeers {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorSubtle).Italic(true).Render("  No peers available") + "\n")
 	} else {
-		for i, r := range rows {
+		for _, r := range rows {
 			if r.kind == ircRowHeader {
 				headerStyle := lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
 				b.WriteString("  " + headerStyle.Render(r.workspace) + "\n")
 				continue
 			}
 
-			selected := i == m.ircCursor
+			selected := r.peer.Name == m.ircSelectedPeer
 			indicator := "    "
 			if selected {
 				indicator = "  " + lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("▸ ")

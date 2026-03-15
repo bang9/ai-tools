@@ -21,9 +21,9 @@ func TestIRC_PressIOpensIRCView(t *testing.T) {
 	if dm.view != viewIRC {
 		t.Errorf("expected viewIRC, got %d", dm.view)
 	}
-	// First peer is at index 1 (after global header at 0)
-	if dm.ircCursor != 1 {
-		t.Errorf("expected ircCursor=1, got %d", dm.ircCursor)
+	// Should select the first peer by name
+	if dm.ircSelectedPeer != "whip-abc12" {
+		t.Errorf("expected ircSelectedPeer=whip-abc12, got %s", dm.ircSelectedPeer)
 	}
 }
 
@@ -66,31 +66,30 @@ func TestIRC_NavigatePeers(t *testing.T) {
 		{Name: "peer-c", Online: false},
 	}
 	m.view = viewIRC
-	// Rows: [header:global(0), peer-a(1), peer-b(2), peer-c(3)]
-	m.ircCursor = 1
+	m.ircSelectedPeer = "peer-a"
 
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm := model.(DashboardModel)
-	if dm.ircCursor != 2 {
-		t.Errorf("expected ircCursor=2, got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "peer-b" {
+		t.Errorf("expected peer-b, got %s", dm.ircSelectedPeer)
 	}
 
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 3 {
-		t.Errorf("expected ircCursor=3, got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "peer-c" {
+		t.Errorf("expected peer-c, got %s", dm.ircSelectedPeer)
 	}
 
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 1 {
-		t.Errorf("expected ircCursor=1 (wrap, skip header), got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "peer-a" {
+		t.Errorf("expected peer-a (wrap), got %s", dm.ircSelectedPeer)
 	}
 
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 3 {
-		t.Errorf("expected ircCursor=3 (wrap up, skip header), got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "peer-c" {
+		t.Errorf("expected peer-c (wrap up), got %s", dm.ircSelectedPeer)
 	}
 }
 
@@ -99,8 +98,7 @@ func TestIRC_SelectPeerOpensMsg(t *testing.T) {
 	m := NewDashboardModel(store, "test")
 	m.peers = []peerInfo{{Name: "whip-abc12", Online: true}}
 	m.view = viewIRC
-	// Row 0 is header, row 1 is the peer
-	m.ircCursor = 1
+	m.ircSelectedPeer = "whip-abc12"
 
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	dm := model.(DashboardModel)
@@ -211,7 +209,7 @@ func TestIRC_RenderView(t *testing.T) {
 		{Name: "whip-def34", Online: false},
 	}
 	m.view = viewIRC
-	m.ircCursor = 0
+	m.ircSelectedPeer = "whip-abc12"
 
 	output := m.View()
 	if !strings.Contains(output, "IRC") {
@@ -570,34 +568,34 @@ func TestIRC_CursorSkipsHeaders(t *testing.T) {
 		t.Fatalf("expected 4 rows, got %d", len(rows))
 	}
 
-	// Start at first peer (index 1)
-	m.ircCursor = 1
-	// Press j → should skip header at 2, land on peer at 3
+	// Start at first peer
+	m.ircSelectedPeer = "wp-master-ws1"
+	// Press j → should land on ws2 master (skipping header)
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm := model.(DashboardModel)
-	if dm.ircCursor != 3 {
-		t.Errorf("j from peer 1: expected cursor=3 (skip header), got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "wp-master-ws2" {
+		t.Errorf("j from ws1: expected wp-master-ws2, got %s", dm.ircSelectedPeer)
 	}
 
-	// Press j again → should wrap to peer at 1 (skipping headers)
+	// Press j again → should wrap to ws1 master (skipping headers)
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 1 {
-		t.Errorf("j from peer 3: expected cursor=1 (wrap, skip header), got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "wp-master-ws1" {
+		t.Errorf("j from ws2: expected wp-master-ws1 (wrap), got %s", dm.ircSelectedPeer)
 	}
 
-	// Press k → should wrap to peer at 3 (skipping headers)
+	// Press k → should wrap to ws2 master (skipping headers)
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 3 {
-		t.Errorf("k from peer 1: expected cursor=3 (wrap up, skip header), got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "wp-master-ws2" {
+		t.Errorf("k from ws1: expected wp-master-ws2 (wrap up), got %s", dm.ircSelectedPeer)
 	}
 
-	// Press k → should land on peer at 1 (skipping header at 2)
+	// Press k → should land on ws1 master (skipping header)
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 1 {
-		t.Errorf("k from peer 3: expected cursor=1 (skip header), got %d", dm.ircCursor)
+	if dm.ircSelectedPeer != "wp-master-ws1" {
+		t.Errorf("k from ws2: expected wp-master-ws1, got %s", dm.ircSelectedPeer)
 	}
 }
 
@@ -619,13 +617,14 @@ func TestIRC_CursorStartsOnFirstPeer(t *testing.T) {
 		t.Fatalf("expected viewIRC, got %d", dm.view)
 	}
 
-	// Cursor should be on first peer, not on header
-	rows := dm.ircRows()
-	if dm.ircCursor >= len(rows) {
-		t.Fatalf("cursor %d out of range (rows=%d)", dm.ircCursor, len(rows))
+	// Should select the first peer by name (ws1 master, since ws1 is alphabetically first online group)
+	if dm.ircSelectedPeer == "" {
+		t.Fatal("expected a selected peer, got empty")
 	}
-	if rows[dm.ircCursor].kind != ircRowPeer {
-		t.Errorf("cursor should start on a peer row, got kind=%d at index %d", rows[dm.ircCursor].kind, dm.ircCursor)
+	// Verify it's actually a peer in the rows
+	rows := dm.ircRows()
+	if findPeerIndex(rows, dm.ircSelectedPeer) < 0 {
+		t.Errorf("selected peer %q not found in rows", dm.ircSelectedPeer)
 	}
 }
 
@@ -640,9 +639,8 @@ func TestIRC_SelectGroupedPeerOpensCorrectTarget(t *testing.T) {
 	m.tasks = nil
 	m.view = viewIRC
 
-	// Rows: [header:myws(0), master(1), lead(2), header:other(3), master(4)]
-	// Select the lead at index 2
-	m.ircCursor = 2
+	// Select the lead
+	m.ircSelectedPeer = "wp-lead-myws"
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	dm := model.(DashboardModel)
 	if dm.view != viewIRCMsg {
@@ -652,9 +650,9 @@ func TestIRC_SelectGroupedPeerOpensCorrectTarget(t *testing.T) {
 		t.Errorf("expected target 'wp-lead-myws', got %q", dm.ircTarget)
 	}
 
-	// Go back, select the master in "other" group at index 4
+	// Go back, select the master in "other" group
 	dm.view = viewIRC
-	dm.ircCursor = 4
+	dm.ircSelectedPeer = "wp-master-other"
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	dm = model.(DashboardModel)
 	if dm.ircTarget != "wp-master-other" {
@@ -823,42 +821,42 @@ func TestIRC_CursorNavigationMultipleGroups(t *testing.T) {
 
 	// Rows: [header:global(0), orphan(1), header:a(2), master-a(3), lead-a(4), header:b(5), master-b(6)]
 	rows := m.ircRows()
-	peerIndices := []int{}
-	for i, r := range rows {
+	var peerNames []string
+	for _, r := range rows {
 		if r.kind == ircRowPeer {
-			peerIndices = append(peerIndices, i)
+			peerNames = append(peerNames, r.peer.Name)
 		}
 	}
-	if len(peerIndices) != 4 {
-		t.Fatalf("expected 4 peer indices, got %d", len(peerIndices))
+	if len(peerNames) != 4 {
+		t.Fatalf("expected 4 peers, got %d", len(peerNames))
 	}
 
 	// Navigate through all peers with j, verify we visit each peer exactly once before wrapping
-	m.ircCursor = peerIndices[0]
-	visited := []int{m.ircCursor}
-	for i := 0; i < len(peerIndices)-1; i++ {
+	m.ircSelectedPeer = peerNames[0]
+	visited := []string{m.ircSelectedPeer}
+	for i := 0; i < len(peerNames)-1; i++ {
 		model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 		dm := model.(DashboardModel)
-		visited = append(visited, dm.ircCursor)
+		visited = append(visited, dm.ircSelectedPeer)
 		m = dm
 	}
 
-	// All visited indices should be peer rows
-	for _, idx := range visited {
-		if rows[idx].kind != ircRowPeer {
-			t.Errorf("visited non-peer row at index %d", idx)
-		}
-	}
-	// Should have visited all 4 peer indices
+	// Should have visited all 4 peer names
 	if len(visited) != 4 {
 		t.Errorf("expected to visit 4 peers, visited %d", len(visited))
+	}
+	// All visited should be valid peer names
+	for _, name := range visited {
+		if findPeerIndex(rows, name) < 0 {
+			t.Errorf("visited unknown peer %q", name)
+		}
 	}
 
 	// One more j should wrap back to first peer
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm := model.(DashboardModel)
-	if dm.ircCursor != peerIndices[0] {
-		t.Errorf("wrap: expected cursor=%d, got %d", peerIndices[0], dm.ircCursor)
+	if dm.ircSelectedPeer != peerNames[0] {
+		t.Errorf("wrap: expected %s, got %s", peerNames[0], dm.ircSelectedPeer)
 	}
 }
 
