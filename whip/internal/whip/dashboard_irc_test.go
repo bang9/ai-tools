@@ -21,8 +21,9 @@ func TestIRC_PressIOpensIRCView(t *testing.T) {
 	if dm.view != viewIRC {
 		t.Errorf("expected viewIRC, got %d", dm.view)
 	}
-	if dm.ircCursor != 0 {
-		t.Errorf("expected ircCursor=0, got %d", dm.ircCursor)
+	// First peer is at index 1 (after Ungrouped header at 0)
+	if dm.ircCursor != 1 {
+		t.Errorf("expected ircCursor=1, got %d", dm.ircCursor)
 	}
 }
 
@@ -65,30 +66,31 @@ func TestIRC_NavigatePeers(t *testing.T) {
 		{Name: "peer-c", Online: false},
 	}
 	m.view = viewIRC
-	m.ircCursor = 0
+	// Rows: [header:Ungrouped(0), peer-a(1), peer-b(2), peer-c(3)]
+	m.ircCursor = 1
 
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm := model.(DashboardModel)
-	if dm.ircCursor != 1 {
-		t.Errorf("expected ircCursor=1, got %d", dm.ircCursor)
-	}
-
-	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	dm = model.(DashboardModel)
 	if dm.ircCursor != 2 {
 		t.Errorf("expected ircCursor=2, got %d", dm.ircCursor)
 	}
 
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 0 {
-		t.Errorf("expected ircCursor=0 (wrap), got %d", dm.ircCursor)
+	if dm.ircCursor != 3 {
+		t.Errorf("expected ircCursor=3, got %d", dm.ircCursor)
+	}
+
+	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	dm = model.(DashboardModel)
+	if dm.ircCursor != 1 {
+		t.Errorf("expected ircCursor=1 (wrap, skip header), got %d", dm.ircCursor)
 	}
 
 	model, _ = dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	dm = model.(DashboardModel)
-	if dm.ircCursor != 2 {
-		t.Errorf("expected ircCursor=2 (wrap up), got %d", dm.ircCursor)
+	if dm.ircCursor != 3 {
+		t.Errorf("expected ircCursor=3 (wrap up, skip header), got %d", dm.ircCursor)
 	}
 }
 
@@ -97,7 +99,8 @@ func TestIRC_SelectPeerOpensMsg(t *testing.T) {
 	m := NewDashboardModel(store, "test")
 	m.peers = []peerInfo{{Name: "whip-abc12", Online: true}}
 	m.view = viewIRC
-	m.ircCursor = 0
+	// Row 0 is header, row 1 is the peer
+	m.ircCursor = 1
 
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	dm := model.(DashboardModel)

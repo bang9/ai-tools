@@ -10,30 +10,44 @@ import (
 
 func (m DashboardModel) renderIRCView(w int) string {
 	var b strings.Builder
-	peers := m.ircPeers()
+	rows := m.ircRows()
 
 	breadcrumb := lipgloss.NewStyle().Foreground(colorSubtle).Render("  Tasks") +
 		lipgloss.NewStyle().Foreground(colorDim).Render(" › ") +
 		lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("IRC")
 	b.WriteString(breadcrumb + "\n\n")
 
-	if len(peers) == 0 {
+	hasPeers := false
+	for _, r := range rows {
+		if r.kind == ircRowPeer {
+			hasPeers = true
+			break
+		}
+	}
+
+	if !hasPeers {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorSubtle).Italic(true).Render("  No peers available") + "\n")
 	} else {
-		for i, p := range peers {
+		for i, r := range rows {
+			if r.kind == ircRowHeader {
+				headerStyle := lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
+				b.WriteString("  " + headerStyle.Render(r.workspace) + "\n")
+				continue
+			}
+
 			selected := i == m.ircCursor
-			indicator := "  "
+			indicator := "    "
 			if selected {
-				indicator = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("▸ ")
+				indicator = "  " + lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("▸ ")
 			}
 
 			var dot, name string
-			if p.Online {
+			if r.peer.Online {
 				dot = lipgloss.NewStyle().Foreground(colorSuccess).Render("●")
-				name = lipgloss.NewStyle().Foreground(colorText).Render(p.Name)
+				name = lipgloss.NewStyle().Foreground(colorText).Render(r.peer.Name)
 			} else {
 				dot = lipgloss.NewStyle().Foreground(colorDim).Render("○")
-				name = lipgloss.NewStyle().Foreground(colorSubtle).Render(p.Name)
+				name = lipgloss.NewStyle().Foreground(colorSubtle).Render(r.peer.Name)
 			}
 
 			row := indicator + dot + " " + name
