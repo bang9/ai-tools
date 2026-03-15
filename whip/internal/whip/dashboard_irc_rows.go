@@ -185,3 +185,15 @@ func firstPeerIndex(rows []ircRow) int {
 	}
 	return len(rows)
 }
+
+// clampIRCCursor ensures ircCursor points to a peer row after group structure changes.
+func (m *DashboardModel) clampIRCCursor() {
+	rows := m.ircRows()
+	if len(rows) == 0 {
+		m.ircCursor = 0
+		return
+	}
+	if m.ircCursor >= len(rows) || rows[m.ircCursor].kind != ircRowPeer {
+		m.ircCursor = firstPeerIndex(rows)
+	}
+}

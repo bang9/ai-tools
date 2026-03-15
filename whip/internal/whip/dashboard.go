@@ -251,6 +251,9 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.clampCursorToRows()
+		if m.view == viewIRC {
+			m.clampIRCCursor()
+		}
 		if m.selectedTask != nil {
 			found := false
 			for _, t := range m.tasks {
@@ -269,6 +272,9 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case peersMsg:
 		m.peers = []peerInfo(msg)
+		if m.view == viewIRC {
+			m.clampIRCCursor()
+		}
 
 	case ircSendResultMsg:
 		m.ircLastSendErr = msg.err

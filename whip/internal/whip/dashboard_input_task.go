@@ -90,10 +90,12 @@ func (m DashboardModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = viewDetail
 		}
 	case "i":
-		rows := m.ircRows()
-		if idx := firstPeerIndex(rows); idx < len(rows) && rows[idx].kind == ircRowPeer {
-			m.ircCursor = idx
-			m.view = viewIRC
+		if m.listMode == listModeActive {
+			rows := m.ircRows()
+			if idx := firstPeerIndex(rows); idx < len(rows) && rows[idx].kind == ircRowPeer {
+				m.ircCursor = idx
+				m.view = viewIRC
+			}
 		}
 	case "R":
 		if m.serveProcess != nil {
