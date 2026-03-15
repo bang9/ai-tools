@@ -19,7 +19,7 @@ type ircRow struct {
 	role      string   // "master", "lead", "worker"
 }
 
-const ungroupedLabel = "Ungrouped"
+// Unresolvable peers are grouped under GlobalWorkspaceName ("global").
 
 func classifyRole(name string) string {
 	if name == MasterIRCPrefix || strings.HasPrefix(name, MasterIRCPrefix+"-") {
@@ -84,7 +84,7 @@ func (m DashboardModel) ircRows() []ircRow {
 			ws = resolveWorkspaceFromName(p.Name)
 		}
 		if ws == "" {
-			ws = ungroupedLabel
+			ws = GlobalWorkspaceName
 		}
 
 		groups[ws] = append(groups[ws], ircRow{
@@ -113,10 +113,10 @@ func (m DashboardModel) ircRows() []ircRow {
 		})
 	}
 
-	// Sort group names: online-groups alphabetical, then offline-groups alphabetical, then Ungrouped last
+	// Sort group names: global first, then online-groups alphabetical, then offline-groups alphabetical
 	var onlineGroups, offlineGroups []string
 	for ws, rows := range groups {
-		if ws == ungroupedLabel {
+		if ws == GlobalWorkspaceName {
 			continue
 		}
 		hasOnline := false
@@ -136,11 +136,11 @@ func (m DashboardModel) ircRows() []ircRow {
 	sort.Strings(offlineGroups)
 
 	ordered := make([]string, 0, len(onlineGroups)+len(offlineGroups)+1)
+	if _, ok := groups[GlobalWorkspaceName]; ok {
+		ordered = append(ordered, GlobalWorkspaceName)
+	}
 	ordered = append(ordered, onlineGroups...)
 	ordered = append(ordered, offlineGroups...)
-	if _, ok := groups[ungroupedLabel]; ok {
-		ordered = append(ordered, ungroupedLabel)
-	}
 
 	// Build final rows with headers
 	var rows []ircRow

@@ -21,7 +21,7 @@ func TestIRC_PressIOpensIRCView(t *testing.T) {
 	if dm.view != viewIRC {
 		t.Errorf("expected viewIRC, got %d", dm.view)
 	}
-	// First peer is at index 1 (after Ungrouped header at 0)
+	// First peer is at index 1 (after global header at 0)
 	if dm.ircCursor != 1 {
 		t.Errorf("expected ircCursor=1, got %d", dm.ircCursor)
 	}
@@ -66,7 +66,7 @@ func TestIRC_NavigatePeers(t *testing.T) {
 		{Name: "peer-c", Online: false},
 	}
 	m.view = viewIRC
-	// Rows: [header:Ungrouped(0), peer-a(1), peer-b(2), peer-c(3)]
+	// Rows: [header:global(0), peer-a(1), peer-b(2), peer-c(3)]
 	m.ircCursor = 1
 
 	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
@@ -428,19 +428,19 @@ func TestIRC_GroupingByWorkspace(t *testing.T) {
 
 	rows := m.ircRows()
 
-	// Expect headers for: alpha, beta, Ungrouped (all have online peers, alpha/beta alphabetical, Ungrouped last)
+	// Expect headers for: global first, then alpha, beta (all online, alphabetical)
 	headers := filterHeaderRows(rows)
 	if len(headers) != 3 {
 		t.Fatalf("expected 3 headers, got %d: %v", len(headers), headerNames(headers))
 	}
-	if headers[0].workspace != "alpha" {
-		t.Errorf("first header: expected 'alpha', got %q", headers[0].workspace)
+	if headers[0].workspace != GlobalWorkspaceName {
+		t.Errorf("first header: expected %q, got %q", GlobalWorkspaceName, headers[0].workspace)
 	}
-	if headers[1].workspace != "beta" {
-		t.Errorf("second header: expected 'beta', got %q", headers[1].workspace)
+	if headers[1].workspace != "alpha" {
+		t.Errorf("second header: expected 'alpha', got %q", headers[1].workspace)
 	}
-	if headers[2].workspace != ungroupedLabel {
-		t.Errorf("third header: expected %q, got %q", ungroupedLabel, headers[2].workspace)
+	if headers[2].workspace != "beta" {
+		t.Errorf("third header: expected 'beta', got %q", headers[2].workspace)
 	}
 
 	// Check peers under each header
@@ -451,8 +451,8 @@ func TestIRC_GroupingByWorkspace(t *testing.T) {
 	if len(groups["beta"]) != 1 {
 		t.Errorf("beta group: expected 1 peer, got %d", len(groups["beta"]))
 	}
-	if len(groups[ungroupedLabel]) != 1 {
-		t.Errorf("Ungrouped: expected 1 peer, got %d", len(groups[ungroupedLabel]))
+	if len(groups[GlobalWorkspaceName]) != 1 {
+		t.Errorf("Ungrouped: expected 1 peer, got %d", len(groups[GlobalWorkspaceName]))
 	}
 }
 
@@ -502,15 +502,15 @@ func TestIRC_GroupSortOrder_OnlineFirst(t *testing.T) {
 		{Name: "wp-master-alpha", Online: true},    // online group
 		{Name: "wp-master-gamma", Online: true},    // online group
 		{Name: "wp-master-beta", Online: false},    // offline group
-		{Name: "whip-orphan", Online: true},        // ungrouped
+		{Name: "whip-orphan", Online: true},        // global
 	}
 	m.tasks = nil
 
 	rows := m.ircRows()
 	headers := filterHeaderRows(rows)
 
-	// Expected order: online groups alphabetical (alpha, gamma), offline groups alphabetical (beta, zeta), then Ungrouped
-	expectedHeaders := []string{"alpha", "gamma", "beta", "zeta", ungroupedLabel}
+	// Expected order: global first, then online groups alphabetical (alpha, gamma), then offline groups alphabetical (beta, zeta)
+	expectedHeaders := []string{GlobalWorkspaceName, "alpha", "gamma", "beta", "zeta"}
 	if len(headers) != len(expectedHeaders) {
 		t.Fatalf("expected %d headers, got %d: %v", len(expectedHeaders), len(headers), headerNames(headers))
 	}
@@ -697,7 +697,7 @@ func TestIRC_SingleWorkspaceStillHasHeader(t *testing.T) {
 	}
 }
 
-func TestIRC_AllPeersUngrouped(t *testing.T) {
+func TestIRC_AllPeersGlobal(t *testing.T) {
 	store := tempStore(t)
 	m := NewDashboardModel(store, "test")
 	m.peers = []peerInfo{
@@ -710,19 +710,19 @@ func TestIRC_AllPeersUngrouped(t *testing.T) {
 	rows := m.ircRows()
 	headers := filterHeaderRows(rows)
 	if len(headers) != 1 {
-		t.Fatalf("expected 1 header (Ungrouped), got %d", len(headers))
+		t.Fatalf("expected 1 header (global), got %d", len(headers))
 	}
-	if headers[0].workspace != ungroupedLabel {
-		t.Errorf("expected header %q, got %q", ungroupedLabel, headers[0].workspace)
+	if headers[0].workspace != GlobalWorkspaceName {
+		t.Errorf("expected header %q, got %q", GlobalWorkspaceName, headers[0].workspace)
 	}
 	peerRows := filterPeerRows(rows)
 	if len(peerRows) != 3 {
 		t.Errorf("expected 3 peer rows, got %d", len(peerRows))
 	}
-	// All peers should be in Ungrouped
+	// All peers should be in global
 	for _, r := range peerRows {
-		if r.workspace != ungroupedLabel {
-			t.Errorf("peer %s: expected workspace %q, got %q", r.peer.Name, ungroupedLabel, r.workspace)
+		if r.workspace != GlobalWorkspaceName {
+			t.Errorf("peer %s: expected workspace %q, got %q", r.peer.Name, GlobalWorkspaceName, r.workspace)
 		}
 	}
 }
@@ -821,7 +821,7 @@ func TestIRC_CursorNavigationMultipleGroups(t *testing.T) {
 	m.tasks = nil
 	m.view = viewIRC
 
-	// Rows: [header:a(0), master-a(1), lead-a(2), header:b(3), master-b(4), header:Ungrouped(5), orphan(6)]
+	// Rows: [header:global(0), orphan(1), header:a(2), master-a(3), lead-a(4), header:b(5), master-b(6)]
 	rows := m.ircRows()
 	peerIndices := []int{}
 	for i, r := range rows {
