@@ -22,10 +22,10 @@ type ircRow struct {
 const ungroupedLabel = "Ungrouped"
 
 func classifyRole(name string) string {
-	if strings.HasPrefix(name, "wp-master") {
+	if strings.HasPrefix(name, MasterIRCPrefix) {
 		return "master"
 	}
-	if strings.HasPrefix(name, "wp-lead-") {
+	if strings.HasPrefix(name, LeadIRCPrefix+"-") {
 		return "lead"
 	}
 	return "worker"
@@ -43,14 +43,16 @@ func rolePriority(role string) int {
 }
 
 func resolveWorkspaceFromName(name string) string {
-	if strings.HasPrefix(name, "wp-master-") {
-		return strings.TrimPrefix(name, "wp-master-")
+	masterDash := MasterIRCPrefix + "-"
+	leadDash := LeadIRCPrefix + "-"
+	if strings.HasPrefix(name, masterDash) {
+		return strings.TrimPrefix(name, masterDash)
 	}
 	if name == MasterIRCPrefix {
 		return GlobalWorkspaceName
 	}
-	if strings.HasPrefix(name, "wp-lead-") {
-		return strings.TrimPrefix(name, "wp-lead-")
+	if strings.HasPrefix(name, leadDash) {
+		return strings.TrimPrefix(name, leadDash)
 	}
 	return ""
 }

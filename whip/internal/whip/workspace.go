@@ -11,6 +11,7 @@ const (
 	workspacesDir              = "workspaces"
 	workspaceFile              = "workspace.json"
 	MasterIRCPrefix            = "wp-master"
+	LeadIRCPrefix              = "wp-lead"
 	DefaultGlobalMasterIRCName = MasterIRCPrefix
 )
 
@@ -48,7 +49,7 @@ func WorkspaceLeadIRCName(workspace string) string {
 	if workspace == GlobalWorkspaceName {
 		return ""
 	}
-	return "wp-lead-" + workspace
+	return LeadIRCPrefix + "-" + workspace
 }
 
 func WorkspaceMasterSessionName(workspace string) string {
