@@ -93,18 +93,18 @@ func (m DashboardModel) ircRows() []ircRow {
 		})
 	}
 
-	// Sort peers within each group
+	// Sort peers within each group: online before offline, then role priority, then alphabetical
 	for ws := range groups {
 		sort.Slice(groups[ws], func(i, j int) bool {
 			a, b := groups[ws][i], groups[ws][j]
-			// role priority first
-			ap, bp := rolePriority(a.role), rolePriority(b.role)
-			if ap != bp {
-				return ap < bp
-			}
 			// online before offline
 			if a.peer.Online != b.peer.Online {
 				return a.peer.Online
+			}
+			// role priority (master=0, lead=1, worker=2)
+			ap, bp := rolePriority(a.role), rolePriority(b.role)
+			if ap != bp {
+				return ap < bp
 			}
 			// alphabetical
 			return a.peer.Name < b.peer.Name
