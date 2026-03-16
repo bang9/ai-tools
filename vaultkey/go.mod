@@ -1,6 +1,6 @@
 module github.com/bang9/ai-tools/vaultkey
 
-go 1.25.7
+go 1.26
 
 require (
 	github.com/bang9/ai-tools/shared/upgrade v0.0.0

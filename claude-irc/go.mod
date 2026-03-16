@@ -1,6 +1,6 @@
 module github.com/bang9/ai-tools/claude-irc
 
-go 1.21
+go 1.26
 
 require (
 	github.com/bang9/ai-tools/shared/irclib v0.0.0
