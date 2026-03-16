@@ -56,7 +56,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add '*/.claude-plugin/plugin.json' .claude-plugin/marketplace.json whip/skills-codex/manifest.txt
+          git add '*/.claude-plugin/plugin.json' .claude-plugin/marketplace.json '*/skills-codex/manifest.txt'
           if git diff --cached --quiet; then
             echo "No changes"
           else
