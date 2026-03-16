@@ -336,7 +336,8 @@ install_binary() {
 }
 
 install_codex_skills() {
-    local version="$1"
+    local tool_name="$1"
+    local version="$2"
     local codex_home="${CODEX_HOME:-$HOME/.codex}"
 
     if [ ! -d "$codex_home" ]; then
@@ -344,7 +345,7 @@ install_codex_skills() {
     fi
 
     local skills_dest="$codex_home/skills"
-    local raw_base="https://raw.githubusercontent.com/${REPO}/${version}/whip/skills-codex"
+    local raw_base="https://raw.githubusercontent.com/${REPO}/${version}/${tool_name}/skills-codex"
     local manifest_url="$raw_base/manifest.txt"
     local manifest failed=0 installed=0
 
@@ -426,7 +427,7 @@ main() {
 
     ensure_path
 
-    install_codex_skills "$version"
+    install_codex_skills "whip" "$version"
 
     echo ""
     info "whip ${version} installed successfully!"
