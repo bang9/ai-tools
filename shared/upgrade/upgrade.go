@@ -24,6 +24,7 @@ type Config struct {
 	Version               string                                       // Current version (set via -ldflags)
 	CompanionTools        []string                                     // Additional tools to upgrade alongside self
 	ResolveCompanionTools func(repo, version string) ([]string, error) // Optional callback to resolve companions for the target version
+	PostUpgrade           func(repo, version string) error             // Optional callback to run after successful upgrade
 }
 
 var (
@@ -298,6 +299,11 @@ func Run(cfg Config) error {
 
 	if cfg.Version != "dev" && latestVersion == cfg.Version {
 		fmt.Fprintf(os.Stderr, "Already up to date (%s)\n", cfg.Version)
+		if cfg.PostUpgrade != nil {
+			if err := cfg.PostUpgrade(cfg.Repo, latestVersion); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: post-upgrade: %v\n", err)
+			}
+		}
 		return nil
 	}
 
@@ -345,5 +351,12 @@ func Run(cfg Config) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Updated to %s\n", latestVersion)
+
+	if cfg.PostUpgrade != nil {
+		if err := cfg.PostUpgrade(cfg.Repo, latestVersion); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: post-upgrade: %v\n", err)
+		}
+	}
+
 	return nil
 }

@@ -49,11 +49,14 @@ jobs:
           # Generate marketplace.json
           bash .github/scripts/sync-marketplace.sh "$VERSION"
 
+          # Generate codex skills manifest
+          bash .github/scripts/sync-codex-skills-manifest.sh
+
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add '*/.claude-plugin/plugin.json' .claude-plugin/marketplace.json
+          git add '*/.claude-plugin/plugin.json' .claude-plugin/marketplace.json whip/skills-codex/manifest.txt
           if git diff --cached --quiet; then
             echo "No changes"
           else

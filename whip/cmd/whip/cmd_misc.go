@@ -18,6 +18,7 @@ func upgradeCmd() *cobra.Command {
 				BinaryName:            "whip",
 				Version:               version,
 				ResolveCompanionTools: fetchWhipCompanionTools,
+				PostUpgrade:           installCodexSkills,
 			})
 		},
 	}

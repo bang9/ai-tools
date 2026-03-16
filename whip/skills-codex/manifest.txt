@@ -1,0 +1,4 @@
+whip-lesson-learn/SKILL.md
+whip-lesson-learn/agents/openai.yaml
+whip-plan/SKILL.md
+whip-start/SKILL.md

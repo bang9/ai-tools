@@ -335,6 +335,61 @@ install_binary() {
     return 0
 }
 
+install_codex_skills() {
+    local version="$1"
+    local codex_home="${CODEX_HOME:-$HOME/.codex}"
+
+    if [ ! -d "$codex_home" ]; then
+        return 0
+    fi
+
+    local skills_dest="$codex_home/skills"
+    local raw_base="https://raw.githubusercontent.com/${REPO}/${version}/whip/skills-codex"
+    local manifest_url="$raw_base/manifest.txt"
+    local manifest failed=0 installed=0
+
+    if ! manifest=$(download_text "$manifest_url" 2>/dev/null); then
+        warn "Failed to fetch Codex skills manifest"
+        return 0
+    fi
+
+    if [ -z "$(printf '%s' "$manifest" | tr -d '[:space:]')" ]; then
+        warn "Codex skills manifest is empty"
+        return 0
+    fi
+
+    step "Installing Codex skills..."
+    local skill
+    while IFS= read -r skill || [ -n "$skill" ]; do
+        skill="$(trim_whitespace "$skill")"
+        [ -z "$skill" ] && continue
+        case "$skill" in \#*) continue ;; esac
+        case "$skill" in *..* | /*) continue ;; esac
+        local dest="$skills_dest/$skill"
+        local tmp="${dest}.tmp"
+        if ! mkdir -p "$(dirname "$dest")" 2>/dev/null; then
+            warn "  Failed to create directory for $skill"
+            failed=$((failed + 1))
+            continue
+        fi
+        if download_file "$raw_base/$skill" "$tmp" && mv -f "$tmp" "$dest"; then
+            installed=$((installed + 1))
+        else
+            rm -f "$tmp"
+            warn "  Failed to download $skill"
+            failed=$((failed + 1))
+        fi
+    done <<< "$manifest"
+
+    if [ "$installed" -eq 0 ] && [ "$failed" -eq 0 ]; then
+        warn "  Codex skills manifest has no valid entries"
+    elif [ "$failed" -eq 0 ]; then
+        info "  Codex skills installed to $skills_dest"
+    else
+        warn "  Codex skills partially installed ($failed failed)"
+    fi
+}
+
 main() {
     echo ""
     echo -e "${CYAN}Setting up whip — Task Orchestrator for Claude Code${NC}"
@@ -370,6 +425,8 @@ main() {
     done
 
     ensure_path
+
+    install_codex_skills "$version"
 
     echo ""
     info "whip ${version} installed successfully!"
