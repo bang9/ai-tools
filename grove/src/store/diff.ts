@@ -4,6 +4,32 @@ import * as tauri from "../lib/platform";
 import { runCommandSafely, runCommand } from "../lib/command";
 import { useToastStore } from "../store/toast";
 
+// Content-equality checks let polling calls skip `set()` when nothing
+// changed, so Zustand subscribers don't re-render every 2s on identical
+// data. Reference identity after a no-op set doubles as a change signal
+// for lib/diff-sync.ts (see runStatusJob there).
+function fileStatusesEqual(a: FileStatus[], b: FileStatus[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.path !== y.path || x.status !== y.status || x.staged !== y.staged) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function commitsEqual(a: CommitInfo[], b: CommitInfo[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].hash !== b[i].hash) return false;
+  }
+  return true;
+}
+
 interface DiffState {
   commits: CommitInfo[];
   fileStatuses: FileStatus[];
@@ -21,6 +47,7 @@ interface DiffState {
   loadStatus: () => Promise<void>;
   loadCommits: () => Promise<void>;
   loadBehindCount: () => Promise<void>;
+  refreshAll: () => Promise<void>;
   mergeDefaultBranch: () => Promise<void>;
   loadWorkingDiff: (path: string, staged?: boolean) => Promise<void>;
   loadCommitDiff: (hash: string) => Promise<void>;
@@ -90,23 +117,23 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   loadStatus: async () => {
     const wp = get().worktreePath;
     if (!wp) return;
-    const fileStatuses = await runCommandSafely(() => tauri.getStatus(wp), {
+    const next = await runCommandSafely(() => tauri.getStatus(wp), {
       errorToast: false,
     });
-    if (fileStatuses) {
-      set({ fileStatuses });
-    }
+    if (!next) return;
+    if (fileStatusesEqual(get().fileStatuses, next)) return;
+    set({ fileStatuses: next });
   },
 
   loadCommits: async () => {
     const wp = get().worktreePath;
     if (!wp) return;
-    const commits = await runCommandSafely(() => tauri.getCommits(wp, 50), {
+    const next = await runCommandSafely(() => tauri.getCommits(wp, 50), {
       errorToast: false,
     });
-    if (commits) {
-      set({ commits });
-    }
+    if (!next) return;
+    if (commitsEqual(get().commits, next)) return;
+    set({ commits: next });
   },
 
   loadBehindCount: async () => {
@@ -115,8 +142,23 @@ export const useDiffStore = create<DiffState>((set, get) => ({
     const info = await runCommandSafely(() => tauri.getBehindCount(wp), {
       errorToast: false,
     });
-    if (info) {
-      set({ behindCount: info.behind });
+    if (!info) return;
+    if (get().behindCount === info.behind) return;
+    set({ behindCount: info.behind });
+  },
+
+  refreshAll: async () => {
+    const state = get();
+    if (!state.worktreePath) return;
+    await Promise.all([
+      state.loadStatus(),
+      state.loadCommits(),
+      state.loadBehindCount(),
+    ]);
+    // If a file is selected in changes view, keep its diff fresh too
+    const after = get();
+    if (after.selectedFile && after.selectedView === "changes") {
+      await after.loadWorkingDiff(after.selectedFile, after.isViewingStaged);
     }
   },
 
@@ -129,9 +171,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
         errorToast: "Merge conflict — resolve in terminal",
       });
       useToastStore.getState().addToast("success", "Merged default branch");
-      await get().loadCommits();
-      await get().loadStatus();
-      await get().loadBehindCount();
+      await get().refreshAll();
     } catch {
       // Error toast already shown by runCommand
     } finally {
@@ -253,6 +293,10 @@ function createMutationActions() {
     await runCommandSafely(action, { errorToast });
   };
 
+  // Post-mutation refresh: stage/unstage/discard do not change commits or
+  // behindCount, so this deliberately avoids `refreshAll()` to skip 2 extra
+  // git calls per mutation. refreshAll is used for broader events (merge,
+  // manual trigger, window focus) where commit history may have changed.
   const refresh = async () => {
     const state = useDiffStore.getState();
     state.clearSelection();

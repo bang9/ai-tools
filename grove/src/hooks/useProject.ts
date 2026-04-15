@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useProjectStore } from "../store/project";
 import { registerSyncJob, startSyncManager, stopSyncManager } from "../lib/sync-manager";
+import { disposeDiffSync, initDiffSync } from "../lib/diff-sync";
 import { useToastStore } from "../store/toast";
 import { TERMINAL_GC_INTERVAL_MS, TERMINAL_GC_JOB_KEY, runTerminalGcNow } from "../lib/terminal-gc";
 import * as tauri from "../lib/platform";
@@ -25,12 +26,15 @@ export function useProject() {
       TERMINAL_GC_INTERVAL_MS,
     );
 
+    initDiffSync();
+
     // Initial load (blocking for first render)
     loadProjects().then(() => {
       startSyncManager({ runImmediately: false });
     });
 
     return () => {
+      disposeDiffSync();
       stopSyncManager();
     };
   }, []);

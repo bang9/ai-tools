@@ -160,6 +160,13 @@ Available: `Button`, `Input`, `Badge`, `Dialog`, `Toast` (via `useToast()`)
 - For empty results, prefer a shared constant like `EMPTY_*` when the selector may run before any data exists
 - When adding a selector around `useTerminalStore` or another Zustand store, add a regression test if an unchanged store state could still allocate new snapshot values
 
+### State polling — use `sync-manager`
+
+- All periodic background refresh must register a job with `lib/sync-manager.ts` (`registerSyncJob` / `unregisterSyncJob`), which runs on a single 1s tick and guards against overlapping runs via a per-job `running` flag
+- Do not add raw `setInterval` for data polling inside components or hooks — it bypasses dedup, fragments the refresh surface, and hides behind component mount/unmount lifecycles
+- Event-driven refresh is preferred over polling when the trigger is known (window focus, user action, mutation). Use `runJobNow(key)` to fire an existing job on demand — the `running` guard automatically dedups against an in-flight polling run
+- `setInterval` is still fine for non-data concerns (animation, UI tickers, redraw scheduling)
+
 ### Tests — write alongside features
 
 Before closing work, run `pnpm lint && pnpm test`.
