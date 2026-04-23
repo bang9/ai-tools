@@ -23,6 +23,7 @@ const JSON_RESPONSE_COMMANDS = new Set([
   "create_project",
   "refresh_project",
   "add_worktree",
+  "add_stacked_worktree",
   "list_worktrees",
   "get_worktree_pr_url",
   "create_pty",

@@ -2,6 +2,7 @@ use crate::terminal_theme::TerminalTheme;
 use crate::worktree_lifecycle::WorktreeResource;
 use crate::TerminalSessionSnapshotStore;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -16,6 +17,8 @@ pub struct ProjectEntry {
     pub source_path: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktree_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stacked_parents: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -817,6 +820,7 @@ mod tests {
             repo: "grove".into(),
             source_path: "/tmp/grove/source".into(),
             worktree_order: Vec::new(),
+            stacked_parents: BTreeMap::new(),
             base_branch: None,
             collapsed: false,
             category_id: Some("ops".into()),

@@ -49,8 +49,8 @@ const SidebarLeafItem = forwardRef<HTMLDivElement, Props & React.HTMLAttributes<
           "flex shrink-0 items-center justify-end overflow-hidden transition-all duration-150",
           {
             "max-w-0 opacity-0": !isSelected && !forceShowAction,
-            "max-w-[40px] opacity-100": isSelected || forceShowAction,
-            "group-hover:max-w-[40px] group-hover:opacity-100": true,
+            "max-w-[72px] opacity-100": isSelected || forceShowAction,
+            "group-hover:max-w-[72px] group-hover:opacity-100": true,
           },
         )}
       >

@@ -30,6 +30,7 @@ import { cn } from "../../lib/cn";
 import { sanitizeBranchName } from "../../lib/git-utils";
 import { getProjectDisplayName } from "../../lib/project-view";
 import { getGitHubRepoUrl } from "../../lib/project-remote";
+import { buildWorktreeTree, type WorktreeTreeNode } from "../../lib/worktree-tree";
 import {
   ProjectCategoryIconGlyph,
   resolveProjectCategory,
@@ -38,6 +39,28 @@ import {
 interface Props {
   project: Project;
   showOrgPrefix?: boolean;
+}
+
+interface WorktreeTreeListProps {
+  projectId: string;
+  nodes: WorktreeTreeNode[];
+}
+
+function WorktreeTreeList({ projectId, nodes }: WorktreeTreeListProps) {
+  return nodes.map((node) => (
+    <div key={node.worktree.path}>
+      <WorktreeItem
+        worktree={node.worktree}
+        projectId={projectId}
+        descendantCount={node.descendantCount}
+      />
+      {node.children.length > 0 ? (
+        <div className={cn("ml-4 border-l border-border/60 pl-2")}>
+          <WorktreeTreeList projectId={projectId} nodes={node.children} />
+        </div>
+      ) : null}
+    </div>
+  ));
 }
 
 const ProjectItem = memo(function ProjectItem({
@@ -91,6 +114,7 @@ const ProjectItem = memo(function ProjectItem({
   const displayName = getProjectDisplayName(project, { showOrgPrefix });
   const githubRepoUrl = getGitHubRepoUrl(project.url);
   const projectCategory = resolveProjectCategory(project.categoryId, projectCategories);
+  const worktreeTree = buildWorktreeTree(project.worktrees);
 
   const handleStartRename = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -274,13 +298,7 @@ const ProjectItem = memo(function ProjectItem({
             {/* Phase 2: 드래그 재정렬 — <WorktreeItem>을 드래그 가능하게 만들고,
                 드래그 완료 시 setWorktreeOrder(project.id, newOrder) 호출.
                 react-dnd 또는 @dnd-kit/sortable 권장. */}
-            {project.worktrees.map((wt) => (
-              <WorktreeItem
-                key={wt.path}
-                worktree={wt}
-                projectId={project.id}
-              />
-            ))}
+            <WorktreeTreeList projectId={project.id} nodes={worktreeTree} />
             {adding ? (
               <form onSubmit={handleAddWorktree}>
                 <div className={cn("relative flex items-center gap-2 rounded-md px-2 py-1")}>

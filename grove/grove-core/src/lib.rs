@@ -64,6 +64,8 @@ pub struct Worktree {
     pub name: String,
     pub path: String,
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_parent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

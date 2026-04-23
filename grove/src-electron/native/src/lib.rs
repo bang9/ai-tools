@@ -218,6 +218,18 @@ pub async fn add_worktree(project_id: String, name: String, _branch: String) -> 
 }
 
 #[napi]
+pub async fn add_stacked_worktree(
+    project_id: String,
+    parent_name: String,
+    name: String,
+) -> Result<String> {
+    blocking_json(move || {
+        grove_core::git_project::add_stacked_worktree_impl(&project_id, &parent_name, &name)
+    })
+    .await
+}
+
+#[napi]
 pub async fn remove_worktree(project_id: String, name: String) -> Result<()> {
     blocking_core(move || grove_core::git_project::remove_worktree_impl(&project_id, &name)).await
 }

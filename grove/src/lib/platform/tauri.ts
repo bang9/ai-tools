@@ -238,6 +238,18 @@ export async function addWorktree(
   return platform.invoke<Worktree>("add_worktree", { projectId, name, branch });
 }
 
+export async function addStackedWorktree(
+  projectId: string,
+  parentName: string,
+  name: string,
+): Promise<Worktree> {
+  return platform.invoke<Worktree>("add_stacked_worktree", {
+    projectId,
+    parentName,
+    name,
+  });
+}
+
 export async function removeWorktree(
   projectId: string,
   name: string,

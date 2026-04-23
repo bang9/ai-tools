@@ -26,6 +26,11 @@ interface ProjectState {
   reorderProjects: (projectIds: string[]) => Promise<void>;
   removeProject: (id: string) => Promise<void>;
   addWorktree: (projectId: string, name: string) => Promise<Worktree>;
+  addStackedWorktree: (
+    projectId: string,
+    parentName: string,
+    name: string,
+  ) => Promise<Worktree>;
   removeWorktree: (projectId: string, name: string) => Promise<void>;
   selectWorktree: (worktree: Worktree | null) => void;
   setWorktreeOrder: (projectId: string, order: string[]) => Promise<void>;
@@ -65,7 +70,8 @@ function sameWorktreeValue(left: Worktree, right: Worktree): boolean {
   return (
     left.path === right.path &&
     left.name === right.name &&
-    left.branch === right.branch
+    left.branch === right.branch &&
+    (left.stackParentName ?? null) === (right.stackParentName ?? null)
   );
 }
 
@@ -109,6 +115,7 @@ function sourceWorktreeForProject(project: Project): Worktree {
     name: "source",
     path: project.sourcePath,
     branch: "main",
+    stackParentName: null,
   };
 }
 
@@ -354,6 +361,28 @@ export const useProjectStore = create<ProjectState>((set) => ({
       return tauri.addWorktree(projectId, name, name);
     }, {
       errorToast: "Failed to create worktree",
+    });
+    commitProjectMutation(set, (state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId
+          ? { ...p, worktrees: [...p.worktrees, worktree] }
+          : p,
+      ),
+    }));
+    return worktree;
+  },
+
+  addStackedWorktree: async (projectId: string, parentName: string, name: string) => {
+    const worktree = await runCommand(async () => {
+      const { projects } = useProjectStore.getState();
+      const project = projects.find((p) => p.id === projectId);
+      if (project?.worktrees.some((w) => w.name === name)) {
+        throw new Error(`Worktree '${name}' already exists`);
+      }
+
+      return tauri.addStackedWorktree(projectId, parentName, name);
+    }, {
+      errorToast: "Failed to create stacked worktree",
     });
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>

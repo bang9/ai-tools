@@ -6,7 +6,7 @@ use crate::{
 };
 use git2::{Oid, Repository};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -409,6 +409,7 @@ fn make_project_entry(
         repo,
         source_path,
         worktree_order: Vec::new(),
+        stacked_parents: BTreeMap::new(),
         base_branch: None,
         collapsed: false,
         category_id: None,
@@ -659,11 +660,7 @@ fn recover_existing_project(
 }
 
 fn project_from_entry(entry: ProjectEntry) -> Project {
-    let worktrees = visible_worktrees(
-        get_worktrees_for_project(&entry.source_path),
-        &entry.source_path,
-    );
-    let worktrees = apply_worktree_order(worktrees, &entry.worktree_order);
+    let worktrees = resolve_project_worktrees(&entry);
 
     let path = std::path::Path::new(&entry.source_path);
     let source_has_changes = path.exists() && has_local_source_changes(path);
@@ -903,6 +900,7 @@ fn make_worktree(path_str: &str, branch: &str, project_base: &Path) -> Worktree 
         name,
         path: display_path,
         branch: branch.to_string(),
+        stack_parent_name: None,
     }
 }
 
@@ -927,6 +925,75 @@ fn apply_worktree_order(worktrees: Vec<Worktree>, order: &[String]) -> Vec<Workt
     }
     ordered.extend(remaining);
     ordered
+}
+
+fn stack_parent_chain_has_cycle(start: &str, mapping: &BTreeMap<String, String>) -> bool {
+    let mut seen = HashSet::new();
+    let mut current = start;
+
+    while let Some(parent) = mapping.get(current) {
+        if !seen.insert(current.to_string()) {
+            return true;
+        }
+        current = parent;
+    }
+
+    false
+}
+
+fn normalized_stacked_parents(
+    stacked_parents: &BTreeMap<String, String>,
+    worktrees: &[Worktree],
+) -> BTreeMap<String, String> {
+    if stacked_parents.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let worktree_names = worktrees
+        .iter()
+        .map(|worktree| worktree.name.as_str())
+        .collect::<HashSet<_>>();
+
+    let filtered = stacked_parents
+        .iter()
+        .filter(|(child, parent)| {
+            child.as_str() != parent.as_str()
+                && worktree_names.contains(child.as_str())
+                && worktree_names.contains(parent.as_str())
+        })
+        .map(|(child, parent)| (child.clone(), parent.clone()))
+        .collect::<BTreeMap<_, _>>();
+
+    let invalid_children = filtered
+        .keys()
+        .filter(|child| stack_parent_chain_has_cycle(child, &filtered))
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    filtered
+        .into_iter()
+        .filter(|(child, _)| !invalid_children.contains(child))
+        .collect()
+}
+
+fn apply_stacked_parent_metadata(
+    mut worktrees: Vec<Worktree>,
+    stacked_parents: &BTreeMap<String, String>,
+) -> Vec<Worktree> {
+    let normalized = normalized_stacked_parents(stacked_parents, &worktrees);
+    for worktree in &mut worktrees {
+        worktree.stack_parent_name = normalized.get(&worktree.name).cloned();
+    }
+    worktrees
+}
+
+fn resolve_project_worktrees(entry: &ProjectEntry) -> Vec<Worktree> {
+    let worktrees = visible_worktrees(
+        get_worktrees_for_project(&entry.source_path),
+        &entry.source_path,
+    );
+    let worktrees = apply_worktree_order(worktrees, &entry.worktree_order);
+    apply_stacked_parent_metadata(worktrees, &entry.stacked_parents)
 }
 
 fn get_worktrees_for_project(source_path: &str) -> Vec<Worktree> {
@@ -1414,10 +1481,135 @@ pub fn add_worktree_impl(project_id: &str, name: &str) -> Result<Worktree, Strin
         }
     }
 
+    let mut config = config::load_config();
+    let project_entry = config
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    project_entry.stacked_parents.remove(name);
+    config::save_config(&config)?;
+
     Ok(Worktree {
         name: name.to_string(),
         path: worktree_path_str,
         branch: name.to_string(),
+        stack_parent_name: None,
+    })
+}
+
+fn find_worktree_named<'a>(worktrees: &'a [Worktree], name: &str) -> Option<&'a Worktree> {
+    worktrees.iter().find(|worktree| worktree.name == name)
+}
+
+fn direct_stacked_children(
+    worktrees: &[Worktree],
+    stacked_parents: &BTreeMap<String, String>,
+    parent_name: &str,
+) -> Vec<String> {
+    let normalized = normalized_stacked_parents(stacked_parents, worktrees);
+
+    worktrees
+        .iter()
+        .filter_map(|worktree| {
+            (normalized.get(&worktree.name).map(String::as_str) == Some(parent_name))
+                .then(|| worktree.name.clone())
+        })
+        .collect()
+}
+
+pub fn add_stacked_worktree_impl(
+    project_id: &str,
+    parent_name: &str,
+    name: &str,
+) -> Result<Worktree, String> {
+    validate_branch_name(name)?;
+
+    let entry = find_project_entry(project_id)?;
+    let source_dir = managed_source_dir(&entry)?;
+    let source = source_dir.as_path();
+
+    if !source.exists() {
+        return Err(format!("Source directory not found: {}", entry.source_path));
+    }
+
+    let _ = run_git(source, &["fetch", "--prune", "origin"]);
+
+    let worktrees = resolve_project_worktrees(&entry);
+    let parent_worktree = find_worktree_named(&worktrees, parent_name)
+        .ok_or_else(|| format!("Parent worktree not found: {parent_name}"))?;
+    let parent_worktree_path = PathBuf::from(&parent_worktree.path);
+    if !parent_worktree_path.exists() {
+        return Err(format!(
+            "Parent worktree path not found: {}",
+            parent_worktree.path
+        ));
+    }
+
+    let worktree_path = source
+        .parent()
+        .unwrap_or(source)
+        .join("worktrees")
+        .join(name);
+    let worktree_path_str = worktree_path.to_string_lossy().to_string();
+
+    let local_branches = local_branch_names(source)?;
+    if let Some(conflicting_branch) = find_branch_prefix_conflict(&local_branches, name) {
+        return Err(format_branch_prefix_conflict(name, conflicting_branch));
+    }
+    if local_branches.iter().any(|branch| branch == name) {
+        return Err(format!(
+            "Cannot create stacked worktree '{name}' because branch '{name}' already exists locally. Use a new branch name for stacked worktrees."
+        ));
+    }
+
+    let remote_branches = remote_branch_names(source)?;
+    if remote_branches.iter().any(|branch| branch == name) {
+        return Err(format!(
+            "Cannot create stacked worktree '{name}' because branch '{name}' already exists on origin. Use a new branch name for stacked worktrees."
+        ));
+    }
+
+    let parent_head = run_git_output(&parent_worktree_path, &["rev-parse", "HEAD"])?;
+    run_worktree_add(
+        source,
+        &[
+            "worktree",
+            "add",
+            &worktree_path_str,
+            "-b",
+            name,
+            &parent_head,
+        ],
+        name,
+    )?;
+
+    if let Some(ref env_sync) = entry.env_sync {
+        if let Err(error) = sync_env_files(
+            &parent_worktree_path,
+            &worktree_path,
+            &env_sync.include_patterns,
+        ) {
+            eprintln!("[grove] env sync warning: {error}");
+        }
+    }
+
+    let mut config = config::load_config();
+    let project_entry = config
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    project_entry
+        .stacked_parents
+        .insert(name.to_string(), parent_name.to_string());
+    config::save_config(&config)?;
+
+    Ok(Worktree {
+        name: name.to_string(),
+        path: worktree_path_str,
+        branch: name.to_string(),
+        stack_parent_name: Some(parent_name.to_string()),
     })
 }
 
@@ -1432,6 +1624,15 @@ pub fn remove_worktree_impl(project_id: &str, worktree_name: &str) -> Result<(),
 
     if !source.exists() {
         return Err(format!("Source directory not found: {}", entry.source_path));
+    }
+
+    let worktrees = resolve_project_worktrees(&entry);
+    let child_names = direct_stacked_children(&worktrees, &entry.stacked_parents, worktree_name);
+    if !child_names.is_empty() {
+        return Err(format!(
+            "Cannot remove worktree '{worktree_name}' because it has stacked children: {}. Remove child worktrees first.",
+            child_names.join(", ")
+        ));
     }
 
     let worktree_path = source
@@ -1455,15 +1656,24 @@ pub fn remove_worktree_impl(project_id: &str, worktree_name: &str) -> Result<(),
         );
     }
 
+    let mut config = config::load_config();
+    let project_entry = config
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    project_entry
+        .worktree_order
+        .retain(|name| name != worktree_name);
+    project_entry.stacked_parents.remove(worktree_name);
+    config::save_config(&config)?;
+
     Ok(())
 }
 
 pub fn list_worktrees_impl(project_id: &str) -> Result<Vec<Worktree>, String> {
     let entry = find_project_entry(project_id)?;
-    Ok(visible_worktrees(
-        get_worktrees_for_project(&entry.source_path),
-        &entry.source_path,
-    ))
+    Ok(resolve_project_worktrees(&entry))
 }
 
 pub fn get_worktree_pr_url_impl(
@@ -2260,6 +2470,7 @@ mod tests {
             repo,
             source_path: source_dir.to_string_lossy().to_string(),
             worktree_order: Vec::new(),
+            stacked_parents: BTreeMap::new(),
             base_branch: None,
             collapsed: false,
             category_id: None,
@@ -2378,11 +2589,13 @@ mod tests {
             name: SOURCE_WORKTREE_NAME.to_string(),
             path: source_path.to_string(),
             branch: String::new(),
+            stack_parent_name: None,
         };
         let user_worktree_named_source = Worktree {
             name: SOURCE_WORKTREE_NAME.to_string(),
             path: "/tmp/grove/worktrees/source".to_string(),
             branch: SOURCE_WORKTREE_NAME.to_string(),
+            stack_parent_name: None,
         };
 
         let visible = visible_worktrees(
@@ -2885,6 +3098,93 @@ mod tests {
     }
 
     #[test]
+    fn add_stacked_worktree_uses_parent_head_and_parent_env_sync() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir
+            .join("github.com")
+            .join("bang9")
+            .join("grove")
+            .join("source");
+        let remotes_dir = home.root.join("remotes");
+        let (remote_dir, seed_dir) =
+            create_bare_remote(&remotes_dir, "grove-stacked-worktree", "main");
+
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "main",
+            ".gitignore",
+            ".env.local\n",
+            "Ignore local env",
+        );
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "main",
+            "README.md",
+            "# Grove\n",
+            "Initial commit",
+        );
+
+        fs::create_dir_all(source_dir.parent().unwrap()).unwrap();
+        let remote_dir_str = remote_dir.to_string_lossy().to_string();
+        let source_dir_str = source_dir.to_string_lossy().to_string();
+        run_git_ok(
+            source_dir.parent().unwrap(),
+            &["clone", &remote_dir_str, &source_dir_str],
+        );
+        configure_git_identity(&source_dir);
+        fs::write(source_dir.join(".env.local"), "SOURCE=1\n").unwrap();
+
+        let mut entry = project_entry(
+            "project-1",
+            "https://github.com/bang9/grove.git",
+            &source_dir,
+        );
+        entry.env_sync = Some(config::ProjectEnvSyncConfig {
+            include_patterns: vec![".env.local".into()],
+        });
+        save_test_config(&base_dir, vec![entry]);
+
+        let parent = add_worktree_impl("project-1", "feature-1").unwrap();
+        let parent_path = PathBuf::from(&parent.path);
+        assert_eq!(
+            fs::read_to_string(parent_path.join(".env.local")).unwrap(),
+            "SOURCE=1\n"
+        );
+
+        fs::write(parent_path.join(".env.local"), "PARENT=1\n").unwrap();
+        fs::write(parent_path.join("README.md"), "# Parent branch\n").unwrap();
+        run_git_ok(&parent_path, &["add", "README.md"]);
+        run_git_ok(&parent_path, &["commit", "-m", "Parent branch commit"]);
+        let parent_head = run_git_output(&parent_path, &["rev-parse", "HEAD"]).unwrap();
+
+        let child = add_stacked_worktree_impl("project-1", "feature-1", "fix-token").unwrap();
+        let child_path = PathBuf::from(&child.path);
+
+        assert_eq!(child.stack_parent_name.as_deref(), Some("feature-1"));
+        assert_eq!(
+            run_git_output(&child_path, &["rev-parse", "HEAD"]).unwrap(),
+            parent_head
+        );
+        assert_eq!(
+            fs::read_to_string(child_path.join(".env.local")).unwrap(),
+            "PARENT=1\n"
+        );
+
+        let listed = list_worktrees_impl("project-1").unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .find(|worktree| worktree.name == "fix-token")
+                .and_then(|worktree| worktree.stack_parent_name.as_deref()),
+            Some("feature-1")
+        );
+    }
+
+    #[test]
     fn remove_worktree_deletes_local_branch_and_recreates_from_default_branch() {
         let _lock = env_lock();
         let home = TestHome::new();
@@ -3017,6 +3317,64 @@ mod tests {
 
         assert!(!worktree_path.exists());
         assert!(list_worktrees_impl("project-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_worktree_blocks_parents_with_stacked_children() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir
+            .join("github.com")
+            .join("bang9")
+            .join("grove")
+            .join("source");
+        let remotes_dir = home.root.join("remotes");
+        let (remote_dir, seed_dir) =
+            create_bare_remote(&remotes_dir, "grove-remove-stacked-parent", "main");
+
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "main",
+            "README.md",
+            "# Grove\n",
+            "Initial commit",
+        );
+
+        fs::create_dir_all(source_dir.parent().unwrap()).unwrap();
+        let remote_dir_str = remote_dir.to_string_lossy().to_string();
+        let source_dir_str = source_dir.to_string_lossy().to_string();
+        run_git_ok(
+            source_dir.parent().unwrap(),
+            &["clone", &remote_dir_str, &source_dir_str],
+        );
+
+        save_test_config(
+            &base_dir,
+            vec![project_entry(
+                "project-1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+        );
+
+        let parent = add_worktree_impl("project-1", "feature-1").unwrap();
+        let child = add_stacked_worktree_impl("project-1", "feature-1", "fix-token").unwrap();
+        let parent_path = PathBuf::from(&parent.path);
+
+        let error = remove_worktree_impl("project-1", "feature-1").unwrap_err();
+        assert_eq!(
+            error,
+            "Cannot remove worktree 'feature-1' because it has stacked children: fix-token. Remove child worktrees first."
+        );
+        assert!(parent_path.exists());
+
+        remove_worktree_impl("project-1", "fix-token").unwrap();
+        remove_worktree_impl("project-1", "feature-1").unwrap();
+
+        assert!(!PathBuf::from(&child.path).exists());
+        assert!(!parent_path.exists());
     }
 
     #[test]

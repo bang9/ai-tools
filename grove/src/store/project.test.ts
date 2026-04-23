@@ -17,6 +17,7 @@ vi.mock("../lib/platform", () => ({
   startClone: vi.fn(),
   removeProject: vi.fn(),
   addWorktree: vi.fn(),
+  addStackedWorktree: vi.fn(),
   removeWorktree: vi.fn(),
   renameProject: vi.fn(),
   setProjectCategory: vi.fn(),
@@ -242,6 +243,7 @@ describe("useProjectStore", () => {
       name: "source",
       path: "/tmp/source",
       branch: "main",
+      stackParentName: null,
     });
     expect(useTerminalStore.getState().sessions[selectedWorktree.path]).toBeUndefined();
     expect(useTerminalStore.getState().activeWorktree).toBe("/tmp/source");
@@ -327,6 +329,28 @@ describe("useProjectStore", () => {
     await syncPromise;
 
     expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([newWorktree]);
+  });
+
+  it("adds a stacked worktree to the matching project", async () => {
+    useProjectStore.setState({
+      projects: [makeProject([makeWorktree("feature-a")])],
+      cloningProjects: [],
+      selectedWorktree: null,
+      loading: false,
+    });
+
+    const stackedWorktree = makeWorktree("feature-a/fix-token");
+    stackedWorktree.stackParentName = "feature-a";
+    vi.mocked(tauri.addStackedWorktree).mockResolvedValue(stackedWorktree);
+
+    await useProjectStore
+      .getState()
+      .addStackedWorktree("project-1", "feature-a", "feature-a/fix-token");
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
+      makeWorktree("feature-a"),
+      stackedWorktree,
+    ]);
   });
 
   it("ignores a stale project snapshot after removing a worktree", async () => {

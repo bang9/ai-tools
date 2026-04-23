@@ -179,6 +179,18 @@ async fn add_worktree(
 }
 
 #[tauri::command]
+async fn add_stacked_worktree(
+    project_id: String,
+    parent_name: String,
+    name: String,
+) -> Result<Worktree, String> {
+    blocking(move || {
+        grove_core::git_project::add_stacked_worktree_impl(&project_id, &parent_name, &name)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn remove_worktree(project_id: String, name: String) -> Result<(), String> {
     blocking(move || grove_core::git_project::remove_worktree_impl(&project_id, &name)).await
 }
@@ -551,6 +563,7 @@ pub fn run() {
             is_source_dirty,
             refresh_project,
             add_worktree,
+            add_stacked_worktree,
             remove_worktree,
             list_worktrees,
             get_worktree_pr_url,

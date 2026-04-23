@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/rewind/install.
 
 ### [grove](./grove)
 
-Git project manager with split terminal and diff viewer for macOS. Each project gets its own source clone and worktrees, each worktree gets persistent split terminal sessions. Tracks Claude Code and Codex AI session status in real-time with visual indicators. Supports line-level staging, unstaging, and discarding.
+Git project manager with split terminal and diff viewer for macOS. Each project gets its own source clone and worktrees, including nested stacked worktrees, and each worktree gets persistent split terminal sessions. Tracks Claude Code and Codex AI session status in real-time with visual indicators. Supports line-level staging, unstaging, and discarding.
 
 #### Installation
 

@@ -18,6 +18,7 @@ export interface Worktree {
   name: string;
   path: string;
   branch: string;
+  stackParentName?: string | null;
 }
 
 export type WorktreePullRequestStatus = "open" | "merged" | "unknown";

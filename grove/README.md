@@ -1,10 +1,10 @@
 # Grove
 
-Git project manager with split terminal and diff viewer for macOS. Each project gets its own source clone and worktrees, each worktree gets persistent split terminal sessions. Tracks Claude Code and Codex AI session status in real-time with visual indicators. Supports line-level staging, unstaging, and discarding.
+Git project manager with split terminal and diff viewer for macOS. Each project gets its own source clone and worktrees, including nested stacked worktrees, and each worktree gets persistent split terminal sessions. Tracks Claude Code and Codex AI session status in real-time with visual indicators. Supports line-level staging, unstaging, and discarding.
 
 ## Features
 
-- **Multi-project sidebar** — Add git projects by URL, drag to reorder, manage worktrees per project
+- **Multi-project sidebar** — Add git projects by URL, drag to reorder, manage top-level and stacked worktrees per project
 - **Missions** — Group projects into missions for cross-repo workflows
 - **Split terminal** — Horizontal/vertical splits with persistent layouts per worktree
 - **Terminal broadcast** — Mirror terminal output across panes, Picture-in-Picture floating terminal
@@ -17,7 +17,7 @@ Git project manager with split terminal and diff viewer for macOS. Each project 
 ## Workflow
 
 1. **Add a project** — Clone a git repo by URL. Grove keeps a source clone on `main`.
-2. **Create worktrees** — Branch off into git worktrees for parallel work.
+2. **Create worktrees** — Branch off into git worktrees for parallel work, then stack child worktrees from existing worktrees when a branch needs its own follow-up lane.
 3. **Group into missions** — Organize related projects into missions for cross-repo work.
 4. **Split terminals** — Each worktree gets its own split terminal layout that persists across restarts. Broadcast output via Mirror or PiP.
 5. **Review changes** — Use tabbed panels to browse commits, stage/unstage hunks or individual lines, and discard changes.
