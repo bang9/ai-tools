@@ -1,7 +1,6 @@
 import { memo, useState } from "react";
 import {
   X,
-  Sprout,
   GitBranch,
   Pencil,
   Settings,
@@ -11,11 +10,13 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Project } from "../../types";
 import { useProjectStore } from "../../store/project";
+import { usePreferencesStore } from "../../store/preferences";
 import { useToast } from "../../store/toast";
 import { overlay } from "../../lib/overlay";
 import { runCommand } from "../../lib/command";
 import { openExternal } from "../../lib/platform";
 import ProjectSettingsDialog from "./ProjectSettingsDialog";
+import ProjectCategoryDialog from "./ProjectCategoryDialog";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -29,6 +30,10 @@ import { cn } from "../../lib/cn";
 import { sanitizeBranchName } from "../../lib/git-utils";
 import { getProjectDisplayName } from "../../lib/project-view";
 import { getGitHubRepoUrl } from "../../lib/project-remote";
+import {
+  ProjectCategoryIconGlyph,
+  resolveProjectCategory,
+} from "../../lib/project-categories";
 
 interface Props {
   project: Project;
@@ -63,6 +68,7 @@ const ProjectItem = memo(function ProjectItem({
   const addWorktree = useProjectStore((s) => s.addWorktree);
   const removeProject = useProjectStore((s) => s.removeProject);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const projectCategories = usePreferencesStore((s) => s.projectCategories);
   const { toast } = useToast();
 
   const handleAddWorktree = async (e: React.FormEvent) => {
@@ -84,6 +90,7 @@ const ProjectItem = memo(function ProjectItem({
 
   const displayName = getProjectDisplayName(project, { showOrgPrefix });
   const githubRepoUrl = getGitHubRepoUrl(project.url);
+  const projectCategory = resolveProjectCategory(project.categoryId, projectCategories);
 
   const handleStartRename = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -105,6 +112,16 @@ const ProjectItem = memo(function ProjectItem({
   const handleProjectSettings = () => {
     overlay.open<boolean>(({ resolve, close }) => (
       <ProjectSettingsDialog projectId={project.id} resolve={resolve} close={close} />
+    ));
+  };
+
+  const handleProjectCategory = (e: React.MouseEvent | React.PointerEvent) => {
+    e.stopPropagation();
+    if ("type" in e && e.type === "pointerdown") {
+      return;
+    }
+    overlay.open<boolean>(({ close }) => (
+      <ProjectCategoryDialog projectId={project.id} close={close} />
     ));
   };
 
@@ -163,10 +180,32 @@ const ProjectItem = memo(function ProjectItem({
         {...attributes}
         {...listeners}
       >
-        <Sprout className={cn("h-[15px] w-[15px] shrink-0", {
-          "text-accent": expanded,
-          "text-muted-foreground": !expanded,
-        })} />
+        <button
+          type="button"
+          className={cn(
+            "relative inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md focus-visible:outline-none",
+            "before:content-[''] before:absolute before:-inset-1 before:rounded-md before:border before:border-border/80 before:bg-background/95 before:opacity-0 before:shadow-sm before:transition-opacity",
+            "hover:before:opacity-100 focus-visible:before:opacity-100",
+            {
+              "text-accent": expanded,
+              "text-muted-foreground": !expanded,
+            },
+          )}
+          onClick={handleProjectCategory}
+          onPointerDown={handleProjectCategory}
+          title={`Manage ${projectCategory.name} category`}
+        >
+          <span
+            className={cn(
+              "relative z-[1] inline-flex h-[15px] w-[15px] items-center justify-center",
+            )}
+          >
+            <ProjectCategoryIconGlyph
+              icon={projectCategory.icon}
+              className={cn("h-[15px] w-[15px] shrink-0")}
+            />
+          </span>
+        </button>
         {renaming ? (
           <form onSubmit={handleRename} className={cn("flex-1 min-w-0")}>
             <input
@@ -195,6 +234,7 @@ const ProjectItem = memo(function ProjectItem({
           <IconButton
             className={cn("h-5 w-5")}
             onClick={handleStartRename}
+            onPointerDown={(e) => e.stopPropagation()}
             title="Rename project"
           >
             <Pencil className={cn("h-[11px] w-[11px]")} />
@@ -202,6 +242,7 @@ const ProjectItem = memo(function ProjectItem({
           <IconButton
             className={cn("h-5 w-5")}
             onClick={handleRemoveProject}
+            onPointerDown={(e) => e.stopPropagation()}
             title="Remove project"
           >
             <X className={cn("h-[11px] w-[11px]")} />

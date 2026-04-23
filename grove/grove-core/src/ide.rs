@@ -121,8 +121,7 @@ pub fn open_in_ide_menu_item(path: &str, ide_menu_item: &IdeMenuItem) -> Result<
         }
     }
 
-    Err(last_error
-        .unwrap_or_else(|| format!("Failed to launch menu item '{}'", ide_menu_item.id)))
+    Err(last_error.unwrap_or_else(|| format!("Failed to launch menu item '{}'", ide_menu_item.id)))
 }
 
 fn menu_item_definition(id: &str) -> Option<MenuItemDefinition> {
@@ -482,8 +481,12 @@ mod tests {
     #[test]
     fn resolve_launch_commands_supports_fork_on_macos() {
         assert_eq!(
-            resolve_launch_commands(&ide_menu_item("fork"), IdeLaunchPlatform::MacOs, "/tmp/project")
-                .unwrap(),
+            resolve_launch_commands(
+                &ide_menu_item("fork"),
+                IdeLaunchPlatform::MacOs,
+                "/tmp/project"
+            )
+            .unwrap(),
             vec![
                 LaunchCommand {
                     program: "open".into(),

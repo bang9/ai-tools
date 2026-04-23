@@ -21,6 +21,8 @@ pub struct ProjectEntry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_sync: Option<ProjectEnvSyncConfig>,
 }
 
@@ -57,6 +59,24 @@ pub struct IdeMenuItem {
     pub open_command: Option<String>,
 }
 
+pub const DEFAULT_PROJECT_CATEGORY_ID: &str = "default";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCategory {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub icon: ProjectCategoryIcon,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+pub enum ProjectCategoryIcon {
+    Emoji(String),
+    Lucide(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GrovePreferences {
@@ -70,6 +90,8 @@ pub struct GrovePreferences {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub git_gui_menu_items: Vec<IdeMenuItem>,
     pub ide_menu_items: Vec<IdeMenuItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_categories: Vec<ProjectCategory>,
     #[serde(rename = "preferredIde", default, skip_serializing)]
     legacy_preferred_ide: Option<IdeMenuItem>,
 }
@@ -82,6 +104,7 @@ impl PartialEq for GrovePreferences {
             && self.project_org_order == other.project_org_order
             && self.git_gui_menu_items == other.git_gui_menu_items
             && self.ide_menu_items == other.ide_menu_items
+            && self.project_categories == other.project_categories
     }
 }
 
@@ -102,6 +125,7 @@ impl GrovePreferences {
             .collect();
         self.git_gui_menu_items = normalize_git_gui_menu_items(self.git_gui_menu_items);
         self.ide_menu_items = normalize_ide_menu_items(self.ide_menu_items);
+        self.project_categories = normalize_project_categories(self.project_categories);
         self.legacy_preferred_ide = None;
         self
     }
@@ -124,6 +148,7 @@ impl Default for GrovePreferences {
                 display_name: None,
                 open_command: None,
             }],
+            project_categories: Vec::new(),
             legacy_preferred_ide: None,
         }
     }
@@ -338,6 +363,104 @@ fn normalize_ide_menu_items(items: Vec<IdeMenuItem>) -> Vec<IdeMenuItem> {
 
 fn normalize_git_gui_menu_items(items: Vec<IdeMenuItem>) -> Vec<IdeMenuItem> {
     normalize_menu_items(items, is_supported_git_gui_menu_item_id)
+}
+
+fn is_supported_project_category_icon_id(id: &str) -> bool {
+    matches!(
+        id,
+        "sprout"
+            | "folder"
+            | "rocket"
+            | "flame"
+            | "bug"
+            | "wrench"
+            | "book"
+            | "palette"
+            | "database"
+            | "bot"
+            | "terminal"
+            | "briefcase"
+            | "star"
+            | "package"
+            | "code"
+            | "gem"
+    )
+}
+
+fn trim_and_limit_chars(value: &str, max_chars: usize) -> String {
+    value.trim().chars().take(max_chars).collect()
+}
+
+fn normalize_project_category_icon(icon: ProjectCategoryIcon) -> Option<ProjectCategoryIcon> {
+    match icon {
+        ProjectCategoryIcon::Emoji(value) => {
+            let value = trim_and_limit_chars(&value, 4);
+            if value.is_empty() {
+                None
+            } else {
+                Some(ProjectCategoryIcon::Emoji(value))
+            }
+        }
+        ProjectCategoryIcon::Lucide(value) => {
+            let value = value.trim();
+            if value.is_empty() || !is_supported_project_category_icon_id(value) {
+                None
+            } else {
+                Some(ProjectCategoryIcon::Lucide(value.to_string()))
+            }
+        }
+    }
+}
+
+fn normalize_project_category_color(color: &str) -> Option<String> {
+    let color = color.trim();
+    let is_hex = color.len() == 7
+        && color.starts_with('#')
+        && color.chars().skip(1).all(|ch| ch.is_ascii_hexdigit());
+    if is_hex {
+        Some(color.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn normalize_project_categories(categories: Vec<ProjectCategory>) -> Vec<ProjectCategory> {
+    let mut normalized = Vec::new();
+
+    for category in categories {
+        let id = category.id.trim();
+        if id.is_empty() || id == DEFAULT_PROJECT_CATEGORY_ID {
+            continue;
+        }
+
+        if normalized
+            .iter()
+            .any(|existing: &ProjectCategory| existing.id == id)
+        {
+            continue;
+        }
+
+        let name = trim_and_limit_chars(&category.name, 10);
+        if name.is_empty() {
+            continue;
+        }
+
+        let Some(color) = normalize_project_category_color(&category.color) else {
+            continue;
+        };
+        let Some(icon) = normalize_project_category_icon(category.icon) else {
+            continue;
+        };
+
+        normalized.push(ProjectCategory {
+            id: id.to_string(),
+            name,
+            color,
+            icon,
+        });
+    }
+
+    normalized
 }
 
 fn terminal_session_snapshots_path() -> Result<PathBuf, String> {
@@ -675,6 +798,12 @@ mod tests {
                 display_name: Some("Cursor".into()),
                 open_command: None,
             }],
+            project_categories: vec![ProjectCategory {
+                id: "ops".into(),
+                name: "Ops".into(),
+                color: "#4f7cff".into(),
+                icon: ProjectCategoryIcon::Lucide("wrench".into()),
+            }],
             legacy_preferred_ide: None,
         }
     }
@@ -690,6 +819,7 @@ mod tests {
             worktree_order: Vec::new(),
             base_branch: None,
             collapsed: false,
+            category_id: Some("ops".into()),
             env_sync: None,
         }
     }

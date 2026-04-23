@@ -19,6 +19,7 @@ vi.mock("../lib/platform", () => ({
   addWorktree: vi.fn(),
   removeWorktree: vi.fn(),
   renameProject: vi.fn(),
+  setProjectCategory: vi.fn(),
   setProjectCollapsed: vi.fn(),
   runTerminalGc: vi.fn().mockResolvedValue({
     staleWorktreePaths: [],
@@ -66,6 +67,7 @@ function makeProject(worktrees: Worktree[]): Project {
     baseBranch: null,
     resolvedDefaultBranch: "main",
     collapsed: false,
+    categoryId: "default",
     worktrees,
   };
 }

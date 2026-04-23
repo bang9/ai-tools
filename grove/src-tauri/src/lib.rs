@@ -143,6 +143,17 @@ async fn rename_project(project_id: String, name: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+async fn set_project_category(project_id: String, category_id: String) -> Result<(), String> {
+    blocking(move || grove_core::git_project::set_project_category_impl(&project_id, &category_id))
+        .await
+}
+
+#[tauri::command]
+async fn delete_project_category(category_id: String) -> Result<(), String> {
+    blocking(move || grove_core::git_project::delete_project_category_impl(&category_id)).await
+}
+
+#[tauri::command]
 async fn set_project_collapsed(project_id: String, collapsed: bool) -> Result<(), String> {
     blocking(move || grove_core::git_project::set_project_collapsed_impl(&project_id, collapsed))
         .await
@@ -534,6 +545,8 @@ pub fn run() {
             remove_project,
             reorder_projects,
             rename_project,
+            set_project_category,
+            delete_project_category,
             set_project_collapsed,
             is_source_dirty,
             refresh_project,

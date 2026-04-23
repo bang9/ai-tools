@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub use config::{
-    AppConfig, GrovePreferences, IdeMenuItem, ProjectEnvSyncConfig, TerminalLinkOpenMode,
+    AppConfig, GrovePreferences, IdeMenuItem, ProjectCategory, ProjectCategoryIcon,
+    ProjectEnvSyncConfig, TerminalLinkOpenMode, DEFAULT_PROJECT_CATEGORY_ID,
 };
 pub use logger::LogEventSink;
 pub use pty::PtyEventSink;
@@ -40,6 +41,7 @@ pub struct Project {
     pub base_branch: Option<String>,
     pub resolved_default_branch: String,
     pub collapsed: bool,
+    pub category_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

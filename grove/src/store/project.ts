@@ -30,6 +30,8 @@ interface ProjectState {
   selectWorktree: (worktree: Worktree | null) => void;
   setWorktreeOrder: (projectId: string, order: string[]) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
+  setProjectCategory: (projectId: string, categoryId: string) => Promise<void>;
+  remapDeletedProjectCategory: (categoryId: string) => void;
   setBaseBranch: (projectId: string, branch: string | null) => Promise<void>;
   toggleProjectCollapse: (id: string) => void;
 }
@@ -440,6 +442,27 @@ export const useProjectStore = create<ProjectState>((set) => ({
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId ? { ...p, name } : p,
+      ),
+    }));
+  },
+
+  setProjectCategory: async (projectId: string, categoryId: string) => {
+    await runCommand(() => tauri.setProjectCategory(projectId, categoryId), {
+      errorToast: "Failed to set project category",
+    });
+    commitProjectMutation(set, (state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId ? { ...p, categoryId } : p,
+      ),
+    }));
+  },
+
+  remapDeletedProjectCategory: (categoryId: string) => {
+    commitProjectMutation(set, (state) => ({
+      projects: state.projects.map((project) =>
+        project.categoryId === categoryId
+          ? { ...project, categoryId: "default" }
+          : project,
       ),
     }));
   },

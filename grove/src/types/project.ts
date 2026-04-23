@@ -11,6 +11,7 @@ export interface Project {
   baseBranch: string | null;
   resolvedDefaultBranch: string;
   collapsed: boolean;
+  categoryId: string;
 }
 
 export interface Worktree {

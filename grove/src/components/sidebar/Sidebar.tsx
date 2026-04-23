@@ -3,20 +3,31 @@ import { Plus } from "lucide-react";
 import { useProject } from "../../hooks/useProject";
 import { useMission } from "../../hooks/useMission";
 import { usePanelLayoutStore } from "../../store/panel-layout";
+import { usePreferencesStore } from "../../store/preferences";
 import { PanelModeSwitch } from "./PanelModeSwitch";
 import ProjectTree from "./ProjectTree";
+import ProjectCategoryFilterBar from "./ProjectCategoryFilterBar";
 import AddProjectDialog from "./AddProjectDialog";
 import CreateMissionDialog from "./CreateMissionDialog";
 import MissionPanel from "./MissionPanel";
 import { IconButton } from "../ui/button";
 import { cn } from "../../lib/cn";
+import { DEFAULT_PROJECT_CATEGORY_ID, resolveProjectCategoryId } from "../../lib/project-categories";
 
 function Sidebar() {
   const { projects, cloningProjects, loading } = useProject();
   const { loading: missionsLoading } = useMission();
   const sidebarMode = usePanelLayoutStore((s) => s.sidebarMode);
+  const projectCategories = usePreferencesStore((s) => s.projectCategories);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showCreateMissionDialog, setShowCreateMissionDialog] = useState(false);
+  const [activeCategoryIds, setActiveCategoryIds] = useState<string[]>([]);
+  const filteredProjectCount =
+    activeCategoryIds.length === 0
+      ? projects.length
+      : projects.filter((project) =>
+          activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
+        ).length;
 
   const isProjectsMode = sidebarMode === "projects";
   const addButtonTitle = isProjectsMode ? "Add project" : "Create mission";
@@ -34,6 +45,18 @@ function Sidebar() {
     setShowAddDialog(false);
     setShowCreateMissionDialog(false);
   }, [sidebarMode]);
+
+  useEffect(() => {
+    const validIds = new Set([
+      DEFAULT_PROJECT_CATEGORY_ID,
+      ...projectCategories.map((category) => category.id),
+    ]);
+
+    setActiveCategoryIds((current) => {
+      const next = current.filter((id) => validIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [projectCategories]);
 
   let content: React.ReactNode;
   if (isProjectsMode) {
@@ -66,8 +89,28 @@ function Sidebar() {
           </button>
         </div>
       );
+    } else if (filteredProjectCount === 0) {
+      content = (
+        <div className={cn("flex flex-col items-center justify-center gap-2 px-3 py-10")}>
+          <span className={cn("text-xs text-muted-foreground")}>
+            No projects in the selected categories
+          </span>
+          <button
+            className={cn("text-xs text-accent hover:underline")}
+            onClick={() => setActiveCategoryIds([])}
+          >
+            Clear filter
+          </button>
+        </div>
+      );
     } else {
-      content = <ProjectTree projects={projects} cloningProjects={cloningProjects} />;
+      content = (
+        <ProjectTree
+          projects={projects}
+          cloningProjects={cloningProjects}
+          activeCategoryIds={activeCategoryIds}
+        />
+      );
     }
   } else if (missionsLoading) {
     content = (
@@ -105,6 +148,21 @@ function Sidebar() {
       )}
       {showCreateMissionDialog && (
         <CreateMissionDialog onClose={() => setShowCreateMissionDialog(false)} />
+      )}
+
+      {isProjectsMode && projects.length > 0 && (
+        <ProjectCategoryFilterBar
+          projects={projects}
+          activeCategoryIds={activeCategoryIds}
+          onToggleCategory={(categoryId) =>
+            setActiveCategoryIds((current) =>
+              current.includes(categoryId)
+                ? current.filter((id) => id !== categoryId)
+                : [...current, categoryId],
+            )
+          }
+          onClearCategories={() => setActiveCategoryIds([])}
+        />
       )}
 
       <div className={cn("flex-1 overflow-y-auto px-1.5 pb-2.5 pt-1.5")}>{content}</div>

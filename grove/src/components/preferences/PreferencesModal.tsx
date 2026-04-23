@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -7,13 +6,14 @@ import {
 } from "../ui/dialog";
 import { cn } from "../../lib/cn";
 import GeneralTab from "./GeneralTab";
+import CategoriesTab from "./CategoriesTab";
 import TerminalTab from "./TerminalTab";
 import DeveloperTab from "./DeveloperTab";
+import type { PreferencesTabId } from "../../store/preferences-ui";
 
-type TabId = "general" | "terminal" | "developer";
-
-const TABS: { id: TabId; label: string }[] = [
+const TABS: { id: PreferencesTabId; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "categories", label: "Categories" },
   { id: "terminal", label: "Terminal" },
   { id: "developer", label: "Developer" },
 ];
@@ -21,11 +21,16 @@ const TABS: { id: TabId; label: string }[] = [
 interface Props {
   open: boolean;
   onClose: () => void;
+  activeTab: PreferencesTabId;
+  onTabChange: (tab: PreferencesTabId) => void;
 }
 
-export default function PreferencesModal({ open, onClose }: Props) {
-  const [activeTab, setActiveTab] = useState<TabId>("general");
-
+export default function PreferencesModal({
+  open,
+  onClose,
+  activeTab,
+  onTabChange,
+}: Props) {
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       <DialogContent
@@ -45,7 +50,7 @@ export default function PreferencesModal({ open, onClose }: Props) {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => onTabChange(tab.id)}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-left text-[13px] transition-colors",
                   {
@@ -62,6 +67,7 @@ export default function PreferencesModal({ open, onClose }: Props) {
           {/* Right: Content */}
           <div className={cn("flex-1 overflow-y-auto p-6")}>
             {activeTab === "general" && <GeneralTab />}
+            {activeTab === "categories" && <CategoriesTab />}
             {activeTab === "terminal" && <TerminalTab />}
             {activeTab === "developer" && <DeveloperTab />}
           </div>

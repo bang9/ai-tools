@@ -1,10 +1,16 @@
 import { create } from "zustand";
 import type {
   GrovePreferences,
+  ProjectCategory,
   ProjectViewMode,
   TerminalLinkOpenMode,
 } from "../types";
-import { getGrovePreferences, saveGrovePreferences } from "../lib/platform";
+import {
+  deleteProjectCategory as deleteProjectCategoryCommand,
+  getGrovePreferences,
+  saveGrovePreferences,
+} from "../lib/platform";
+import { useProjectStore } from "./project";
 
 interface PreferencesStore {
   terminalLinkOpenMode: TerminalLinkOpenMode;
@@ -13,6 +19,7 @@ interface PreferencesStore {
   projectOrgOrder: string[];
   ideMenuItems: GrovePreferences["ideMenuItems"];
   gitGuiMenuItems: GrovePreferences["gitGuiMenuItems"];
+  projectCategories: ProjectCategory[];
   loaded: boolean;
   init: () => Promise<void>;
   setTerminalLinkOpenMode: (mode: TerminalLinkOpenMode) => void;
@@ -21,6 +28,8 @@ interface PreferencesStore {
   setProjectOrgOrder: (orgOrder: string[]) => void;
   setIdeMenuItems: (items: GrovePreferences["ideMenuItems"]) => void;
   setGitGuiMenuItems: (items: GrovePreferences["gitGuiMenuItems"]) => void;
+  setProjectCategories: (categories: ProjectCategory[]) => Promise<void>;
+  deleteProjectCategory: (categoryId: string) => Promise<void>;
 }
 
 function toSaveable(get: () => PreferencesStore): GrovePreferences {
@@ -31,6 +40,7 @@ function toSaveable(get: () => PreferencesStore): GrovePreferences {
     projectOrgOrder: get().projectOrgOrder,
     ideMenuItems: get().ideMenuItems,
     gitGuiMenuItems: get().gitGuiMenuItems,
+    projectCategories: get().projectCategories,
   };
 }
 
@@ -43,6 +53,7 @@ function normalizePreferences(prefs: GrovePreferences): GrovePreferences {
     projectOrgOrder: prefs.projectOrgOrder ?? [],
     ideMenuItems: prefs.ideMenuItems ?? [],
     gitGuiMenuItems: prefs.gitGuiMenuItems ?? [],
+    projectCategories: prefs.projectCategories ?? [],
   };
 }
 
@@ -53,6 +64,7 @@ export const usePreferencesStore = create<PreferencesStore>((set, get) => ({
   projectOrgOrder: [],
   ideMenuItems: [],
   gitGuiMenuItems: [],
+  projectCategories: [],
   loaded: false,
 
   init: async () => {
@@ -92,5 +104,23 @@ export const usePreferencesStore = create<PreferencesStore>((set, get) => ({
   setGitGuiMenuItems: (items) => {
     set({ gitGuiMenuItems: items });
     saveGrovePreferences(toSaveable(get)).catch(() => {});
+  },
+
+  setProjectCategories: async (projectCategories) => {
+    await saveGrovePreferences({
+      ...toSaveable(get),
+      projectCategories,
+    });
+    set({ projectCategories });
+  },
+
+  deleteProjectCategory: async (categoryId) => {
+    await deleteProjectCategoryCommand(categoryId);
+    set((state) => ({
+      projectCategories: state.projectCategories.filter(
+        (category) => category.id !== categoryId,
+      ),
+    }));
+    useProjectStore.getState().remapDeletedProjectCategory(categoryId);
   },
 }));

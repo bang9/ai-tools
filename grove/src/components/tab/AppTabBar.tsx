@@ -8,6 +8,7 @@ import {
   selectTabsForWorktree,
 } from "../../store/tab";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
+import { usePreferencesUiStore } from "../../store/preferences-ui";
 import { useMissionStore } from "../../store/mission";
 import { useProjectStore } from "../../store/project";
 import type { AppTabType } from "../../types";
@@ -166,7 +167,11 @@ function AppTabBar() {
   const closeTab = useTabStore((s) => s.closeTab);
   const addTab = useTabStore((s) => s.addTab);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const preferencesOpen = usePreferencesUiStore((state) => state.open);
+  const preferencesTab = usePreferencesUiStore((state) => state.activeTab);
+  const openPreferences = usePreferencesUiStore((state) => state.openPreferences);
+  const closePreferences = usePreferencesUiStore((state) => state.closePreferences);
+  const setPreferencesTab = usePreferencesUiStore((state) => state.setActiveTab);
 
   const handleAddTab = useCallback(
     (type: Exclude<AppTabType, "terminal">, label: string) => {
@@ -267,7 +272,7 @@ function AppTabBar() {
         {/* Global actions */}
         <div className={cn("flex items-center gap-1.5")}>
           <IconButton
-            onClick={() => setPreferencesOpen(true)}
+            onClick={() => openPreferences("general")}
             title="Preferences"
             aria-label="Preferences"
           >
@@ -277,7 +282,9 @@ function AppTabBar() {
       </div>
       <PreferencesModal
         open={preferencesOpen}
-        onClose={() => setPreferencesOpen(false)}
+        onClose={closePreferences}
+        activeTab={preferencesTab}
+        onTabChange={setPreferencesTab}
       />
     </>
   );

@@ -37,6 +37,35 @@ export type TerminalLinkOpenMode =
 
 export type ProjectViewMode = "default" | "group-by-orgs";
 
+export type ProjectCategoryIconId =
+  | "sprout"
+  | "folder"
+  | "rocket"
+  | "flame"
+  | "bug"
+  | "wrench"
+  | "book"
+  | "palette"
+  | "database"
+  | "bot"
+  | "terminal"
+  | "briefcase"
+  | "star"
+  | "package"
+  | "code"
+  | "gem";
+
+export type ProjectCategoryIcon =
+  | { type: "emoji"; value: string }
+  | { type: "lucide"; value: ProjectCategoryIconId };
+
+export interface ProjectCategory {
+  id: string;
+  name: string;
+  color: string;
+  icon: ProjectCategoryIcon;
+}
+
 export interface IdeMenuItem {
   id: string;
   displayName?: string;
@@ -52,6 +81,7 @@ export interface GrovePreferences {
   projectOrgOrder: string[];
   ideMenuItems: IdeMenuItem[];
   gitGuiMenuItems: GitGuiMenuItem[];
+  projectCategories: ProjectCategory[];
 }
 
 export interface AppConfig {

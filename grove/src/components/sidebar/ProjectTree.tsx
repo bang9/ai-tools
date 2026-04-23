@@ -20,6 +20,7 @@ import type { Project, CloningProject } from "../../types";
 import { useProjectStore } from "../../store/project";
 import { usePreferencesStore } from "../../store/preferences";
 import { cn } from "../../lib/cn";
+import { resolveProjectCategoryId } from "../../lib/project-categories";
 import {
   applyOrgProjectOrder,
   groupProjectsByOrg,
@@ -33,6 +34,7 @@ import { Button, IconButton } from "../ui/button";
 interface Props {
   projects: Project[];
   cloningProjects: CloningProject[];
+  activeCategoryIds?: string[];
 }
 
 interface ProjectOrgSectionProps {
@@ -45,6 +47,7 @@ interface ProjectOrgSectionProps {
   canMoveDown: boolean;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  sortingEnabled: boolean;
 }
 
 interface SortableProjectListProps {
@@ -52,6 +55,7 @@ interface SortableProjectListProps {
   onReorder: (projectIds: string[]) => void;
   showOrgPrefix?: boolean;
   className?: string;
+  sortable?: boolean;
 }
 
 type DocumentWithViewTransition = Document & {
@@ -103,6 +107,7 @@ function SortableProjectList({
   onReorder,
   showOrgPrefix = true,
   className,
+  sortable = true,
 }: SortableProjectListProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
@@ -139,6 +144,20 @@ function SortableProjectList({
   const handleDragCancel = useCallback(() => {
     setActiveId(null);
   }, []);
+
+  if (!sortable) {
+    return (
+      <div className={cn("space-y-1 py-0.5", className)}>
+        {projects.map((project) => (
+          <ProjectItem
+            key={project.id}
+            project={project}
+            showOrgPrefix={showOrgPrefix}
+          />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <DndContext
@@ -179,6 +198,7 @@ function ProjectOrgSection({
   canMoveDown,
   onMoveUp,
   onMoveDown,
+  sortingEnabled,
 }: ProjectOrgSectionProps) {
   const transitionStyle = {
     viewTransitionName: getProjectOrgTransitionName(org),
@@ -209,35 +229,37 @@ function ProjectOrgSection({
           <span className={cn("shrink-0 text-[11px] text-muted-foreground")}>
             {projects.length}
           </span>
-          <div
-            className={cn(
-              "flex w-[44px] items-center justify-end gap-0.5 opacity-0 transition-opacity",
-              "group-hover:opacity-100 group-focus-within:opacity-100",
-            )}
-          >
-            <IconButton
-              className={cn("h-5 w-5 disabled:opacity-30")}
-              onClick={(e) => {
-                e.stopPropagation();
-                onMoveUp();
-              }}
-              disabled={!canMoveUp}
-              title="Move group up"
+          {sortingEnabled && (
+            <div
+              className={cn(
+                "flex w-[44px] items-center justify-end gap-0.5 opacity-0 transition-opacity",
+                "group-hover:opacity-100 group-focus-within:opacity-100",
+              )}
             >
-              <ArrowUp className={cn("h-[11px] w-[11px]")} />
-            </IconButton>
-            <IconButton
-              className={cn("h-5 w-5 disabled:opacity-30")}
-              onClick={(e) => {
-                e.stopPropagation();
-                onMoveDown();
-              }}
-              disabled={!canMoveDown}
-              title="Move group down"
-            >
-              <ArrowDown className={cn("h-[11px] w-[11px]")} />
-            </IconButton>
-          </div>
+              <IconButton
+                className={cn("h-5 w-5 disabled:opacity-30")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveUp();
+                }}
+                disabled={!canMoveUp}
+                title="Move group up"
+              >
+                <ArrowUp className={cn("h-[11px] w-[11px]")} />
+              </IconButton>
+              <IconButton
+                className={cn("h-5 w-5 disabled:opacity-30")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveDown();
+                }}
+                disabled={!canMoveDown}
+                title="Move group down"
+              >
+                <ArrowDown className={cn("h-[11px] w-[11px]")} />
+              </IconButton>
+            </div>
+          )}
         </div>
       </div>
 
@@ -253,6 +275,7 @@ function ProjectOrgSection({
             onReorder={onReorder}
             showOrgPrefix={false}
             className={cn("ml-4 border-l border-border/80 pl-2")}
+            sortable={sortingEnabled}
           />
         </div>
       </div>
@@ -260,7 +283,11 @@ function ProjectOrgSection({
   );
 }
 
-function ProjectTree({ projects, cloningProjects }: Props) {
+function ProjectTree({
+  projects,
+  cloningProjects,
+  activeCategoryIds = [],
+}: Props) {
   const projectViewMode = usePreferencesStore((s) => s.projectViewMode);
   const preferencesLoaded = usePreferencesStore((s) => s.loaded);
   const collapsedProjectOrgs = usePreferencesStore((s) => s.collapsedProjectOrgs);
@@ -268,15 +295,29 @@ function ProjectTree({ projects, cloningProjects }: Props) {
   const setProjectOrgCollapsed = usePreferencesStore((s) => s.setProjectOrgCollapsed);
   const setProjectOrgOrder = usePreferencesStore((s) => s.setProjectOrgOrder);
   const reorderProjects = useProjectStore((s) => s.reorderProjects);
+  const sortingEnabled = activeCategoryIds.length === 0;
 
-  const orgGroups = useMemo(() => groupProjectsByOrg(projects), [projects]);
-  const orderedOrgGroups = useMemo(
-    () => orderProjectOrgGroups(orgGroups, projectOrgOrder),
-    [orgGroups, projectOrgOrder],
+  const allOrgGroups = useMemo(() => groupProjectsByOrg(projects), [projects]);
+  const orderedAllOrgGroups = useMemo(
+    () => orderProjectOrgGroups(allOrgGroups, projectOrgOrder),
+    [allOrgGroups, projectOrgOrder],
+  );
+  const filteredProjects = useMemo(
+    () =>
+      activeCategoryIds.length === 0
+        ? projects
+        : projects.filter((project) =>
+            activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
+          ),
+    [activeCategoryIds, projects],
+  );
+  const filteredOrgGroups = useMemo(
+    () => orderProjectOrgGroups(groupProjectsByOrg(filteredProjects), projectOrgOrder),
+    [filteredProjects, projectOrgOrder],
   );
   const visibleOrgIds = useMemo(
-    () => orderedOrgGroups.map((group) => group.org),
-    [orderedOrgGroups],
+    () => orderedAllOrgGroups.map((group) => group.org),
+    [orderedAllOrgGroups],
   );
   const collapsedOrgSet = useMemo(
     () => new Set(collapsedProjectOrgs),
@@ -325,7 +366,7 @@ function ProjectTree({ projects, cloningProjects }: Props) {
     <>
       {projectViewMode === "group-by-orgs" ? (
         <div className={cn("space-y-1 py-0.5")}>
-          {orderedOrgGroups.map((group, index) => (
+          {filteredOrgGroups.map((group, index) => (
             <ProjectOrgSection
               key={group.org}
               org={group.org}
@@ -336,19 +377,25 @@ function ProjectTree({ projects, cloningProjects }: Props) {
               }
               onReorder={(projectIds) => handleOrgReorder(group.org, projectIds)}
               canMoveUp={index > 0}
-              canMoveDown={index < orderedOrgGroups.length - 1}
+              canMoveDown={index < filteredOrgGroups.length - 1}
               onMoveUp={() => handleMoveOrg(group.org, "up")}
               onMoveDown={() => handleMoveOrg(group.org, "down")}
+              sortingEnabled={sortingEnabled}
             />
           ))}
-          {cloningProjects.map((cp) => (
-            <CloningProjectItem key={cp.id} project={cp} />
-          ))}
+          {sortingEnabled &&
+            cloningProjects.map((cp) => (
+              <CloningProjectItem key={cp.id} project={cp} />
+            ))}
         </div>
       ) : (
         <>
-          <SortableProjectList projects={projects} onReorder={reorderProjects} />
-          {cloningProjects.length > 0 && (
+          <SortableProjectList
+            projects={filteredProjects}
+            onReorder={reorderProjects}
+            sortable={sortingEnabled}
+          />
+          {sortingEnabled && cloningProjects.length > 0 && (
             <div className={cn("mt-1 space-y-1")}>
               {cloningProjects.map((cp) => (
                 <CloningProjectItem key={cp.id} project={cp} />

@@ -292,6 +292,17 @@ export async function renameProject(projectId: string, name: string): Promise<vo
   return platform.invoke("rename_project", { projectId, name });
 }
 
+export async function setProjectCategory(
+  projectId: string,
+  categoryId: string,
+): Promise<void> {
+  return platform.invoke("set_project_category", { projectId, categoryId });
+}
+
+export async function deleteProjectCategory(categoryId: string): Promise<void> {
+  return platform.invoke("delete_project_category", { categoryId });
+}
+
 export async function setProjectCollapsed(projectId: string, collapsed: boolean): Promise<void> {
   return platform.invoke("set_project_collapsed", { projectId, collapsed });
 }

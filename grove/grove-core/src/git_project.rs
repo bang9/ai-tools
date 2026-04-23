@@ -411,6 +411,7 @@ fn make_project_entry(
         worktree_order: Vec::new(),
         base_branch: None,
         collapsed: false,
+        category_id: None,
         env_sync: None,
     }
 }
@@ -541,11 +542,72 @@ fn reconcile_project_entries(entries: Vec<ProjectEntry>, base_dir: &Path) -> Vec
     reconciled
 }
 
+fn available_project_category_ids(config: &config::GroveConfig) -> HashSet<String> {
+    config
+        .preferences
+        .clone()
+        .unwrap_or_default()
+        .normalized()
+        .project_categories
+        .into_iter()
+        .map(|category| category.id)
+        .collect()
+}
+
+fn normalize_project_category_id(
+    category_id: Option<String>,
+    available_ids: &HashSet<String>,
+) -> Option<String> {
+    let Some(category_id) = category_id else {
+        return None;
+    };
+
+    let category_id = category_id.trim();
+    if category_id.is_empty() || category_id == config::DEFAULT_PROJECT_CATEGORY_ID {
+        return None;
+    }
+
+    if available_ids.contains(category_id) {
+        Some(category_id.to_string())
+    } else {
+        None
+    }
+}
+
+fn reconcile_project_categories(config: &mut config::GroveConfig) -> bool {
+    let normalized_preferences = config.preferences.clone().unwrap_or_default().normalized();
+    let available_ids = normalized_preferences
+        .project_categories
+        .iter()
+        .map(|category| category.id.clone())
+        .collect::<HashSet<_>>();
+    let preferences_changed = config
+        .preferences
+        .as_ref()
+        .map(|preferences| preferences != &normalized_preferences)
+        .unwrap_or(false);
+    if preferences_changed {
+        config.preferences = Some(normalized_preferences);
+    }
+
+    let mut projects_changed = false;
+    for entry in &mut config.projects {
+        let normalized = normalize_project_category_id(entry.category_id.clone(), &available_ids);
+        if entry.category_id != normalized {
+            entry.category_id = normalized;
+            projects_changed = true;
+        }
+    }
+
+    preferences_changed || projects_changed
+}
+
 fn load_reconciled_config() -> Result<config::GroveConfig, String> {
     let mut config = config::load_config();
     let reconciled_projects = reconcile_project_entries(config.projects.clone(), &base_dir());
+    let categories_changed = reconcile_project_categories(&mut config);
 
-    if !same_project_entries(&config.projects, &reconciled_projects) {
+    if !same_project_entries(&config.projects, &reconciled_projects) || categories_changed {
         config.projects = reconciled_projects;
         config::save_config(&config)?;
     } else {
@@ -624,6 +686,9 @@ fn project_from_entry(entry: ProjectEntry) -> Project {
         base_branch: entry.base_branch,
         resolved_default_branch,
         collapsed: entry.collapsed,
+        category_id: entry
+            .category_id
+            .unwrap_or_else(|| config::DEFAULT_PROJECT_CATEGORY_ID.to_string()),
     }
 }
 
@@ -1586,6 +1651,56 @@ pub fn rename_project_impl(project_id: &str, name: String) -> Result<(), String>
     config::save_config(&config)
 }
 
+pub fn set_project_category_impl(project_id: &str, category_id: &str) -> Result<(), String> {
+    let mut config = load_reconciled_config()?;
+    let available_ids = available_project_category_ids(&config);
+    let normalized_category_id =
+        normalize_project_category_id(Some(category_id.to_string()), &available_ids);
+
+    if category_id.trim() != config::DEFAULT_PROJECT_CATEGORY_ID && normalized_category_id.is_none()
+    {
+        return Err(format!(
+            "Project category not found: {}",
+            category_id.trim()
+        ));
+    }
+
+    let entry = config
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    entry.category_id = normalized_category_id;
+    config::save_config(&config)
+}
+
+pub fn delete_project_category_impl(category_id: &str) -> Result<(), String> {
+    let category_id = category_id.trim();
+    if category_id.is_empty() || category_id == config::DEFAULT_PROJECT_CATEGORY_ID {
+        return Err("Default project category cannot be deleted".to_string());
+    }
+
+    let mut config = load_reconciled_config()?;
+    let mut preferences = config.preferences.clone().unwrap_or_default().normalized();
+    let previous_len = preferences.project_categories.len();
+    preferences
+        .project_categories
+        .retain(|category| category.id != category_id);
+
+    if preferences.project_categories.len() == previous_len {
+        return Err(format!("Project category not found: {category_id}"));
+    }
+
+    for entry in &mut config.projects {
+        if entry.category_id.as_deref() == Some(category_id) {
+            entry.category_id = None;
+        }
+    }
+
+    config.preferences = Some(preferences);
+    config::save_config(&config)
+}
+
 pub fn set_base_branch_impl(project_id: &str, branch: Option<String>) -> Result<(), String> {
     if let Some(ref branch_name) = branch {
         let entry = find_project_entry(project_id)?;
@@ -2147,6 +2262,7 @@ mod tests {
             worktree_order: Vec::new(),
             base_branch: None,
             collapsed: false,
+            category_id: None,
             env_sync: None,
         }
     }
@@ -3639,5 +3755,71 @@ exec /bin/sh -c "$remote_cmd"
         let loaded2 = config::load_config();
         assert_eq!(loaded2.projects[0].base_branch, Some("develop".to_string()));
         assert_eq!(loaded2.projects[1].base_branch, None);
+    }
+
+    #[test]
+    fn set_and_delete_project_category_round_trip() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+
+        let mut preferences = config::GrovePreferences::default();
+        preferences.project_categories = vec![config::ProjectCategory {
+            id: "ops".into(),
+            name: "Ops".into(),
+            color: "#4f7cff".into(),
+            icon: config::ProjectCategoryIcon::Lucide("wrench".into()),
+        }];
+
+        config::save_config(&config::GroveConfig {
+            projects: vec![project_entry(
+                "p1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+            base_dir: Some(base_dir.to_string_lossy().to_string()),
+            terminal_theme: None,
+            preferences: Some(preferences),
+        })
+        .unwrap();
+
+        set_project_category_impl("p1", "ops").unwrap();
+        let assigned = config::load_config();
+        assert_eq!(assigned.projects[0].category_id.as_deref(), Some("ops"));
+
+        delete_project_category_impl("ops").unwrap();
+        let deleted = config::load_config();
+        assert_eq!(deleted.projects[0].category_id, None);
+        assert_eq!(
+            deleted
+                .preferences
+                .unwrap()
+                .normalized()
+                .project_categories
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn set_project_category_rejects_unknown_category() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        save_test_config(
+            &base_dir,
+            vec![project_entry(
+                "p1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+        );
+
+        let error = set_project_category_impl("p1", "missing").unwrap_err();
+        assert!(error.contains("Project category not found"));
     }
 }

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../lib/platform", () => ({
   getGrovePreferences: vi.fn(),
   saveGrovePreferences: vi.fn().mockResolvedValue(undefined),
+  deleteProjectCategory: vi.fn().mockResolvedValue(undefined),
 }));
 
 import * as platform from "../lib/platform";
@@ -18,6 +19,7 @@ describe("usePreferencesStore", () => {
       projectOrgOrder: [],
       ideMenuItems: [],
       gitGuiMenuItems: [],
+      projectCategories: [],
       loaded: false,
     });
   });
@@ -36,6 +38,7 @@ describe("usePreferencesStore", () => {
       projectOrgOrder: [],
       ideMenuItems: [],
       gitGuiMenuItems: [],
+      projectCategories: [],
       loaded: true,
     });
   });

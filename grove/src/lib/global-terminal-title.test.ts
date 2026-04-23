@@ -23,6 +23,7 @@ function makeProject(worktrees: Worktree[] = []): Project {
     baseBranch: null,
     resolvedDefaultBranch: "main",
     collapsed: false,
+    categoryId: "default",
   };
 }
 
