@@ -10,9 +10,11 @@ import { runCommandSafely } from "../../lib/command";
 import { getCommitDiffContext, getWorkingDiffContext } from "../../lib/platform";
 import { buildContextGapSlots, type DiffContextGap } from "./context-gaps";
 import {
+  advanceGapLoadCount,
   clearGapLoading,
   createLoadedContextLines,
   getGapRemainingCount,
+  getNextGapLoadCount,
   getGapState,
   isGapLoading,
   markGapLoading,
@@ -25,7 +27,6 @@ import {
 } from "./context-loading";
 
 const EMPTY_SET = new Set<number>();
-const CONTEXT_LOAD_STEP = 5;
 const GITHUB_DIFF_HEADER_BG = "var(--diff-hunk-bg)";
 const GITHUB_DIFF_BORDER = "var(--color-border-light)";
 const GITHUB_DIFF_MUTED = "var(--color-text-secondary)";
@@ -215,7 +216,7 @@ function FileDiffSection({
       }
 
       const currentState = getGapState(gapStatesRef.current, gap.slot);
-      const requestPlan = planGapLoad(gap, currentState, direction, CONTEXT_LOAD_STEP);
+      const requestPlan = planGapLoad(gap, currentState, direction);
       if (!requestPlan) {
         return;
       }
@@ -241,11 +242,13 @@ function FileDiffSection({
 
         return {
           ...prev,
-          [gap.slot]: mergeGapLines(
-            nextState,
-            gap,
-            direction,
-            createLoadedContextLines(gap, requestPlan.startOffset, loaded),
+          [gap.slot]: advanceGapLoadCount(
+            mergeGapLines(
+              nextState,
+              gap,
+              direction,
+              createLoadedContextLines(gap, requestPlan.startOffset, loaded),
+            ),
           ),
         };
       });
@@ -260,7 +263,7 @@ function FileDiffSection({
       }
 
       const currentState = getGapState(gapStatesRef.current, gap.slot);
-      const requestPlan = planGapMiddleLoad(gap, currentState, CONTEXT_LOAD_STEP);
+      const requestPlan = planGapMiddleLoad(gap, currentState);
       if (!requestPlan) {
         return;
       }
@@ -292,6 +295,7 @@ function FileDiffSection({
       updateGapStates((prev) => {
         const currentState = getGapState(prev, gap.slot);
         let nextState = currentState;
+        const loadedAny = loadedHead !== null || loadedTail !== null;
 
         if (requestPlan.head && loadedHead) {
           nextState = mergeGapLines(
@@ -313,7 +317,7 @@ function FileDiffSection({
 
         return {
           ...prev,
-          [gap.slot]: clearGapLoading(nextState),
+          [gap.slot]: clearGapLoading(loadedAny ? advanceGapLoadCount(nextState) : nextState),
         };
       });
     },
@@ -489,11 +493,20 @@ function ContextGapSection({
   const hasRemaining = remainingCount > 0;
   const isMiddle = !isLeading && !isTrailing;
   const hasPartialMiddleContext = state.headLines.length > 0 || state.tailLines.length > 0;
+  const nextLoadCount = Math.min(getNextGapLoadCount(state), remainingCount);
 
   if (isLeading) {
     return (
       <div>
-        {hasRemaining && <ContextExpandRow direction="up" label={label} onClick={onLoadTail} disabled={loading} />}
+        {hasRemaining && (
+          <ContextExpandRow
+            direction="up"
+            label={label}
+            loadCount={nextLoadCount}
+            onClick={onLoadTail}
+            disabled={loading}
+          />
+        )}
         {state.tailLines.length > 0 && <ContextRows lines={state.tailLines} />}
       </div>
     );
@@ -503,7 +516,9 @@ function ContextGapSection({
     return (
       <div>
         {state.headLines.length > 0 && <ContextRows lines={state.headLines} />}
-        {hasRemaining && <ContextExpandRow direction="down" onClick={onLoadHead} disabled={loading} />}
+        {hasRemaining && (
+          <ContextExpandRow direction="down" loadCount={nextLoadCount} onClick={onLoadHead} disabled={loading} />
+        )}
       </div>
     );
   }
@@ -512,13 +527,25 @@ function ContextGapSection({
     <div>
       {state.headLines.length > 0 && <ContextRows lines={state.headLines} />}
       {isMiddle && hasRemaining && !hasPartialMiddleContext && (
-        <ContextExpandRow direction="middle" label={label} onClick={onLoadMiddle} disabled={loading} />
+        <ContextExpandRow
+          direction="middle"
+          label={label}
+          loadCount={nextLoadCount}
+          onClick={onLoadMiddle}
+          disabled={loading}
+        />
       )}
       {isMiddle && hasRemaining && hasPartialMiddleContext && (
-        <ContextExpandRow direction="down" label={label} onClick={onLoadHead} disabled={loading} />
+        <ContextExpandRow
+          direction="down"
+          label={label}
+          loadCount={nextLoadCount}
+          onClick={onLoadHead}
+          disabled={loading}
+        />
       )}
       {isMiddle && hasRemaining && hasPartialMiddleContext && state.tailLines.length > 0 && (
-        <ContextExpandRow direction="up" onClick={onLoadTail} disabled={loading} />
+        <ContextExpandRow direction="up" loadCount={nextLoadCount} onClick={onLoadTail} disabled={loading} />
       )}
       {state.tailLines.length > 0 && <ContextRows lines={state.tailLines} />}
     </div>
@@ -528,23 +555,25 @@ function ContextGapSection({
 function ContextExpandRow({
   direction,
   label,
+  loadCount,
   onClick,
   disabled,
 }: {
   direction: "up" | "down" | "middle";
   label?: string;
+  loadCount: number;
   onClick: () => void;
   disabled?: boolean;
 }) {
   let Icon = ChevronsUpDown;
-  let ariaLabel = `Load ${CONTEXT_LOAD_STEP} more lines above and below`;
+  let ariaLabel = `Load ${loadCount} more lines above and below`;
 
   if (direction === "up") {
     Icon = ChevronUp;
-    ariaLabel = `Load ${CONTEXT_LOAD_STEP} more lines above`;
+    ariaLabel = `Load ${loadCount} more lines above`;
   } else if (direction === "down") {
     Icon = ChevronDown;
-    ariaLabel = `Load ${CONTEXT_LOAD_STEP} more lines below`;
+    ariaLabel = `Load ${loadCount} more lines below`;
   }
 
   return (

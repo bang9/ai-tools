@@ -13,6 +13,8 @@ export interface GapLoadState {
   tailLines: LoadedContextLine[];
   headLoadedCount: number;
   tailLoadedCount: number;
+  previousLoadCount: number;
+  nextLoadCount: number;
   loadingHead: boolean;
   loadingTail: boolean;
 }
@@ -30,11 +32,16 @@ export interface GapMiddleLoadPlan {
   tail: GapLoadPlan | null;
 }
 
+const FIRST_GAP_LOAD_COUNT = 5;
+const SECOND_GAP_LOAD_COUNT = 7;
+
 export const EMPTY_GAP_STATE: GapLoadState = {
   headLines: [],
   tailLines: [],
   headLoadedCount: 0,
   tailLoadedCount: 0,
+  previousLoadCount: 0,
+  nextLoadCount: FIRST_GAP_LOAD_COUNT,
   loadingHead: false,
   loadingTail: false,
 };
@@ -51,11 +58,25 @@ export function getGapRemainingCount(gap: DiffContextGap, state: GapLoadState): 
   return Math.max(gap.count - Math.min(gap.count, state.headLoadedCount + state.tailLoadedCount), 0);
 }
 
+export function getNextGapLoadCount(state: GapLoadState): number {
+  return state.nextLoadCount;
+}
+
+export function advanceGapLoadCount(state: GapLoadState): GapLoadState {
+  return {
+    ...state,
+    previousLoadCount: state.nextLoadCount,
+    nextLoadCount:
+      state.previousLoadCount > 0
+        ? state.previousLoadCount + state.nextLoadCount
+        : SECOND_GAP_LOAD_COUNT,
+  };
+}
+
 export function planGapLoad(
   gap: DiffContextGap,
   state: GapLoadState,
   direction: GapLoadDirection,
-  step: number,
 ): GapLoadPlan | null {
   if (isGapLoading(state)) {
     return null;
@@ -65,17 +86,17 @@ export function planGapLoad(
   if (remainingCount <= 0) {
     return null;
   }
+  const requestedCount = Math.min(state.nextLoadCount, remainingCount);
 
   if (direction === "head") {
     return {
       startOffset: state.headLoadedCount,
-      requestedCount: Math.min(step, remainingCount),
+      requestedCount,
       loadingKey: "loadingHead",
     };
   }
 
   if (direction === "tail") {
-    const requestedCount = Math.min(step, remainingCount);
     return {
       startOffset: gap.count - state.tailLoadedCount - requestedCount,
       requestedCount,
@@ -86,7 +107,7 @@ export function planGapLoad(
   return null;
 }
 
-export function planGapMiddleLoad(gap: DiffContextGap, state: GapLoadState, step: number): GapMiddleLoadPlan | null {
+export function planGapMiddleLoad(gap: DiffContextGap, state: GapLoadState): GapMiddleLoadPlan | null {
   if (isGapLoading(state)) {
     return null;
   }
@@ -97,8 +118,8 @@ export function planGapMiddleLoad(gap: DiffContextGap, state: GapLoadState, step
   }
 
   const [headCount, tailCount] =
-    remainingCount > step * 2
-      ? [step, step]
+    remainingCount > state.nextLoadCount * 2
+      ? [state.nextLoadCount, state.nextLoadCount]
       : [Math.ceil(remainingCount / 2), Math.floor(remainingCount / 2)];
 
   return {
@@ -179,6 +200,8 @@ export function mergeGapLines(
     tailLines,
     headLoadedCount,
     tailLoadedCount,
+    previousLoadCount: state.previousLoadCount,
+    nextLoadCount: state.nextLoadCount,
     loadingHead: false,
     loadingTail: false,
   };

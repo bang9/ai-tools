@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DiffContextGap } from "./context-gaps";
 import {
+  advanceGapLoadCount,
   createLoadedContextLines,
   EMPTY_GAP_STATE,
   getGapRemainingCount,
+  getNextGapLoadCount,
   mergeGapLines,
   planGapMiddleLoad,
   planGapLoad,
@@ -26,7 +28,6 @@ describe("context-loading", () => {
         loadingHead: true,
       },
       "head",
-      20,
     );
 
     expect(plan).toBeNull();
@@ -38,14 +39,14 @@ describe("context-loading", () => {
       {
         ...EMPTY_GAP_STATE,
         headLines: createLoadedContextLines(sampleGap, 0, ["a", "b"]),
+        headLoadedCount: 2,
       },
       "tail",
-      4,
     );
 
     expect(tailPlan).toEqual({
-      startOffset: 8,
-      requestedCount: 4,
+      startOffset: 7,
+      requestedCount: 5,
       loadingKey: "loadingTail",
     });
   });
@@ -60,7 +61,6 @@ describe("context-loading", () => {
         headLoadedCount: 2,
         tailLoadedCount: 3,
       },
-      5,
     );
 
     expect(middlePlan).toEqual({
@@ -107,7 +107,7 @@ describe("context-loading", () => {
     };
 
     expect(getGapRemainingCount(sampleGap, state)).toBe(1);
-    expect(planGapLoad(sampleGap, state, "tail", 5)).toEqual({
+    expect(planGapLoad(sampleGap, state, "tail")).toEqual({
       startOffset: 7,
       requestedCount: 1,
       loadingKey: "loadingTail",
@@ -115,7 +115,7 @@ describe("context-loading", () => {
   });
 
   it("continues planning loads after an initial middle expansion", () => {
-    const middlePlan = planGapMiddleLoad(sampleGap, EMPTY_GAP_STATE, 5);
+    const middlePlan = planGapMiddleLoad(sampleGap, EMPTY_GAP_STATE);
     expect(middlePlan).not.toBeNull();
 
     let state = mergeGapLines(
@@ -132,10 +132,25 @@ describe("context-loading", () => {
     );
 
     expect(getGapRemainingCount(sampleGap, state)).toBe(2);
-    expect(planGapLoad(sampleGap, state, "head", 5)).toEqual({
+    state = advanceGapLoadCount(state);
+
+    expect(getNextGapLoadCount(state)).toBe(7);
+    expect(planGapLoad(sampleGap, state, "head")).toEqual({
       startOffset: 5,
       requestedCount: 2,
       loadingKey: "loadingHead",
     });
+  });
+
+  it("grows the next load count from the previous two successful steps", () => {
+    let state = EMPTY_GAP_STATE;
+    const sequence = [getNextGapLoadCount(state)];
+
+    for (let index = 0; index < 4; index += 1) {
+      state = advanceGapLoadCount(state);
+      sequence.push(getNextGapLoadCount(state));
+    }
+
+    expect(sequence).toEqual([5, 7, 12, 19, 31]);
   });
 });
