@@ -41,12 +41,13 @@ function FileItem({
   onClick: (e: React.MouseEvent) => void;
   actions?: React.ReactNode;
 }) {
-  const statusColors: Record<string, string> = {
+  const statusColors: Record<FileStatus["status"], string> = {
     modified: "text-yellow-400",
     added: "text-green-400",
     deleted: "text-red-400",
     renamed: "text-blue-400",
     untracked: "text-green-400",
+    conflicted: "text-orange-400",
   };
 
   return (
@@ -332,6 +333,11 @@ function WorkingChangesView({
       && [...selectedPaths].every((path) => unstaged.find((f) => f.path === path)?.status === "untracked"),
     [selectedSection, selectedPaths, unstaged],
   );
+  const hasConflictedSelection = useMemo(
+    () => selectedSection === "unstaged"
+      && [...selectedPaths].some((path) => unstaged.find((f) => f.path === path)?.status === "conflicted"),
+    [selectedSection, selectedPaths, unstaged],
+  );
 
   const handleMarqueeSelect = useCallback(
     (section: "staged" | "unstaged", ids: Set<string>) => {
@@ -447,18 +453,22 @@ function WorkingChangesView({
                       >
                         Stage
                       </ContextMenuItem>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem
-                        className={cn("text-destructive focus:text-destructive")}
-                        onSelect={() => runDestructiveAction(
-                          "Discard Changes",
-                          `Discard changes to ${selectedPaths.size} file${selectedPaths.size > 1 ? "s" : ""}?`,
-                          "Discard",
-                          store.discardFiles,
-                        )}
-                      >
-                        Discard
-                      </ContextMenuItem>
+                      {!hasConflictedSelection && (
+                        <>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem
+                            className={cn("text-destructive focus:text-destructive")}
+                            onSelect={() => runDestructiveAction(
+                              "Discard Changes",
+                              `Discard changes to ${selectedPaths.size} file${selectedPaths.size > 1 ? "s" : ""}?`,
+                              "Discard",
+                              store.discardFiles,
+                            )}
+                          >
+                            Discard
+                          </ContextMenuItem>
+                        </>
+                      )}
                       {allUntracked && (
                         <ContextMenuItem
                           className={cn("text-destructive focus:text-destructive")}
@@ -477,6 +487,7 @@ function WorkingChangesView({
                 : undefined}
               renderActions={(file) => {
                 const isUntracked = file.status === "untracked";
+                const isConflicted = file.status === "conflicted";
                 const discardConfirm = isUntracked
                   ? "Remove this untracked file from the worktree?"
                   : "Discard all changes to this file?";
@@ -484,12 +495,14 @@ function WorkingChangesView({
                 return (
                   <>
                     <ActionButton icon={Plus} title="Stage" onClick={() => store.stageFile(file.path)} />
-                    <ActionButton
-                      icon={Undo2}
-                      title="Discard"
-                      onClick={() => store.discardFile(file.path)}
-                      confirm={discardConfirm}
-                    />
+                    {!isConflicted && (
+                      <ActionButton
+                        icon={Undo2}
+                        title="Discard"
+                        onClick={() => store.discardFile(file.path)}
+                        confirm={discardConfirm}
+                      />
+                    )}
                     {isUntracked && (
                       <ActionButton
                         icon={Trash2}

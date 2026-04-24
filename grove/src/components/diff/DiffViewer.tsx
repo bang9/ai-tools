@@ -446,6 +446,7 @@ function FileDiffSection({
                 key={`${hunk.header}-${i}`}
                 hunk={hunk}
                 isFirst={false}
+                isConflicted={diff.status === "conflicted"}
                 selectedLines={selectedLines}
                 onGutterClick={handleGutterClick}
                 onGutterMouseDown={handleGutterMouseDown}

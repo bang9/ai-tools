@@ -56,6 +56,7 @@ export default function FileList({
                 "text-success": file.status === "added" || file.status === "untracked",
                 "text-warning": file.status === "modified",
                 "text-destructive": file.status === "deleted",
+                "text-orange-400": file.status === "conflicted",
               })}
             >
               {file.status[0].toUpperCase()}

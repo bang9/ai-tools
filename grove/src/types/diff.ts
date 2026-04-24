@@ -8,7 +8,7 @@ export interface CommitInfo {
 
 export interface FileStatus {
   path: string;
-  status: "modified" | "added" | "deleted" | "renamed" | "untracked";
+  status: "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
   staged: boolean;
 }
 

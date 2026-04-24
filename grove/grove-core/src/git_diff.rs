@@ -9,6 +9,8 @@ use std::sync::{LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
 
 const FILE_CONTENT_CACHE_LIMIT: usize = 256;
+const CONFLICT_CONTEXT_LINES: usize = 3;
+const STATUS_CONFLICTED: &str = "conflicted";
 
 // === QUERY OPERATIONS ===
 
@@ -25,6 +27,15 @@ pub fn get_status_impl(worktree_path: &str) -> Result<Vec<FileStatus>, String> {
     for entry in statuses.iter() {
         let path = entry.path().unwrap_or("").to_string();
         let st = entry.status();
+
+        if st.contains(git2::Status::CONFLICTED) {
+            result.push(FileStatus {
+                path: path.clone(),
+                status: STATUS_CONFLICTED.to_string(),
+                staged: false,
+            });
+            continue;
+        }
 
         // Staged changes (HEAD -> index)
         if st.intersects(
@@ -125,6 +136,9 @@ pub fn get_working_diff_impl(worktree_path: &str, path: &str) -> Result<FileDiff
     };
 
     let repo = Repository::open(worktree_path).map_err(|e| e.to_string())?;
+    if !want_staged && is_conflicted(&repo, actual_path) {
+        return get_conflicted_working_diff(&repo, worktree_path, actual_path);
+    }
 
     let diff = if want_staged {
         let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
@@ -156,7 +170,8 @@ pub fn get_working_diff_impl(worktree_path: &str, path: &str) -> Result<FileDiff
             let file_diffs = parse_diff(&full)?;
             if let Some(mut fd) = file_diffs.into_iter().find(|f| f.path == actual_path) {
                 if should_track_display_line_count(&fd.status) {
-                    let source = get_working_display_source(&repo, worktree_path, &fd.path, want_staged)?;
+                    let source =
+                        get_working_display_source(&repo, worktree_path, &fd.path, want_staged)?;
                     fd.display_line_count = count_lines_for_source(&repo, &source)?;
                 }
                 return Ok(fd);
@@ -170,7 +185,8 @@ pub fn get_working_diff_impl(worktree_path: &str, path: &str) -> Result<FileDiff
     let mut file_diffs = parse_diff(&diff)?;
     for file_diff in &mut file_diffs {
         if should_track_display_line_count(&file_diff.status) {
-            let source = get_working_display_source(&repo, worktree_path, &file_diff.path, want_staged)?;
+            let source =
+                get_working_display_source(&repo, worktree_path, &file_diff.path, want_staged)?;
             file_diff.display_line_count = count_lines_for_source(&repo, &source)?;
         }
     }
@@ -249,7 +265,8 @@ pub fn get_commit_diff_context_impl(
     let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
 
     ensure_commit_diff_path_allowed(&repo, &tree, parent_tree.as_ref(), path, old_path)?;
-    let source = get_commit_display_source_from_paths(&repo, &tree, parent_tree.as_ref(), path, old_path)?;
+    let source =
+        get_commit_display_source_from_paths(&repo, &tree, parent_tree.as_ref(), path, old_path)?;
     slice_lines_for_source(&repo, &source, start_line, line_count)
 }
 
@@ -424,6 +441,12 @@ fn is_untracked(repo: &Repository, path: &str) -> bool {
     }
 }
 
+fn is_conflicted(repo: &Repository, path: &str) -> bool {
+    repo.status_file(Path::new(path))
+        .map(|status| status.contains(git2::Status::CONFLICTED))
+        .unwrap_or(false)
+}
+
 fn get_unstaged_diff(worktree_path: &str, file_path: &str) -> Result<FileDiff, String> {
     let repo = Repository::open(worktree_path).map_err(|e| e.to_string())?;
     let mut opts = DiffOptions::new();
@@ -454,6 +477,97 @@ fn get_staged_diff(worktree_path: &str, file_path: &str) -> Result<FileDiff, Str
         .into_iter()
         .next()
         .ok_or_else(|| format!("No staged diff for {}", file_path))
+}
+
+fn get_conflicted_working_diff(
+    repo: &Repository,
+    worktree_path: &str,
+    path: &str,
+) -> Result<FileDiff, String> {
+    validate_repo_relative_path(path)?;
+    let source = read_workdir_source(worktree_path, path)?;
+    let lines = slice_lines_for_source(repo, &source, 1, u32::MAX)?;
+    let line_count = lines.len() as u32;
+    let hunks = build_conflicted_hunks(&lines);
+
+    Ok(FileDiff {
+        path: path.to_string(),
+        old_path: None,
+        status: STATUS_CONFLICTED.to_string(),
+        hunks,
+        display_line_count: line_count,
+    })
+}
+
+fn build_conflicted_hunks(lines: &[String]) -> Vec<DiffHunk> {
+    conflicted_context_ranges(lines)
+        .into_iter()
+        .map(|(start, end)| {
+            let start_line = (start + 1) as u32;
+            let line_count = (end - start) as u32;
+            DiffHunk {
+                header: format!("@@ -{start_line},{line_count} +{start_line},{line_count} @@"),
+                lines: lines[start..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, content)| {
+                        let line_number = start_line + offset as u32;
+                        DiffLine {
+                            line_type: "context".to_string(),
+                            content: content.clone(),
+                            old_line_number: Some(line_number),
+                            new_line_number: Some(line_number),
+                            index: (start + offset) as u32,
+                        }
+                    })
+                    .collect(),
+                old_start: start_line,
+                old_count: line_count,
+                new_start: start_line,
+                new_count: line_count,
+            }
+        })
+        .collect()
+}
+
+fn conflicted_context_ranges(lines: &[String]) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut index = 0;
+
+    while index < lines.len() {
+        if !lines[index].starts_with("<<<<<<<") {
+            index += 1;
+            continue;
+        }
+
+        let start = index.saturating_sub(CONFLICT_CONTEXT_LINES);
+        let mut end = index + 1;
+        while end < lines.len() && !lines[end].starts_with(">>>>>>>") {
+            end += 1;
+        }
+        if end < lines.len() {
+            end += 1;
+        }
+        end = end.saturating_add(CONFLICT_CONTEXT_LINES).min(lines.len());
+
+        if let Some((_, previous_end)) = ranges.last_mut() {
+            if start <= *previous_end {
+                *previous_end = (*previous_end).max(end);
+            } else {
+                ranges.push((start, end));
+            }
+        } else {
+            ranges.push((start, end));
+        }
+
+        index = end;
+    }
+
+    if ranges.is_empty() && !lines.is_empty() {
+        ranges.push((0, lines.len()));
+    }
+
+    ranges
 }
 
 fn get_hunk(diff: &FileDiff, hunk_index: u32) -> Result<&DiffHunk, String> {
@@ -655,6 +769,13 @@ fn ensure_working_diff_path_allowed(
     path: &str,
     want_staged: bool,
 ) -> Result<(), String> {
+    if !want_staged {
+        let repo = Repository::open(worktree_path).map_err(|e| e.to_string())?;
+        if is_conflicted(&repo, path) {
+            return Ok(());
+        }
+    }
+
     let diff = if want_staged {
         get_staged_diff(worktree_path, path)?
     } else {
@@ -686,7 +807,10 @@ fn ensure_commit_diff_path_allowed(
         .map_err(|e| e.to_string())?;
     let file_diffs = parse_diff(&diff)?;
     let allowed = file_diffs.into_iter().any(|file_diff| {
-        file_diff.path == path && old_path.map_or(true, |previous_path| file_diff.old_path.as_deref() == Some(previous_path))
+        file_diff.path == path
+            && old_path.map_or(true, |previous_path| {
+                file_diff.old_path.as_deref() == Some(previous_path)
+            })
     });
 
     if allowed {
@@ -907,7 +1031,9 @@ fn slice_lines(lines: &[String], start_line: u32, line_count: u32) -> Vec<String
         return vec![];
     }
 
-    let end_index = start_index.saturating_add(line_count as usize).min(lines.len());
+    let end_index = start_index
+        .saturating_add(line_count as usize)
+        .min(lines.len());
     lines[start_index..end_index].to_vec()
 }
 
@@ -1149,6 +1275,46 @@ mod tests {
         );
     }
 
+    fn create_rebase_conflict(repo: &Path) {
+        git(repo, &["init", "-b", "main"]);
+        git(repo, &["config", "user.name", "Grove Test"]);
+        git(repo, &["config", "user.email", "grove-test@example.com"]);
+
+        fs::write(repo.join("note.txt"), conflict_file_content("base")).unwrap();
+        git(repo, &["add", "note.txt"]);
+        git(repo, &["commit", "-m", "base"]);
+
+        git(repo, &["checkout", "-b", "feature"]);
+        fs::write(repo.join("note.txt"), conflict_file_content("feature")).unwrap();
+        git(repo, &["commit", "-am", "feature"]);
+
+        git(repo, &["checkout", "main"]);
+        fs::write(repo.join("note.txt"), conflict_file_content("main")).unwrap();
+        git(repo, &["commit", "-am", "main"]);
+
+        git(repo, &["checkout", "feature"]);
+        let output = Command::new("git")
+            .args(["rebase", "main"])
+            .current_dir(repo)
+            .env("PATH", enriched_path())
+            .output()
+            .unwrap();
+
+        assert!(
+            !output.status.success(),
+            "git rebase main unexpectedly succeeded"
+        );
+    }
+
+    fn conflict_file_content(middle: &str) -> String {
+        [
+            "prefix 1", "prefix 2", "prefix 3", "prefix 4", "prefix 5", "prefix 6", middle,
+            "suffix 1", "suffix 2", "suffix 3", "suffix 4", "suffix 5", "suffix 6",
+        ]
+        .join("\n")
+            + "\n"
+    }
+
     fn head_hash(repo: &Path) -> String {
         let output = Command::new("git")
             .args(["rev-parse", "HEAD"])
@@ -1193,6 +1359,66 @@ mod tests {
         assert_eq!(staged[0].status, "added");
         assert_eq!(staged[1].path, "b.txt");
         assert_eq!(staged[1].status, "added");
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn status_includes_rebase_conflicted_files() {
+        let _lock = env_lock();
+        let repo = temp_repo("status-conflicted");
+        create_rebase_conflict(&repo);
+
+        let statuses = get_status_impl(repo.to_str().unwrap()).unwrap();
+        let conflicted = statuses
+            .iter()
+            .find(|status| status.path == "note.txt")
+            .expect("conflicted file should be included in status");
+
+        assert_eq!(conflicted.status, STATUS_CONFLICTED);
+        assert!(!conflicted.staged);
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| status.path == "note.txt")
+                .count(),
+            1
+        );
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn working_diff_returns_conflicted_worktree_content() {
+        let _lock = env_lock();
+        let repo = temp_repo("working-diff-conflicted");
+        create_rebase_conflict(&repo);
+
+        let diff = get_working_diff_impl(repo.to_str().unwrap(), "note.txt").unwrap();
+        let hunk = diff
+            .hunks
+            .first()
+            .expect("conflicted diff should include file content");
+        let contents = hunk
+            .lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(diff.path, "note.txt");
+        assert_eq!(diff.status, STATUS_CONFLICTED);
+        assert!(diff.display_line_count > hunk.lines.len() as u32);
+        assert!(hunk.lines.iter().all(|line| line.line_type == "context"));
+        assert!(contents.iter().any(|line| line.starts_with("<<<<<<<")));
+        assert!(contents.iter().any(|line| *line == "======="));
+        assert!(contents.iter().any(|line| line.starts_with(">>>>>>>")));
+
+        let leading_context =
+            get_working_diff_context_impl(repo.to_str().unwrap(), "note.txt", 1, 2).unwrap();
+        assert_eq!(
+            leading_context,
+            vec!["prefix 1".to_string(), "prefix 2".to_string()]
+        );
 
         let _ = fs::remove_dir_all(repo);
     }
@@ -1322,15 +1548,18 @@ mod tests {
         git(&repo, &["add", "note.txt"]);
         git(&repo, &["commit", "-m", "init"]);
 
-        fs::write(repo.join("note.txt"), "one\ntwo changed\nthree\nfour\nfive\n").unwrap();
+        fs::write(
+            repo.join("note.txt"),
+            "one\ntwo changed\nthree\nfour\nfive\n",
+        )
+        .unwrap();
         git(&repo, &["add", "note.txt"]);
 
         let diff = get_working_diff_impl(repo.to_str().unwrap(), "staged:note.txt").unwrap();
         assert_eq!(diff.display_line_count, 5);
 
         let lines =
-            get_working_diff_context_impl(repo.to_str().unwrap(), "staged:note.txt", 2, 2)
-                .unwrap();
+            get_working_diff_context_impl(repo.to_str().unwrap(), "staged:note.txt", 2, 2).unwrap();
         assert_eq!(lines, vec!["two changed".to_string(), "three".to_string()]);
 
         let _ = fs::remove_dir_all(repo);
