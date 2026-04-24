@@ -4,6 +4,7 @@ import {
   createLoadedContextLines,
   EMPTY_GAP_STATE,
   mergeGapLines,
+  planGapMiddleLoad,
   planGapLoad,
 } from "./context-loading";
 
@@ -23,7 +24,7 @@ describe("context-loading", () => {
         ...EMPTY_GAP_STATE,
         loadingHead: true,
       },
-      "all",
+      "head",
       20,
     );
 
@@ -45,6 +46,31 @@ describe("context-loading", () => {
       startOffset: 8,
       requestedCount: 4,
       loadingKey: "loadingTail",
+    });
+  });
+
+  it("plans middle loads symmetrically without overlap", () => {
+    const middlePlan = planGapMiddleLoad(
+      sampleGap,
+      {
+        ...EMPTY_GAP_STATE,
+        headLines: createLoadedContextLines(sampleGap, 0, ["a", "b"]),
+        tailLines: createLoadedContextLines(sampleGap, 9, ["j", "k", "l"]),
+      },
+      5,
+    );
+
+    expect(middlePlan).toEqual({
+      head: {
+        startOffset: 2,
+        requestedCount: 4,
+        loadingKey: "loadingHead",
+      },
+      tail: {
+        startOffset: 6,
+        requestedCount: 3,
+        loadingKey: "loadingTail",
+      },
     });
   });
 

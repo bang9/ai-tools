@@ -1,8 +1,10 @@
-import { Fragment, memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, ChevronUp, ChevronsUpDown, Copy } from "lucide-react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileDiff } from "../../types";
 import DiffHunk from "./DiffHunk";
 import { cn } from "../../lib/cn";
 import { useDiffStore } from "../../store/diff";
+import { useToast } from "../../store/toast";
 import { useLineSelection } from "../../hooks/useLineSelection";
 import { runCommandSafely } from "../../lib/command";
 import { getCommitDiffContext, getWorkingDiffContext } from "../../lib/platform";
@@ -15,15 +17,27 @@ import {
   isGapLoading,
   markGapLoading,
   mergeGapLines,
+  planGapMiddleLoad,
   planGapLoad,
   type GapLoadDirection,
+  type GapMiddleLoadPlan,
   type GapLoadPlan,
   type GapLoadState,
   type LoadedContextLine,
 } from "./context-loading";
 
 const EMPTY_SET = new Set<number>();
-const CONTEXT_LOAD_STEP = 20;
+const CONTEXT_LOAD_STEP = 5;
+const GITHUB_DIFF_HEADER_BG = "var(--diff-hunk-bg)";
+const GITHUB_DIFF_BORDER = "var(--color-border-light)";
+const GITHUB_DIFF_MUTED = "var(--color-text-secondary)";
+const GITHUB_DIFF_FOREGROUND = "var(--color-text)";
+const GITHUB_DIFF_BUTTON_HOVER = "rgba(0, 0, 0, 0.045)";
+const CONTEXT_GUIDE_BORDER = "2px solid transparent";
+const CONTEXT_ROW_BACKGROUND = "transparent";
+const CONTEXT_GUTTER_LINE_CLASS = "w-[32px] text-right pr-1.5 text-[11px] select-none";
+const CONTEXT_GUTTER_MARKER_CLASS = "w-[18px] text-center select-none font-medium";
+const CONTEXT_EXPAND_ROW_BACKGROUND = "rgba(9, 105, 218, 0.08)";
 const MemoDiffHunk = memo(DiffHunk);
 
 interface Props {
@@ -139,14 +153,11 @@ function FileDiffSection({
     [rawGutterClick, containerRef],
   );
 
-  const stageHunk = useDiffStore((s) => s.stageHunk);
-  const unstageHunk = useDiffStore((s) => s.unstageHunk);
-  const discardHunk = useDiffStore((s) => s.discardHunk);
-  const stageLines = useDiffStore((s) => s.stageLines);
-  const unstageLines = useDiffStore((s) => s.unstageLines);
   const worktreePath = useDiffStore((s) => s.worktreePath);
+  const { toast } = useToast();
   const gapSlots = useMemo(() => buildContextGapSlots(diff), [diff]);
   const [gapStates, setGapStates] = useState<Record<number, GapLoadState>>({});
+  const [collapsed, setCollapsed] = useState(false);
   const gapStateIdentity = useMemo(
     () =>
       JSON.stringify({
@@ -173,6 +184,24 @@ function FileDiffSection({
     setGapStates({});
   }, [gapStateIdentity]);
 
+  const fetchGapLines = useCallback(
+    (startLine: number, count: number) => {
+      if (!worktreePath) {
+        return Promise.resolve<string[]>([]);
+      }
+
+      if (isCommitView) {
+        if (!commitHash) {
+          return Promise.resolve<string[]>([]);
+        }
+        return getCommitDiffContext(worktreePath, commitHash, diff.path, diff.oldPath ?? null, startLine, count);
+      }
+
+      return getWorkingDiffContext(worktreePath, isStaged ? `staged:${diff.path}` : diff.path, startLine, count);
+    },
+    [commitHash, diff.oldPath, diff.path, isCommitView, isStaged, worktreePath],
+  );
+
   const loadGapContext = useCallback(
     async (gap: DiffContextGap, direction: GapLoadDirection) => {
       if (!worktreePath) {
@@ -197,30 +226,7 @@ function FileDiffSection({
         return;
       }
       const startLine = gap.displayStart + requestPlan.startOffset;
-
-      const fetchLines = isCommitView
-        ? () => {
-            if (!commitHash) {
-              return Promise.resolve<string[]>([]);
-            }
-            return getCommitDiffContext(
-              worktreePath,
-              commitHash,
-              diff.path,
-              diff.oldPath ?? null,
-              startLine,
-              requestPlan.requestedCount,
-            );
-          }
-        : () =>
-            getWorkingDiffContext(
-              worktreePath,
-              isStaged ? `staged:${diff.path}` : diff.path,
-              startLine,
-              requestPlan.requestedCount,
-            );
-
-      const loaded = await runCommandSafely(fetchLines, {
+      const loaded = await runCommandSafely(() => fetchGapLines(startLine, requestPlan.requestedCount), {
         errorToast: "Failed to load diff context",
       });
 
@@ -234,95 +240,228 @@ function FileDiffSection({
         }
 
         return {
-            ...prev,
-            [gap.slot]: mergeGapLines(
-              nextState,
-              direction,
-              createLoadedContextLines(gap, requestPlan.startOffset, loaded),
-            ),
-          };
-        });
+          ...prev,
+          [gap.slot]: mergeGapLines(
+            nextState,
+            direction,
+            createLoadedContextLines(gap, requestPlan.startOffset, loaded),
+          ),
+        };
+      });
     },
-    [commitHash, diff.oldPath, diff.path, isCommitView, isStaged, worktreePath],
+    [fetchGapLines, worktreePath],
+  );
+
+  const loadGapContextAround = useCallback(
+    async (gap: DiffContextGap) => {
+      if (!worktreePath) {
+        return;
+      }
+
+      const planRef: { current: GapMiddleLoadPlan | null } = { current: null };
+      setGapStates((prev) => {
+        const currentState = getGapState(prev, gap.slot);
+        planRef.current = planGapMiddleLoad(gap, currentState, CONTEXT_LOAD_STEP);
+        if (!planRef.current) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [gap.slot]: {
+            ...currentState,
+            loadingHead: Boolean(planRef.current.head),
+            loadingTail: Boolean(planRef.current.tail),
+          },
+        };
+      });
+
+      const requestPlan = planRef.current;
+      if (!requestPlan) {
+        return;
+      }
+
+      const [loadedHead, loadedTail] = await Promise.all([
+        requestPlan.head
+          ? runCommandSafely(
+              () => fetchGapLines(gap.displayStart + requestPlan.head!.startOffset, requestPlan.head!.requestedCount),
+              { errorToast: "Failed to load diff context" },
+            )
+          : Promise.resolve(null),
+        requestPlan.tail
+          ? runCommandSafely(
+              () => fetchGapLines(gap.displayStart + requestPlan.tail!.startOffset, requestPlan.tail!.requestedCount),
+              { errorToast: "Failed to load diff context" },
+            )
+          : Promise.resolve(null),
+      ]);
+
+      setGapStates((prev) => {
+        const currentState = getGapState(prev, gap.slot);
+        let nextState = currentState;
+
+        if (requestPlan.head && loadedHead) {
+          nextState = mergeGapLines(
+            nextState,
+            "head",
+            createLoadedContextLines(gap, requestPlan.head.startOffset, loadedHead),
+          );
+        }
+
+        if (requestPlan.tail && loadedTail) {
+          nextState = mergeGapLines(
+            nextState,
+            "tail",
+            createLoadedContextLines(gap, requestPlan.tail.startOffset, loadedTail),
+          );
+        }
+
+        return {
+          ...prev,
+          [gap.slot]: clearGapLoading(nextState),
+        };
+      });
+    },
+    [fetchGapLines, worktreePath],
   );
 
   const added = diff.hunks.reduce((s, h) => s + h.lines.filter((l) => l.type === "add").length, 0);
   const removed = diff.hunks.reduce((s, h) => s + h.lines.filter((l) => l.type === "remove").length, 0);
+  const diffStatSquares = useMemo(() => buildDiffStatSquares(added, removed), [added, removed]);
 
-  const statusColor: Record<string, string> = {
-    modified: "rgba(234, 179, 8, 0.7)",
-    added: "rgba(63, 185, 80, 0.7)",
-    deleted: "rgba(248, 81, 73, 0.7)",
-    renamed: "rgba(99, 163, 255, 0.7)",
-    untracked: "rgba(63, 185, 80, 0.7)",
-  };
+  const handleCopyPath = useCallback(
+    async (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+
+      if (!navigator.clipboard) {
+        toast("error", "Clipboard is unavailable");
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(diff.path);
+        toast("success", "Copied file path");
+      } catch {
+        toast("error", "Failed to copy file path");
+      }
+    },
+    [diff.path, toast],
+  );
 
   return (
     <div className={cn({ "mt-2": !isFirst })}>
-      {/* File header */}
       <div
-        className={cn("flex items-center gap-1.5 px-3 py-1.5 sticky top-0 z-10")}
-        style={{ background: "rgba(99, 163, 255, 0.06)", borderBottom: "1px solid rgba(255, 255, 255, 0.06)" }}
+        className={cn("sticky top-0 z-10 flex items-center gap-3 px-2 py-1.5")}
+        style={{
+          background: GITHUB_DIFF_HEADER_BG,
+          borderTop: `1px solid ${GITHUB_DIFF_BORDER}`,
+          borderBottom: `1px solid ${GITHUB_DIFF_BORDER}`,
+        }}
       >
-        <span
-          className={cn("text-[10px] font-semibold uppercase")}
-          style={{ color: statusColor[diff.status] ?? "rgba(255, 255, 255, 0.4)" }}
+        <button
+          type="button"
+          className={cn("flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-sm transition-colors cursor-pointer")}
+          style={{ color: GITHUB_DIFF_MUTED }}
+          onClick={() => setCollapsed((prev) => !prev)}
+          aria-label={collapsed ? "Expand file" : "Collapse file"}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.backgroundColor = GITHUB_DIFF_BUTTON_HOVER;
+            event.currentTarget.style.color = GITHUB_DIFF_FOREGROUND;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.backgroundColor = "transparent";
+            event.currentTarget.style.color = GITHUB_DIFF_MUTED;
+          }}
         >
-          {diff.status[0]}
-        </span>
-        <span className={cn("text-[11px] text-muted-foreground truncate flex-1 font-sans")}>
-          {diff.path}
-        </span>
-        <span className={cn("text-[10px] text-muted-foreground/40 shrink-0")}>
-          {added > 0 && `+${added}`}{added > 0 && removed > 0 && " "}{removed > 0 && `-${removed}`}
-        </span>
+          {collapsed ? <ChevronRight size={15} strokeWidth={2.2} /> : <ChevronDown size={15} strokeWidth={2.2} />}
+        </button>
+
+        <div className={cn("min-w-0 flex flex-1 items-center gap-1 overflow-hidden")}>
+          <h3 className={cn("min-w-0 flex-1 truncate")}>
+            <code className={cn("block truncate font-mono text-[11px]")} style={{ color: GITHUB_DIFF_FOREGROUND }}>
+              {diff.path}
+            </code>
+          </h3>
+          <button
+            type="button"
+            className={cn("flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-sm transition-colors cursor-pointer")}
+            style={{ color: GITHUB_DIFF_MUTED }}
+            onClick={handleCopyPath}
+            aria-label="Copy file path"
+            onMouseEnter={(event) => {
+              event.currentTarget.style.backgroundColor = GITHUB_DIFF_BUTTON_HOVER;
+              event.currentTarget.style.color = GITHUB_DIFF_FOREGROUND;
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.backgroundColor = "transparent";
+              event.currentTarget.style.color = GITHUB_DIFF_MUTED;
+            }}
+          >
+            <Copy size={13} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div className={cn("ml-auto flex shrink-0 items-center gap-2")}>
+          <div className={cn("flex items-center gap-1.5")}>
+            <span className={cn("text-[11px] font-semibold tabular-nums")} style={{ color: "rgba(63, 185, 80, 0.95)" }}>
+              +{added}
+            </span>
+            <span className={cn("text-[11px] font-semibold tabular-nums")} style={{ color: "rgba(248, 81, 73, 0.95)" }}>
+              -{removed}
+            </span>
+          </div>
+          <div className={cn("flex items-center gap-0.5")}>
+            {diffStatSquares.map((kind, index) => (
+              <span
+                key={`${kind}-${index}`}
+                className={cn("h-[8px] w-[8px] rounded-[2px]")}
+                style={{
+                  backgroundColor: getDiffStatSquareColor(kind),
+                }}
+              />
+            ))}
+          </div>
+        </div>
       </div>
 
-      {/* Hunks */}
-      {diff.hunks.map((hunk, i) => {
-        const gap = gapSlots[i];
+      {!collapsed &&
+        diff.hunks.map((hunk, i) => {
+          const gap = gapSlots[i];
 
-        return (
-          <Fragment key={`${diff.path}-${i}`}>
-            {gap && (
-              <ContextGapSection
-                gap={gap}
-                state={getGapState(gapStates, i)}
-                maxSlot={gapSlots.length - 1}
-                onLoadHead={() => loadGapContext(gap, "head")}
-                onLoadTail={() => loadGapContext(gap, "tail")}
-                onLoadAll={() => loadGapContext(gap, "all")}
+          return (
+            <Fragment key={`${diff.path}-${i}`}>
+              {gap && (
+                <ContextGapSection
+                  gap={gap}
+                  state={getGapState(gapStates, i)}
+                  maxSlot={gapSlots.length - 1}
+                  label={diff.hunks[i]?.header}
+                  onLoadHead={() => loadGapContext(gap, "head")}
+                  onLoadTail={() => loadGapContext(gap, "tail")}
+                  onLoadMiddle={() => loadGapContextAround(gap)}
+                />
+              )}
+              <MemoDiffHunk
+                key={`${hunk.header}-${i}`}
+                hunk={hunk}
+                isFirst={false}
+                selectedLines={selectedLines}
+                onGutterClick={handleGutterClick}
+                onGutterMouseDown={handleGutterMouseDown}
+                onGutterMouseEnter={handleGutterMouseEnter}
+                onGutterMouseUp={handleGutterMouseUp}
               />
-            )}
-            <MemoDiffHunk
-              key={`${hunk.header}-${i}`}
-              hunk={hunk}
-              hunkIndex={i}
-              filePath={diff.path}
-              isFirst={false}
-              selectedLines={selectedLines}
-              isStaged={isStaged}
-              onStageHunk={isCommitView ? undefined : stageHunk}
-              onUnstageHunk={isCommitView ? undefined : unstageHunk}
-              onDiscardHunk={isCommitView ? undefined : discardHunk}
-              onStageLines={isCommitView ? undefined : stageLines}
-              onUnstageLines={isCommitView ? undefined : unstageLines}
-              onGutterClick={handleGutterClick}
-              onGutterMouseDown={handleGutterMouseDown}
-              onGutterMouseEnter={handleGutterMouseEnter}
-              onGutterMouseUp={handleGutterMouseUp}
-            />
-          </Fragment>
-        );
-      })}
-      {gapSlots[diff.hunks.length] && (
+            </Fragment>
+          );
+        })}
+      {!collapsed && gapSlots[diff.hunks.length] && (
         <ContextGapSection
           gap={gapSlots[diff.hunks.length] as DiffContextGap}
           state={getGapState(gapStates, diff.hunks.length)}
           maxSlot={gapSlots.length - 1}
           onLoadHead={() => loadGapContext(gapSlots[diff.hunks.length] as DiffContextGap, "head")}
           onLoadTail={() => loadGapContext(gapSlots[diff.hunks.length] as DiffContextGap, "tail")}
-          onLoadAll={() => loadGapContext(gapSlots[diff.hunks.length] as DiffContextGap, "all")}
+          onLoadMiddle={() => loadGapContextAround(gapSlots[diff.hunks.length] as DiffContextGap)}
         />
       )}
     </div>
@@ -333,136 +472,148 @@ function ContextGapSection({
   gap,
   state,
   maxSlot,
+  label,
   onLoadHead,
   onLoadTail,
-  onLoadAll,
+  onLoadMiddle,
 }: {
   gap: DiffContextGap;
   state: GapLoadState;
   maxSlot: number;
+  label?: string;
   onLoadHead: () => void;
   onLoadTail: () => void;
-  onLoadAll: () => void;
+  onLoadMiddle: () => void;
 }) {
   const isLeading = gap.slot === 0;
   const isTrailing = gap.slot === maxSlot;
   const remainingCount = getGapRemainingCount(gap, state);
-  const buttonCount = Math.min(CONTEXT_LOAD_STEP, remainingCount);
-  const showLoadAll = remainingCount > buttonCount;
   const loading = isGapLoading(state);
-  let controls: ReactNode;
+  const hasRemaining = remainingCount > 0;
+  const isMiddle = !isLeading && !isTrailing;
+  const hasPartialMiddleContext = state.headLines.length > 0 || state.tailLines.length > 0;
+
   if (isLeading) {
-    controls = (
-      <ContextButton
-        onClick={onLoadTail}
-        disabled={loading}
-        label={`Load ${buttonCount} lines above`}
-      />
+    return (
+      <div>
+        {hasRemaining && <ContextExpandRow direction="up" label={label} onClick={onLoadTail} disabled={loading} />}
+        {state.tailLines.length > 0 && <ContextRows lines={state.tailLines} />}
+      </div>
     );
-  } else if (isTrailing) {
-    controls = (
-      <ContextButton
-        onClick={onLoadHead}
-        disabled={loading}
-        label={`Load ${buttonCount} lines below`}
-      />
-    );
-  } else {
-    controls = (
-      <>
-        <ContextButton
-          onClick={onLoadHead}
-          disabled={loading}
-          label={`Load ${buttonCount} below`}
-        />
-        {showLoadAll && (
-          <ContextButton
-            onClick={onLoadAll}
-            disabled={loading}
-            label={`Load all ${remainingCount} lines`}
-          />
-        )}
-        <ContextButton
-          onClick={onLoadTail}
-          disabled={loading}
-          label={`Load ${buttonCount} above`}
-        />
-      </>
+  }
+
+  if (isTrailing) {
+    return (
+      <div>
+        {state.headLines.length > 0 && <ContextRows lines={state.headLines} />}
+        {hasRemaining && <ContextExpandRow direction="down" onClick={onLoadHead} disabled={loading} />}
+      </div>
     );
   }
 
   return (
-    <div className={cn("border-t border-border/40")}>
+    <div>
       {state.headLines.length > 0 && <ContextRows lines={state.headLines} />}
-      {remainingCount > 0 && (
-        <div
-          className={cn("flex items-center justify-center gap-2 px-3 py-2 text-[11px]")}
-          style={{ background: "rgba(99, 163, 255, 0.03)" }}
-        >
-          {controls}
-          {(isLeading || isTrailing) && showLoadAll && (
-            <ContextButton
-              onClick={onLoadAll}
-              disabled={loading}
-              label={`Load all ${remainingCount} lines`}
-            />
-          )}
-        </div>
+      {isMiddle && hasRemaining && !hasPartialMiddleContext && (
+        <ContextExpandRow direction="middle" label={label} onClick={onLoadMiddle} disabled={loading} />
+      )}
+      {isMiddle && hasRemaining && hasPartialMiddleContext && (
+        <ContextExpandRow direction="down" label={label} onClick={onLoadHead} disabled={loading} />
+      )}
+      {isMiddle && hasRemaining && hasPartialMiddleContext && state.tailLines.length > 0 && (
+        <ContextExpandRow direction="up" onClick={onLoadTail} disabled={loading} />
       )}
       {state.tailLines.length > 0 && <ContextRows lines={state.tailLines} />}
     </div>
   );
 }
 
-function ContextButton({
+function ContextExpandRow({
+  direction,
+  label,
   onClick,
   disabled,
-  label,
 }: {
+  direction: "up" | "down" | "middle";
+  label?: string;
   onClick: () => void;
   disabled?: boolean;
-  label: string;
 }) {
+  let Icon = ChevronsUpDown;
+  let ariaLabel = `Load ${CONTEXT_LOAD_STEP} more lines above and below`;
+
+  if (direction === "up") {
+    Icon = ChevronUp;
+    ariaLabel = `Load ${CONTEXT_LOAD_STEP} more lines above`;
+  } else if (direction === "down") {
+    Icon = ChevronDown;
+    ariaLabel = `Load ${CONTEXT_LOAD_STEP} more lines below`;
+  }
+
   return (
-    <button
-      type="button"
-      className={cn(
-        "px-2 py-1 rounded border border-border bg-secondary/40 text-muted-foreground",
-        "hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-default cursor-pointer",
-      )}
-      onClick={onClick}
-      disabled={disabled}
+    <div
+      className={cn("flex items-center gap-2 px-3 py-1.5 select-none")}
+      style={{
+        background: CONTEXT_EXPAND_ROW_BACKGROUND,
+      }}
     >
-      {label}
-    </button>
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        className={cn(
+          "flex items-center justify-center w-[18px] h-[18px] shrink-0 rounded-sm",
+          "transition-colors",
+          "disabled:opacity-45 disabled:cursor-default cursor-pointer",
+        )}
+        style={{ color: GITHUB_DIFF_MUTED }}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        disabled={disabled}
+        onMouseEnter={(event) => {
+          event.currentTarget.style.backgroundColor = GITHUB_DIFF_BUTTON_HOVER;
+          event.currentTarget.style.color = GITHUB_DIFF_FOREGROUND;
+        }}
+        onMouseLeave={(event) => {
+          event.currentTarget.style.backgroundColor = "transparent";
+          event.currentTarget.style.color = GITHUB_DIFF_MUTED;
+        }}
+      >
+        <Icon size={14} strokeWidth={2} />
+      </button>
+      <span className={cn("min-w-0 flex-1 truncate font-mono text-[11px]")} style={{ color: GITHUB_DIFF_MUTED }}>
+        {label}
+      </span>
+    </div>
   );
 }
 
 function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
   return (
-    <div className="flex" style={{ backgroundColor: "rgba(99, 163, 255, 0.02)" }}>
-      <div className="shrink-0" style={{ borderLeft: "2px solid rgba(99, 163, 255, 0.18)" }}>
+    <div className="flex" style={{ backgroundColor: CONTEXT_ROW_BACKGROUND }}>
+      <div className="shrink-0" style={{ borderLeft: CONTEXT_GUIDE_BORDER }}>
         {lines.map((line) => (
           <div
             key={line.key}
             className={cn("flex min-h-[20px] leading-[20px] font-mono text-[12px]")}
-            style={{ backgroundColor: "rgba(99, 163, 255, 0.02)" }}
+            style={{ backgroundColor: CONTEXT_ROW_BACKGROUND }}
           >
             <span
-              className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
-              style={{ color: "rgba(255, 255, 255, 0.15)" }}
+              className={cn(CONTEXT_GUTTER_LINE_CLASS)}
+              style={{ color: "rgba(139, 148, 158, 0.72)" }}
             >
               {line.oldLineNumber}
             </span>
             <span
-              className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
-              style={{ color: "rgba(255, 255, 255, 0.15)" }}
+              className={cn(CONTEXT_GUTTER_LINE_CLASS)}
+              style={{ color: "rgba(139, 148, 158, 0.72)" }}
             >
               {line.newLineNumber}
             </span>
             <span
-              className={cn("w-[18px] text-center select-none font-medium")}
-              style={{ color: "rgba(255, 255, 255, 0.12)" }}
+              className={cn(CONTEXT_GUTTER_MARKER_CLASS)}
+              style={{ color: "rgba(139, 148, 158, 0.5)" }}
             >
               {" "}
             </span>
@@ -470,11 +621,12 @@ function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
         ))}
       </div>
       <div className={cn("flex-1 overflow-x-auto overflow-y-hidden diff-line-content")}>
-        <div style={{ backgroundColor: "rgba(99, 163, 255, 0.02)" }}>
+        <div className={cn("min-w-full w-max")} style={{ backgroundColor: CONTEXT_ROW_BACKGROUND }}>
           {lines.map((line) => (
             <div
               key={line.key}
-              className={cn("min-h-[20px] leading-[20px] font-mono text-[12px] whitespace-pre pr-3 text-foreground/75")}
+              className={cn("min-h-[20px] w-full leading-[20px] font-mono text-[12px] whitespace-pre pr-3")}
+              style={{ color: GITHUB_DIFF_FOREGROUND }}
             >
               {line.content}
             </div>
@@ -483,4 +635,55 @@ function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
       </div>
     </div>
   );
+}
+
+type DiffStatSquareKind = "add" | "remove" | "neutral";
+
+function buildDiffStatSquares(added: number, removed: number): DiffStatSquareKind[] {
+  const total = added + removed;
+  const squareCount = 5;
+
+  if (total <= 0) {
+    return Array.from({ length: squareCount }, () => "neutral");
+  }
+
+  let addSquares = Math.round((added / total) * squareCount);
+  let removeSquares = Math.round((removed / total) * squareCount);
+
+  if (added > 0 && addSquares === 0) {
+    addSquares = 1;
+  }
+  if (removed > 0 && removeSquares === 0) {
+    removeSquares = 1;
+  }
+
+  while (addSquares + removeSquares > squareCount) {
+    if (addSquares >= removeSquares && addSquares > 1) {
+      addSquares -= 1;
+      continue;
+    }
+    if (removeSquares > 1) {
+      removeSquares -= 1;
+      continue;
+    }
+    break;
+  }
+
+  const neutralSquares = Math.max(0, squareCount - addSquares - removeSquares);
+
+  return [
+    ...Array.from({ length: addSquares }, () => "add" as const),
+    ...Array.from({ length: removeSquares }, () => "remove" as const),
+    ...Array.from({ length: neutralSquares }, () => "neutral" as const),
+  ];
+}
+
+function getDiffStatSquareColor(kind: DiffStatSquareKind): string {
+  if (kind === "add") {
+    return "rgba(63, 185, 80, 0.95)";
+  }
+  if (kind === "remove") {
+    return "rgba(248, 81, 73, 0.9)";
+  }
+  return "rgba(255, 255, 255, 0.12)";
 }

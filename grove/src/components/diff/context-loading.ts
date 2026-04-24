@@ -12,15 +12,19 @@ export interface GapLoadState {
   tailLines: LoadedContextLine[];
   loadingHead: boolean;
   loadingTail: boolean;
-  loadingAll: boolean;
 }
 
-export type GapLoadDirection = "head" | "tail" | "all";
+export type GapLoadDirection = "head" | "tail";
 
 export interface GapLoadPlan {
   startOffset: number;
   requestedCount: number;
-  loadingKey: keyof Pick<GapLoadState, "loadingHead" | "loadingTail" | "loadingAll">;
+  loadingKey: keyof Pick<GapLoadState, "loadingHead" | "loadingTail">;
+}
+
+export interface GapMiddleLoadPlan {
+  head: GapLoadPlan | null;
+  tail: GapLoadPlan | null;
 }
 
 export const EMPTY_GAP_STATE: GapLoadState = {
@@ -28,7 +32,6 @@ export const EMPTY_GAP_STATE: GapLoadState = {
   tailLines: [],
   loadingHead: false,
   loadingTail: false,
-  loadingAll: false,
 };
 
 export function getGapState(states: Record<number, GapLoadState>, slot: number): GapLoadState {
@@ -36,7 +39,7 @@ export function getGapState(states: Record<number, GapLoadState>, slot: number):
 }
 
 export function isGapLoading(state: GapLoadState): boolean {
-  return state.loadingHead || state.loadingTail || state.loadingAll;
+  return state.loadingHead || state.loadingTail;
 }
 
 export function getGapRemainingCount(gap: DiffContextGap, state: GapLoadState): number {
@@ -75,10 +78,41 @@ export function planGapLoad(
     };
   }
 
+  return null;
+}
+
+export function planGapMiddleLoad(gap: DiffContextGap, state: GapLoadState, step: number): GapMiddleLoadPlan | null {
+  if (isGapLoading(state)) {
+    return null;
+  }
+
+  const remainingCount = getGapRemainingCount(gap, state);
+  if (remainingCount <= 0) {
+    return null;
+  }
+
+  const [headCount, tailCount] =
+    remainingCount > step * 2
+      ? [step, step]
+      : [Math.ceil(remainingCount / 2), Math.floor(remainingCount / 2)];
+
   return {
-    startOffset: state.headLines.length,
-    requestedCount: remainingCount,
-    loadingKey: "loadingAll",
+    head:
+      headCount > 0
+        ? {
+            startOffset: state.headLines.length,
+            requestedCount: headCount,
+            loadingKey: "loadingHead",
+          }
+        : null,
+    tail:
+      tailCount > 0
+        ? {
+            startOffset: gap.count - state.tailLines.length - tailCount,
+            requestedCount: tailCount,
+            loadingKey: "loadingTail",
+          }
+        : null,
   };
 }
 
@@ -87,7 +121,6 @@ export function markGapLoading(state: GapLoadState, plan: GapLoadPlan): GapLoadS
     ...state,
     loadingHead: false,
     loadingTail: false,
-    loadingAll: false,
     [plan.loadingKey]: true,
   };
 }
@@ -97,7 +130,6 @@ export function clearGapLoading(state: GapLoadState): GapLoadState {
     ...state,
     loadingHead: false,
     loadingTail: false,
-    loadingAll: false,
   };
 }
 
@@ -127,11 +159,8 @@ export function mergeGapLines(
 
   if (direction === "head") {
     headLines = dedupeLoadedLines([...state.headLines, ...lines]);
-  } else if (direction === "tail") {
-    tailLines = dedupeLoadedLines([...lines, ...state.tailLines]);
   } else {
-    headLines = dedupeLoadedLines([...state.headLines, ...lines, ...state.tailLines]);
-    tailLines = [];
+    tailLines = dedupeLoadedLines([...lines, ...state.tailLines]);
   }
 
   return {
@@ -139,7 +168,6 @@ export function mergeGapLines(
     tailLines,
     loadingHead: false,
     loadingTail: false,
-    loadingAll: false,
   };
 }
 
