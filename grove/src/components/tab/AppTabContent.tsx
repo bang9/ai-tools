@@ -19,7 +19,7 @@ import { collectTerminalPanes } from "../../lib/terminal-session";
 import { shouldStartPipBroadcast } from "../../lib/broadcast-policy";
 import { cn } from "../../lib/cn";
 import {
-  MIN_PIP_WIDTH,
+  DEFAULT_PIP_PRESENTATION,
   type PipPresentationState,
 } from "../../lib/pip-floating";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
@@ -48,13 +48,6 @@ function findPaneIdForPty(ptyId: string): string | null {
   }
   return null;
 }
-
-const DEFAULT_PIP_PRESENTATION: PipPresentationState = {
-  dockSide: "right",
-  hidden: false,
-  requestedWidth: MIN_PIP_WIDTH,
-  y: null,
-};
 
 function AppTabContent() {
   const { worktreePath } = useResolvedSidebarSelection();

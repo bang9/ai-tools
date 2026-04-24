@@ -54,14 +54,14 @@ mirroring / pip ──[stop]─→ idle (restore original size)
 ### PiP (Picture-in-Picture)
 
 - **Trigger**: automatic when leaving the Terminal tab for any non-terminal tab, as long as the focused PTY exists, is not already mirrored, and no PiP is active for that worktree
-- **Position**: floating overlay that can be dragged vertically and docked to the left or right edge
+- **Position**: starts hidden behind the right-edge peek at expanded width (`960px`), then restores as a floating overlay that can be dragged vertically and docked to the left or right edge
 - **Scope**: one PiP slot per worktree space
 - **Behavior**: attaches the selected worktree's focused pane runtime to the shared PiP container
 - **Worktree switch**: detaches the previous worktree's PiP consumer and attaches the newly selected worktree's PiP consumer
 - **Consumer key**: the visible PiP subtree and attach bookkeeping must be keyed by `worktreePath + ptyId + paneId`
 - **Retention**: active PiP runtimes stay retained offscreen so switching back to a worktree can reattach the same runtime instead of recreating it
 - **Floating controls**: drag by header, snap to the nearest edge on release, swipe outward to hide, tap the side peek to restore
-- **Sizing**: header button toggles between compact (`280px`) and expanded (`960px`) widths, and a corner handle supports free resize within the same viewport clamps
+- **Sizing**: initial presentation uses expanded (`960px`) width; the header button toggles between compact (`280px`) and expanded (`960px`) widths, and a corner handle supports free resize within the same viewport clamps
 - **Dismiss**: auto on return to Terminal tab / hide button or side-swipe → restore via edge peek
 - **Policy**: skipped if the focused pane is already broadcasting (mirror)
 

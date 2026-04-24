@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_PIP_PRESENTATION,
   MAX_PIP_WIDTH,
   MIN_PIP_WIDTH,
   clampDraggingPipPosition,
@@ -14,6 +15,22 @@ import {
 const VIEWPORT: PipViewport = { width: 1400, height: 900 };
 
 describe("pip floating geometry", () => {
+  it("defaults PiP presentation to hidden and expanded on the right edge", () => {
+    expect(DEFAULT_PIP_PRESENTATION).toEqual({
+      dockSide: "right",
+      hidden: true,
+      requestedWidth: MAX_PIP_WIDTH,
+      y: null,
+    });
+
+    expect(resolvePipFrame(VIEWPORT, DEFAULT_PIP_PRESENTATION)).toEqual({
+      x: 1372,
+      y: 348,
+      width: 960,
+      height: 540,
+    });
+  });
+
   it("defaults a visible PiP to the docked bottom-right position", () => {
     const state: PipPresentationState = {
       dockSide: "right",

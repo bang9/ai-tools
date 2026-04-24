@@ -29,6 +29,13 @@ export interface PipPresentationState {
   y: number | null;
 }
 
+export const DEFAULT_PIP_PRESENTATION: PipPresentationState = {
+  dockSide: "right",
+  hidden: true,
+  requestedWidth: MAX_PIP_WIDTH,
+  y: null,
+};
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
