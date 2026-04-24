@@ -9,6 +9,11 @@ import * as tauri from "../../lib/platform";
 import { overlay } from "../../lib/overlay";
 import ResizablePanelGroup from "../ui/resizable-panel-group";
 import {
+  filterDiffsBySelectedPaths,
+  firstSelectedFilePath,
+  selectFilePathRange,
+} from "../../lib/diff-file-selection";
+import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -491,13 +496,45 @@ function CommitChangesView({
   ratios: number[];
   onCommit: (ratios: number[]) => void;
 }) {
-  const files: FileStatus[] = store.commitDiffs.map((d) => ({
-    path: d.path,
-    status: d.status as FileStatus["status"],
-    staged: false,
-  }));
+  const files: FileStatus[] = useMemo(
+    () => store.commitDiffs.map((d) => ({
+      path: d.path,
+      status: d.status as FileStatus["status"],
+      staged: false,
+    })),
+    [store.commitDiffs],
+  );
 
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const lastClickedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const initialPath = store.commitDiffs[0]?.path ?? null;
+    setSelectedPaths(initialPath ? new Set([initialPath]) : new Set());
+    lastClickedRef.current = initialPath;
+  }, [store.commitDiffs]);
+
+  const selectCommitFiles = useCallback(
+    (next: Set<string>) => {
+      setSelectedPaths(next);
+      const firstPath = firstSelectedFilePath(files, next);
+      store.selectFile(firstPath);
+    },
+    [files, store],
+  );
+
+  const handleMarqueeSelect = useCallback(
+    (next: Set<string>) => {
+      setSelectedPaths(next);
+      lastClickedRef.current = firstSelectedFilePath(files, next);
+    },
+    [files],
+  );
+
+  const selectedDiffs = useMemo(
+    () => filterDiffsBySelectedPaths(store.commitDiffs, selectedPaths),
+    [store.commitDiffs, selectedPaths],
+  );
 
   return (
     <ResizablePanelGroup className={cn("h-full")} ratios={ratios} onCommit={onCommit}>
@@ -507,16 +544,24 @@ function CommitChangesView({
             title="Files"
             files={files}
             selectedPaths={selectedPaths}
-            onSelectFile={(path) => {
-              setSelectedPaths(new Set([path]));
-              store.selectFile(path);
+            onSelectFile={(path, shiftKey) => {
+              if (shiftKey) {
+                const range = selectFilePathRange(files, lastClickedRef.current, path);
+                if (range) {
+                  selectCommitFiles(range);
+                  return;
+                }
+              }
+              lastClickedRef.current = path;
+              selectCommitFiles(new Set([path]));
             }}
+            onMarqueeSelect={handleMarqueeSelect}
           />
         </div>
       </ResizablePanelGroup.Pane>
       <ResizablePanelGroup.Pane minSize={200}>
         <DiffViewer
-          diffs={store.currentDiff ? [store.currentDiff] : store.commitDiffs}
+          diffs={selectedDiffs}
           isStaged={false}
           isCommitView
           commitHash={store.selectedView === "changes" ? undefined : store.selectedView.hash}
