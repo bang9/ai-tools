@@ -1,3 +1,4 @@
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useDiffStore } from "../../store/diff";
 import { useDiff } from "../../hooks/useDiff";
@@ -24,6 +25,8 @@ import DiffViewer from "../diff/DiffViewer";
 import type { FileStatus, FileDiff } from "../../types";
 import { FileText, Plus, Minus, Trash2, Undo2 } from "lucide-react";
 import { useMarqueeSelection } from "../../hooks/useMarqueeSelection";
+
+const FILE_ROW_ESTIMATED_HEIGHT = 22;
 
 // ── FileItem ──
 
@@ -145,6 +148,13 @@ function FileSection({
   const itemRefsMap = useRef<Map<string, HTMLElement>>(new Map());
   const noop = useCallback(() => {}, []);
   const marquee = useMarqueeSelection(sectionRef, itemRefsMap, onMarqueeSelect ?? noop);
+  const rowVirtualizer = useVirtualizer({
+    count: files.length,
+    getScrollElement: () => sectionRef.current,
+    estimateSize: () => FILE_ROW_ESTIMATED_HEIGHT,
+    overscan: 10,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
 
   return (
     <div className={cn("flex flex-col min-h-0 flex-1")}>
@@ -175,23 +185,40 @@ function FileSection({
             className={cn("flex-1 min-h-0 overflow-y-auto relative select-none cursor-default")}
             {...marquee.handlers}
           >
-            {files.map((file) => (
-              <div
-                key={file.path}
-                ref={(el) => {
-                  if (el) itemRefsMap.current.set(file.path, el);
-                  else itemRefsMap.current.delete(file.path);
-                }}
-                onContextMenu={() => onContextMenuFile?.(file.path)}
-              >
-                <FileItem
-                  file={file}
-                  selected={selectedPaths.has(file.path)}
-                  onClick={(e) => onSelectFile(file.path, e.shiftKey)}
-                  actions={renderActions?.(file)}
-                />
-              </div>
-            ))}
+            <div
+              className={cn("relative w-full")}
+              style={{ height: rowVirtualizer.getTotalSize() }}
+            >
+              {virtualRows.map((virtualRow) => {
+                const file = files[virtualRow.index];
+
+                return (
+                  <div
+                    key={file.path}
+                    ref={(el) => {
+                      if (el) {
+                        itemRefsMap.current.set(file.path, el);
+                        return;
+                      }
+                      itemRefsMap.current.delete(file.path);
+                    }}
+                    className={cn("absolute left-0 top-0 w-full")}
+                    style={{
+                      height: virtualRow.size,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    onContextMenu={() => onContextMenuFile?.(file.path)}
+                  >
+                    <FileItem
+                      file={file}
+                      selected={selectedPaths.has(file.path)}
+                      onClick={(e) => onSelectFile(file.path, e.shiftKey)}
+                      actions={renderActions?.(file)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
             {marquee.rect && (
               <div
                 className={cn("absolute pointer-events-none z-10")}
