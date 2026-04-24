@@ -243,6 +243,7 @@ function FileDiffSection({
           ...prev,
           [gap.slot]: mergeGapLines(
             nextState,
+            gap,
             direction,
             createLoadedContextLines(gap, requestPlan.startOffset, loaded),
           ),
@@ -303,6 +304,7 @@ function FileDiffSection({
         if (requestPlan.head && loadedHead) {
           nextState = mergeGapLines(
             nextState,
+            gap,
             "head",
             createLoadedContextLines(gap, requestPlan.head.startOffset, loadedHead),
           );
@@ -311,6 +313,7 @@ function FileDiffSection({
         if (requestPlan.tail && loadedTail) {
           nextState = mergeGapLines(
             nextState,
+            gap,
             "tail",
             createLoadedContextLines(gap, requestPlan.tail.startOffset, loadedTail),
           );
@@ -349,13 +352,15 @@ function FileDiffSection({
   );
 
   return (
-    <div className={cn({ "mt-2": !isFirst })}>
+    <div
+      className={cn({ "mt-2": !isFirst })}
+      style={{ border: `1px solid ${GITHUB_DIFF_BORDER}` }}
+    >
       <div
         className={cn("sticky top-0 z-10 flex items-center gap-3 px-2 py-1.5")}
         style={{
           background: GITHUB_DIFF_HEADER_BG,
-          borderTop: `1px solid ${GITHUB_DIFF_BORDER}`,
-          borderBottom: `1px solid ${GITHUB_DIFF_BORDER}`,
+          borderBottom: collapsed ? "none" : `1px solid ${GITHUB_DIFF_BORDER}`,
         }}
       >
         <button

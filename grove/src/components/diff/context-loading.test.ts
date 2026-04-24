@@ -3,6 +3,7 @@ import type { DiffContextGap } from "./context-gaps";
 import {
   createLoadedContextLines,
   EMPTY_GAP_STATE,
+  getGapRemainingCount,
   mergeGapLines,
   planGapMiddleLoad,
   planGapLoad,
@@ -56,6 +57,8 @@ describe("context-loading", () => {
         ...EMPTY_GAP_STATE,
         headLines: createLoadedContextLines(sampleGap, 0, ["a", "b"]),
         tailLines: createLoadedContextLines(sampleGap, 9, ["j", "k", "l"]),
+        headLoadedCount: 2,
+        tailLoadedCount: 3,
       },
       5,
     );
@@ -82,12 +85,32 @@ describe("context-loading", () => {
       {
         ...EMPTY_GAP_STATE,
         headLines: existing,
+        headLoadedCount: existing.length,
       },
+      sampleGap,
       "head",
       overlapping,
     );
 
     expect(merged.headLines.map((line) => line.key)).toEqual(["1-0", "1-1", "1-2"]);
     expect(merged.headLines.map((line) => line.content)).toEqual(["line 1", "line 2", "line 3"]);
+    expect(merged.headLoadedCount).toBe(3);
+  });
+
+  it("uses tracked boundary counts instead of raw line-array lengths", () => {
+    const state = {
+      ...EMPTY_GAP_STATE,
+      headLines: createLoadedContextLines(sampleGap, 0, ["a", "b", "c", "d", "e", "f", "g"]),
+      tailLines: createLoadedContextLines(sampleGap, 7, ["h", "i", "j", "k", "l"]),
+      headLoadedCount: 7,
+      tailLoadedCount: 4,
+    };
+
+    expect(getGapRemainingCount(sampleGap, state)).toBe(1);
+    expect(planGapLoad(sampleGap, state, "tail", 5)).toEqual({
+      startOffset: 7,
+      requestedCount: 1,
+      loadingKey: "loadingTail",
+    });
   });
 });
