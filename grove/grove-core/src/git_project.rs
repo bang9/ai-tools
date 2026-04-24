@@ -1518,6 +1518,60 @@ fn direct_stacked_children(
         .collect()
 }
 
+fn save_stacked_parent_metadata(
+    project_id: &str,
+    child_name: &str,
+    parent_name: &str,
+) -> Result<(), String> {
+    let mut config = config::load_config();
+    let project_entry = config
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    project_entry
+        .stacked_parents
+        .insert(child_name.to_string(), parent_name.to_string());
+    config::save_config(&config)
+}
+
+fn rollback_stacked_parent_metadata(project_id: &str, child_name: &str, parent_name: &str) {
+    let mut config = config::load_config();
+    let Some(project_entry) = config
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+    else {
+        return;
+    };
+
+    if project_entry
+        .stacked_parents
+        .get(child_name)
+        .map(String::as_str)
+        != Some(parent_name)
+    {
+        return;
+    }
+
+    project_entry.stacked_parents.remove(child_name);
+    if let Err(error) = config::save_config(&config) {
+        eprintln!("[grove] failed to rollback stacked parent metadata for {child_name}: {error}");
+    }
+}
+
+fn cleanup_failed_stacked_worktree_add(source: &Path, worktree_path: &Path, branch_name: &str) {
+    let worktree_path_str = worktree_path.to_string_lossy();
+    if worktree_path.exists() {
+        let _ = run_git(
+            source,
+            &["worktree", "remove", &worktree_path_str, "--force"],
+        );
+    }
+
+    let _ = run_git(source, &["branch", "-D", branch_name]);
+}
+
 pub fn add_stacked_worktree_impl(
     project_id: &str,
     parent_name: &str,
@@ -1571,7 +1625,8 @@ pub fn add_stacked_worktree_impl(
     }
 
     let parent_head = run_git_output(&parent_worktree_path, &["rev-parse", "HEAD"])?;
-    run_worktree_add(
+    save_stacked_parent_metadata(project_id, name, parent_name)?;
+    if let Err(error) = run_worktree_add(
         source,
         &[
             "worktree",
@@ -1582,7 +1637,11 @@ pub fn add_stacked_worktree_impl(
             &parent_head,
         ],
         name,
-    )?;
+    ) {
+        rollback_stacked_parent_metadata(project_id, name, parent_name);
+        cleanup_failed_stacked_worktree_add(source, &worktree_path, name);
+        return Err(error);
+    }
 
     if let Some(ref env_sync) = entry.env_sync {
         if let Err(error) = sync_env_files(
@@ -1593,17 +1652,6 @@ pub fn add_stacked_worktree_impl(
             eprintln!("[grove] env sync warning: {error}");
         }
     }
-
-    let mut config = config::load_config();
-    let project_entry = config
-        .projects
-        .iter_mut()
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-    project_entry
-        .stacked_parents
-        .insert(name.to_string(), parent_name.to_string());
-    config::save_config(&config)?;
 
     Ok(Worktree {
         name: name.to_string(),

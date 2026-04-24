@@ -353,6 +353,43 @@ describe("useProjectStore", () => {
     ]);
   });
 
+  it("ignores an in-flight stale snapshot while adding a stacked worktree", async () => {
+    const parent = makeWorktree("chore/align-types");
+    const topLevelChild = makeWorktree("bundle-size/chat-test-1");
+    const stackedChild = makeWorktree("bundle-size/chat-test-1");
+    stackedChild.stackParentName = "chore/align-types";
+
+    useProjectStore.setState({
+      projects: [makeProject([parent])],
+      cloningProjects: [],
+      selectedWorktree: null,
+      loading: false,
+    });
+
+    const staleSnapshot = deferred<Project[]>();
+    const createStacked = deferred<Worktree>();
+    vi.mocked(tauri.listProjects).mockReturnValueOnce(staleSnapshot.promise);
+    vi.mocked(tauri.addStackedWorktree).mockReturnValueOnce(createStacked.promise);
+
+    const syncPromise = useProjectStore.getState().syncProjects();
+    const addPromise = useProjectStore
+      .getState()
+      .addStackedWorktree("project-1", parent.name, stackedChild.name);
+
+    staleSnapshot.resolve([makeProject([parent, topLevelChild])]);
+    await syncPromise;
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([parent]);
+
+    createStacked.resolve(stackedChild);
+    await addPromise;
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
+      parent,
+      stackedChild,
+    ]);
+  });
+
   it("ignores a stale project snapshot after removing a worktree", async () => {
     const worktree = makeWorktree("feature-a");
     useProjectStore.setState({

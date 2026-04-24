@@ -191,6 +191,12 @@ function commitProjectMutation(
   }));
 }
 
+function markProjectMutationStarted(set: ProjectStateSetter) {
+  set((state) => ({
+    projectsMutationEpoch: state.projectsMutationEpoch + 1,
+  }));
+}
+
 export const useProjectStore = create<ProjectState>((set) => ({
   projects: [],
   cloningProjects: [],
@@ -334,6 +340,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
     }
 
     // Proceed with project deletion
+    markProjectMutationStarted(set);
     await runCommand(() => tauri.removeProject(id), {
       errorToast: "Failed to remove project",
     });
@@ -351,6 +358,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
 
   addWorktree: async (projectId: string, name: string) => {
+    markProjectMutationStarted(set);
     const worktree = await runCommand(async () => {
       const { projects } = useProjectStore.getState();
       const project = projects.find((p) => p.id === projectId);
@@ -373,6 +381,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
 
   addStackedWorktree: async (projectId: string, parentName: string, name: string) => {
+    markProjectMutationStarted(set);
     const worktree = await runCommand(async () => {
       const { projects } = useProjectStore.getState();
       const project = projects.find((p) => p.id === projectId);
@@ -395,6 +404,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
 
   removeWorktree: async (projectId: string, name: string) => {
+    markProjectMutationStarted(set);
     const project = useProjectStore
       .getState()
       .projects.find((p) => p.id === projectId);
@@ -452,6 +462,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
 
   // Phase 2: 드래그 재정렬 완료 시 호출. 순서를 config에 저장하고 즉시 UI에 반영.
   setWorktreeOrder: async (projectId: string, order: string[]) => {
+    markProjectMutationStarted(set);
     await runCommand(() => tauri.setWorktreeOrder(projectId, order), {
       errorToast: "Failed to save worktree order",
     });
@@ -465,6 +476,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
 
   renameProject: async (projectId: string, name: string) => {
+    markProjectMutationStarted(set);
     await runCommand(() => tauri.renameProject(projectId, name), {
       errorToast: "Failed to rename project",
     });
@@ -476,6 +488,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
 
   setProjectCategory: async (projectId: string, categoryId: string) => {
+    markProjectMutationStarted(set);
     await runCommand(() => tauri.setProjectCategory(projectId, categoryId), {
       errorToast: "Failed to set project category",
     });
@@ -497,6 +510,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
 
   setBaseBranch: async (projectId: string, branch: string | null) => {
+    markProjectMutationStarted(set);
     await runCommand(() => tauri.setBaseBranch(projectId, branch), {
       errorToast: "Failed to set base branch",
     });
