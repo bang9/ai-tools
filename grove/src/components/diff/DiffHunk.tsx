@@ -359,15 +359,15 @@ function getGroupStyle(type: RenderGroupType) {
 
   if (type === "conflict-marker") {
     return {
-      containerBg: "rgba(210, 153, 34, 0.12)",
-      gutterBg: "rgba(210, 153, 34, 0.08)",
-      prefixColor: "rgba(210, 153, 34, 0.95)",
+      containerBg: "rgba(88, 166, 255, 0.10)",
+      gutterBg: "rgba(88, 166, 255, 0.06)",
+      prefixColor: "rgba(88, 166, 255, 0.95)",
       prefix: "!",
-      borderColor: "rgba(210, 153, 34, 0.45)",
+      borderColor: "rgba(88, 166, 255, 0.45)",
       selectedBorderColor: "transparent",
       selectedRowBg: undefined,
       emphasisBg: undefined,
-      textColor: "rgba(255, 220, 140, 0.95)",
+      textColor: "rgba(139, 185, 255, 0.98)",
     };
   }
 

@@ -25,6 +25,9 @@ describe("conflict highlighting", () => {
     ]);
     expect(groups[2].lines.map((item) => item.line.content)).toEqual(["ours"]);
     expect(groups[4].lines.map((item) => item.line.content)).toEqual(["theirs"]);
+    expect(groups[1].lines[0].segments[0].text).toBe("<<<<<<< HEAD");
+    expect(groups[3].lines[0].segments[0].text).toBe("=======");
+    expect(groups[5].lines[0].segments[0].text).toBe(">>>>>>> feature");
   });
 
   it("keeps diff3 base sections as neutral context", () => {
