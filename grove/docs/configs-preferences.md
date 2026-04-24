@@ -1,20 +1,21 @@
 # Grove Configs and Preferences
 
-**Date**: 2026-04-04
+**Date**: 2026-04-24
 
 ## Summary
 
 Grove stores app-wide configuration in `~/.grove/config.json`.
 
-`config.json` currently carries three kinds of values:
+`config.json` currently carries four top-level groups:
 
+- `projects` — registered project metadata, including worktree ordering, stacked parent links, category assignment, and source settings
 - `baseDir` — storage root for project source clones and worktrees
 - `terminalTheme` — saved terminal theme override
 - `preferences` — Grove-specific behavior preferences
 
-`preferences` is the home for user-selectable Grove behavior such as link opening policy, project list view mode, org ordering, and IDE menu shortcuts. It is nested under `AppConfig`, but it is intentionally narrower in scope than the full app config.
+`preferences` is the home for user-selectable Grove behavior such as link opening policy, project list view mode, org ordering, launcher menu shortcuts, and project category definitions. It is nested under `GroveConfig`, but `AppConfig` intentionally exposes only the app-wide envelope (`baseDir`, `terminalTheme`, `preferences`) and not the registered project list.
 
-The preferences layer provides persistence, I/O, and a Zustand store (`usePreferencesStore`). Terminal link routing is wired via `terminalLinkOpenMode` (see [Terminal Link Open](open-link.md)). Grove now exposes persisted preferences in the Preferences modal under General and Terminal tabs, including project grouping mode for the Projects sidebar. The Developer tab is runtime-only and does not persist to `config.json`; it currently exposes dev console / reload actions plus terminal GC diagnostics. Sidebar context menus use `ideMenuItems` for ordered `Open in <IDE>` actions.
+The preferences layer provides persistence, I/O, and a Zustand store (`usePreferencesStore`). Terminal link routing is wired via `terminalLinkOpenMode` (see [Terminal Link Open](open-link.md)). Grove exposes persisted preferences in the Preferences modal under General, Categories, and Terminal tabs. The Developer tab is runtime-only and does not persist to `config.json`; it currently exposes dev console / reload actions plus terminal GC diagnostics. Sidebar context menus use `ideMenuItems` and `gitGuiMenuItems` for ordered launcher actions.
 
 ## Storage Model
 
@@ -43,7 +44,8 @@ Example:
   "preferences": {
     "terminalLinkOpenMode": "external-with-localhost-internal",
     "projectViewMode": "default",
-    "ideMenuItems": [{ "id": "webstorm" }]
+    "ideMenuItems": [{ "id": "webstorm" }],
+    "gitGuiMenuItems": [{ "id": "sourcetree" }]
   }
 }
 ```
@@ -85,12 +87,45 @@ interface IdeMenuItem {
   openCommand?: string;
 }
 
+type GitGuiMenuItem = IdeMenuItem;
+
+type ProjectCategoryIconId =
+  | "sprout"
+  | "folder"
+  | "rocket"
+  | "flame"
+  | "bug"
+  | "wrench"
+  | "book"
+  | "palette"
+  | "database"
+  | "bot"
+  | "terminal"
+  | "briefcase"
+  | "star"
+  | "package"
+  | "code"
+  | "gem";
+
+type ProjectCategoryIcon =
+  | { type: "emoji"; value: string }
+  | { type: "lucide"; value: ProjectCategoryIconId };
+
+interface ProjectCategory {
+  id: string;
+  name: string;
+  color: string;
+  icon: ProjectCategoryIcon;
+}
+
 interface GrovePreferences {
   terminalLinkOpenMode: TerminalLinkOpenMode;
   projectViewMode: ProjectViewMode;
   collapsedProjectOrgs: string[];
   projectOrgOrder: string[];
   ideMenuItems: IdeMenuItem[];
+  gitGuiMenuItems: GitGuiMenuItem[];
+  projectCategories: ProjectCategory[];
 }
 ```
 
@@ -110,6 +145,8 @@ Current defaults:
 - `collapsedProjectOrgs = []`
 - `projectOrgOrder = []`
 - `ideMenuItems = [{ "id": "webstorm" }]`
+- `gitGuiMenuItems = [{ "id": "sourcetree" }]`
+- `projectCategories = []`
 
 This defaulting is applied when older config files are loaded and do not yet contain a `preferences` block.
 
@@ -123,12 +160,13 @@ Minimal persisted shape with current defaults:
   "preferences": {
     "terminalLinkOpenMode": "external-with-localhost-internal",
     "projectViewMode": "default",
-    "ideMenuItems": [{ "id": "webstorm" }]
+    "ideMenuItems": [{ "id": "webstorm" }],
+    "gitGuiMenuItems": [{ "id": "sourcetree" }]
   }
 }
 ```
 
-Full shape with optional IDE metadata:
+Full shape with optional launcher and category metadata:
 
 ```json
 {
@@ -146,15 +184,38 @@ Full shape with optional IDE metadata:
       { "id": "xcode", "displayName": "Xcode" },
       { "id": "android-studio", "displayName": "Android Studio" },
       { "id": "cursor", "displayName": "Cursor", "openCommand": "cursor" }
+    ],
+    "gitGuiMenuItems": [
+      { "id": "sourcetree", "displayName": "Sourcetree" },
+      { "id": "fork", "displayName": "Fork" }
+    ],
+    "projectCategories": [
+      {
+        "id": "ops",
+        "name": "Ops",
+        "color": "#2dd4bf",
+        "icon": { "type": "lucide", "value": "wrench" }
+      }
     ]
   }
 }
 ```
 
 `ideMenuItems` may be empty.
+`gitGuiMenuItems` may be empty.
+`projectCategories` may be empty. The built-in default category is not persisted and uses id `default`.
 
 `collapsedProjectOrgs` is omitted from `config.json` when it is empty.
 `projectOrgOrder` is omitted from `config.json` when it is empty.
+`gitGuiMenuItems` and `projectCategories` are omitted from `config.json` when they are empty.
+
+Project category normalization is shared between Rust and TypeScript conventions:
+
+- category ids must be non-empty and cannot be `default`
+- names are trimmed and limited to 10 characters
+- colors must be 6-digit hex strings and are lowercased by the Rust normalizer
+- emoji icon values are trimmed and limited to 4 characters
+- lucide icon ids must be one of the supported frontend category icons
 
 ## I/O Interfaces
 
@@ -222,11 +283,16 @@ Persisted and exposed:
 - project view mode selection (`default`, `group-by-orgs`)
 - project org ordering
 - ordered IDE menu selection
-- Preferences UI for persisted General and Terminal settings
+- ordered Git GUI menu selection
+- custom project category definitions
+- Preferences UI for persisted General, Categories, and Terminal settings
 
 Implemented:
 
-- project/worktree/mission sidebar `Open in <IDE>` actions using `ideMenuItems`
+- source/worktree/mission/mission-project sidebar `Open in <IDE>` actions using `ideMenuItems`
+- source/worktree/mission/mission-project sidebar `Open in <Git GUI>` actions using `gitGuiMenuItems`
+- project category assignment through `projects[].categoryId`; deleting a category remaps assigned projects to the built-in default category
+- multi-select category filtering in the Projects sidebar; category filter state is in-memory UI state, not persisted to `config.json`
 
 Launcher behavior:
 
@@ -238,8 +304,10 @@ Launcher behavior:
 Preferences UX:
 
 - the General tab shows a curated list of IDE menu items with static product icons
-- users can add multiple IDEs and reorder them
-- sidebar menu order is Finder, Global Terminal, then the chosen IDE order
+- the General tab also shows a curated Git GUI selector for Sourcetree and Fork
+- users can add multiple IDEs or Git GUIs and reorder them within their sections
+- the Categories tab manages custom categories and project assignment
+- sidebar menu order is Finder, Global Terminal, chosen IDEs, then chosen Git GUIs
 
 ## Relevant Files
 
@@ -254,6 +322,9 @@ Preferences UX:
 | `src/lib/platform/tauri.ts` | Tauri frontend wrappers |
 | `src/lib/platform/electron.ts` | Electron frontend wrappers |
 | `src/store/preferences.ts` | Zustand store with init/save |
-| `src/components/sidebar/SidebarContextMenu.tsx` | Shared sidebar menu with ordered IDE items |
+| `src/components/sidebar/SidebarContextMenu.tsx` | Shared sidebar menu with ordered launcher and note items |
+| `src/components/preferences/ProjectCategoriesPanel.tsx` | Category create/edit/delete and project assignment UI |
+| `src/components/sidebar/ProjectCategoryFilterBar.tsx` | Multi-select category filter bar |
+| `src/lib/project-categories.tsx` | Category defaults, id generation, color/icon helpers |
 | `grove-core/src/ide.rs` | IDE launcher resolution and execution |
 | `src/lib/url-open.ts` | Runtime consumer of `terminalLinkOpenMode` |

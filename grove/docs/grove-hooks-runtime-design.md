@@ -4,7 +4,9 @@
 
 ## Summary
 
-Introduce a Grove-managed hooks runtime that produces the same Grove-visible lifecycle signals for Claude Code and Codex while also opening a public user-extensible hook interface.
+This is a design proposal for a Grove-managed hooks runtime that would produce the same Grove-visible lifecycle signals for Claude Code and Codex while also opening a public user-extensible hook interface.
+
+Implementation status as of 2026-04-24: the full manifest/merge/adapter runtime described below is not implemented. The current code still lives in `grove-core/src/tool_hooks.rs` and `grove-core/src/pty.rs`: Claude uses hardcoded inline hook settings via `--settings`, Codex uses the Grove wrapper lifecycle trap plus PTY hookless fallback, and no `hook_manifest.rs` / `hook_runtime.rs` modules exist yet.
 
 The immediate product goal is narrow: keep worktree AI state indicators accurate in the sidebar. The runtime exists to support that goal first. It must also be designed so user-defined hooks can be layered on later without reworking the core delivery model.
 

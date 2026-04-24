@@ -6,6 +6,8 @@
 
 Grove intercepts URL opens from terminal processes via a shell wrapper and routes them through a Unix domain socket. This gives Grove control over how URLs are opened (external browser vs. future internal browser tab), based on the `terminalLinkOpenMode` preference.
 
+The socket-backed `open` wrapper path is currently wired by the Tauri runtime. Electron still uses the same frontend `openUrl()` preference routing for xterm link clicks, but the Electron main process does not currently start the Grove URL socket listener.
+
 ## Architecture
 
 ```

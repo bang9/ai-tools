@@ -1,15 +1,15 @@
 # Grove
 
-Tauri v2 macOS app — Git project manager + split terminal + diff viewer.
+Dual-platform macOS desktop app (Tauri v2 by default, Electron optional) — Git project manager + split terminal + diff viewer.
 
 ## Feature Docs
 
-- [Grove Configs and Preferences](docs/configs-preferences.md) — `config.json` model, defaults, and app-wide preference I/O
+- [Grove Configs and Preferences](docs/configs-preferences.md) — `config.json` model, project metadata, category defaults, and app-wide preference I/O
 - [Terminal Broadcast](docs/terminal-broadcast.md) — PiP, Mirror, consumer model, persistence policy
 - [Grove Hooks Runtime Design](docs/grove-hooks-runtime-design.md) — Claude/Codex hook parity, CODEX_HOME overlay delivery, status tracking architecture
-- [Context Menu](docs/context-menu.md) — Sidebar right-click menu, SidebarContextMenu wrapper, extending with extraItems
+- [Context Menu](docs/context-menu.md) — Sidebar right-click menu, launcher menu items, notes, and extending with extraItems
 - [Terminal Link Open](docs/open-link.md) — URL interception via open wrapper, Unix socket routing, preference-based link handling
-- [Preferences UI](docs/preferences-ui.md) — Modal structure, heading hierarchy rules, file layout, data flow
+- [Preferences UI](docs/preferences-ui.md) — Modal structure, four-tab layout, heading hierarchy rules, file layout, data flow
 
 ## Stack
 
@@ -20,6 +20,7 @@ Tauri v2 macOS app — Git project manager + split terminal + diff viewer.
 ## Commands
 
 ```bash
+cd grove
 pnpm install
 pnpm lint              # ESLint for src/**/*.{ts,tsx}
 pnpm test              # Vitest
@@ -55,7 +56,7 @@ src/
 │   ├── terminal/          # xterm.js + PTY + split panes + global terminal
 │   ├── tab/               # AppTabBar, ChangesPanel, PipTerminal
 │   └── diff/              # Commit list, file list, diff viewer, hunk actions
-├── store/                 # Zustand: project, terminal, diff, toast, broadcast, mission, panel-layout, tab
+├── store/                 # Zustand: project, terminal, diff, toast, broadcast, mission, note, preferences, panel-layout, tab
 ├── hooks/                 # useProject, useTerminal, useDiff, useToast, useFullscreen, useMission, ...
 ├── lib/
 │   ├── platform/          # Platform abstraction (see above)
@@ -94,10 +95,15 @@ grove-core/src/            # Shared Rust backend (used by both Tauri and Electro
 
 ## App Data
 
-- `~/.grove/config.json` — app settings, terminal theme override
+- `~/.grove/config.json` — project entries, baseDir, terminal theme override, preferences
 - `~/.grove/terminal-layouts.json` — split tree structure + size ratios per worktree
-- `~/.grove/<host>/<org>/<repo>/source/` — SOT clone (always main)
-- `~/.grove/<host>/<org>/<repo>/worktrees/<name>/` — git worktrees
+- `~/.grove/terminal-session-snapshots.json` — terminal scrollback/CWD snapshots per pane
+- `~/.grove/panel-layouts.json` — main panel and global terminal ratios
+- `~/.grove/notes.json` — sidebar notes keyed by source, worktree, and mission ids
+- `<baseDir>/<host>/<org>/<repo>/source/` — SOT clone synced to the remote default branch or configured base branch
+- `<baseDir>/<host>/<org>/<repo>/worktrees/<name>/` — git worktrees
+
+Project metadata in `config.json` carries `worktreeOrder`, `stackedParents`, optional `baseBranch`, collapsed state, optional `categoryId`, and optional `envSync` settings. Project category definitions live in `preferences.projectCategories`; individual project assignments live on each project entry.
 
 ## Code Style
 
