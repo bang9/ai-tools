@@ -41,7 +41,12 @@ function SplitContainer({
   if (node.type === "leaf") {
     return node.ptyId ? (
       <div className={cn("relative w-full h-full")}>
-        <TerminalInstance paneId={node.id} ptyId={node.ptyId} />
+        <TerminalInstance
+          paneId={node.id}
+          ptyId={node.ptyId}
+          worktreePath={worktreePath}
+          label={node.label}
+        />
       </div>
     ) : null;
   }

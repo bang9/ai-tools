@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { SplitNode } from "../types";
 import {
+  normalizeSplitTree,
+  toLayoutTemplate,
+} from "./split-tree";
+import {
   buildTerminalPaneTopologySignature,
   buildTerminalRestorePlan,
   buildTerminalSnapshotRequest,
@@ -88,6 +92,58 @@ describe("restoreLayoutWithPtyIds", () => {
       id: "pane-c",
       type: "leaf",
       ptyId: "pty-3",
+    });
+  });
+
+  it("preserves persisted pane labels while restoring runtime PTY ids", () => {
+    const restored = restoreLayoutWithPtyIds(
+      {
+        id: "pane-a",
+        type: "leaf",
+        label: "build api",
+      },
+      new Map([["pane-a", "pty-1"]]),
+    );
+
+    expect(restored).toEqual({
+      id: "pane-a",
+      type: "leaf",
+      ptyId: "pty-1",
+      label: "build api",
+    });
+  });
+
+  it("preserves pane labels across the persisted-layout restart path", () => {
+    const liveLayout: SplitNode = {
+      id: "root",
+      type: "horizontal",
+      sizes: [0.5, 0.5],
+      children: [
+        { id: "pane-a", type: "leaf", ptyId: "pty-old-a", label: "build api" },
+        { id: "pane-b", type: "leaf", ptyId: "pty-old-b" },
+      ],
+    };
+    const persistedTemplate = toLayoutTemplate(liveLayout);
+    const loadedTemplate = normalizeSplitTree(persistedTemplate, () => "unused");
+    const restoredLiveLayout = restoreLayoutWithPtyIds(
+      loadedTemplate,
+      new Map([
+        ["pane-a", "pty-new-a"],
+        ["pane-b", "pty-new-b"],
+      ]),
+    );
+    const restoredStoreLayout = normalizeSplitTree(restoredLiveLayout, () => "unused");
+
+    expect(persistedTemplate.children?.[0]).toEqual({
+      id: "pane-a",
+      type: "leaf",
+      label: "build api",
+    });
+    expect(restoredStoreLayout.children?.[0]).toEqual({
+      id: "pane-a",
+      type: "leaf",
+      ptyId: "pty-new-a",
+      label: "build api",
     });
   });
 });

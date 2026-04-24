@@ -31,6 +31,7 @@ export interface SplitNode {
   id: string;
   type: "leaf" | "horizontal" | "vertical";
   ptyId?: string;
+  label?: string;
   children?: SplitNode[];
   sizes?: number[];
 }

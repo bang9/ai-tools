@@ -87,6 +87,7 @@ export function restoreLayoutWithPtyIds(
       id: node.id,
       type: "leaf",
       ptyId: panePtyIds.get(node.id),
+      ...(node.label ? { label: node.label } : {}),
     };
   }
 

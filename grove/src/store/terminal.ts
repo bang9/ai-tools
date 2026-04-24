@@ -7,6 +7,7 @@ import {
   removeNode,
   setSizesAtPath,
   normalizeSplitTree,
+  setLeafLabel,
 } from "../lib/split-tree";
 import {
   collectTerminalPanes,
@@ -76,6 +77,7 @@ interface TerminalState {
   loadTheme: (theme: TerminalTheme) => void;
   removeSession: (worktreePath: string, nextActiveWorktree?: string | null) => void;
   updateSizes: (worktreePath: string, nodePath: number[], ratios: number[]) => void;
+  setPaneLabel: (worktreePath: string, paneId: string, label: string | undefined) => void;
   getSavedLayout: (worktreePath: string) => SplitNode | null;
   initLayouts: () => Promise<void>;
 }
@@ -474,6 +476,17 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       const root = state.sessions[worktreePath];
       if (!root) return state;
       const updated = setSizesAtPath(root, nodePath, ratios);
+      const newSessions = { ...state.sessions, [worktreePath]: updated };
+      saveLayouts(newSessions);
+      return { sessions: newSessions };
+    }),
+
+  setPaneLabel: (worktreePath, paneId, label) =>
+    set((state) => {
+      const root = state.sessions[worktreePath];
+      if (!root) return state;
+      const updated = setLeafLabel(root, paneId, label);
+      if (updated === root) return state;
       const newSessions = { ...state.sessions, [worktreePath]: updated };
       saveLayouts(newSessions);
       return { sessions: newSessions };

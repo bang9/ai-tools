@@ -7,6 +7,7 @@ import {
   normalizeSplitTree,
   removeNode,
   setSizesAtPath,
+  setLeafLabel,
   splitNode,
   toLayoutTemplate,
 } from "./split-tree";
@@ -18,10 +19,15 @@ function generatedId(prefix: string): string {
   return `${prefix}-${nextGeneratedId}`;
 }
 
-const leaf = (ptyId?: string, id = ptyId ? `leaf-${ptyId}` : generatedId("leaf")): SplitNode => ({
+const leaf = (
+  ptyId?: string,
+  id = ptyId ? `leaf-${ptyId}` : generatedId("leaf"),
+  label?: string,
+): SplitNode => ({
   id,
   type: "leaf",
   ptyId,
+  ...(label ? { label } : {}),
 });
 
 const hSplit = (
@@ -114,6 +120,20 @@ describe("normalizeSplitTree", () => {
 
     expect(result).toEqual({ id: "legacy", type: "leaf", ptyId: "pty-1" });
   });
+
+  it("preserves trimmed pane labels on leaves", () => {
+    const result = normalizeSplitTree(
+      { id: "leaf-1", type: "leaf", ptyId: "pty-1", label: "  build api  " },
+      idFactory("unused"),
+    );
+
+    expect(result).toEqual({
+      id: "leaf-1",
+      type: "leaf",
+      ptyId: "pty-1",
+      label: "build api",
+    });
+  });
 });
 
 // ── toLayoutTemplate ──
@@ -122,6 +142,13 @@ describe("toLayoutTemplate", () => {
   it("strips ptyId from a single leaf while keeping its stable id", () => {
     const result = toLayoutTemplate(leaf("pty-1", "leaf-1"));
     expect(result).toEqual({ id: "leaf-1", type: "leaf" });
+    expect(result.ptyId).toBeUndefined();
+  });
+
+  it("keeps pane labels when stripping runtime pty ids", () => {
+    const result = toLayoutTemplate(leaf("pty-1", "leaf-1", "tests"));
+
+    expect(result).toEqual({ id: "leaf-1", type: "leaf", label: "tests" });
     expect(result.ptyId).toBeUndefined();
   });
 
@@ -225,6 +252,18 @@ describe("assignPtyIds", () => {
     expect(ids).toEqual([]);
   });
 
+  it("preserves labels when assigning runtime pty ids", () => {
+    const ids = ["pty-1"];
+    const result = assignPtyIds(leaf(undefined, "leaf-1", "docs"), ids);
+
+    expect(result).toEqual({
+      id: "leaf-1",
+      type: "leaf",
+      ptyId: "pty-1",
+      label: "docs",
+    });
+  });
+
   it("assigns ids to leaves in left-to-right order", () => {
     const template = hSplit([leaf(undefined, "leaf-a"), leaf(undefined, "leaf-b")], undefined, "root");
     const ids = ["a", "b"];
@@ -314,6 +353,46 @@ describe("splitNode", () => {
     expect(result.children![1].children![1]).toEqual(
       hSplit([leaf("c", "leaf-c"), leaf("d", "leaf-d")], [0.5, 0.5], "branch-new"),
     );
+  });
+});
+
+// ── setLeafLabel ──
+
+describe("setLeafLabel", () => {
+  it("sets a trimmed label on the matching leaf", () => {
+    const result = setLeafLabel(leaf("a", "leaf-a"), "leaf-a", "  tests  ");
+
+    expect(result).toEqual(leaf("a", "leaf-a", "tests"));
+  });
+
+  it("caps labels at 20 characters", () => {
+    const result = setLeafLabel(leaf("a", "leaf-a"), "leaf-a", "1234567890123456789012345");
+
+    expect(result).toEqual(leaf("a", "leaf-a", "12345678901234567890"));
+  });
+
+  it("clears a label by removing the field", () => {
+    const result = setLeafLabel(leaf("a", "leaf-a", "tests"), "leaf-a", "");
+
+    expect(result).toEqual(leaf("a", "leaf-a"));
+  });
+
+  it("updates a nested leaf without changing unrelated branches", () => {
+    const left = leaf("a", "leaf-a");
+    const right = hSplit([leaf("b", "leaf-b"), leaf("c", "leaf-c")], [0.4, 0.6], "branch-right");
+    const tree = vSplit([left, right], [0.25, 0.75], "root");
+
+    const result = setLeafLabel(tree, "leaf-c", "review");
+
+    expect(result.children![0]).toBe(left);
+    expect(result.children![1].children![0]).toBe(right.children![0]);
+    expect(result.children![1].children![1]).toEqual(leaf("c", "leaf-c", "review"));
+  });
+
+  it("returns the same reference when the label does not change", () => {
+    const node = leaf("a", "leaf-a", "tests");
+
+    expect(setLeafLabel(node, "leaf-a", "tests")).toBe(node);
   });
 });
 

@@ -1,9 +1,12 @@
 import type { SplitNode } from "../types";
 
+export const TERMINAL_PANE_LABEL_MAX_LENGTH = 20;
+
 interface PersistedSplitNode {
   id?: string;
   type?: SplitNode["type"];
   ptyId?: string;
+  label?: string;
   children?: PersistedSplitNode[];
   sizes?: number[];
 }
@@ -32,6 +35,11 @@ function normalizeBranchSizes(sizes: number[] | undefined, childCount: number): 
   return normalizeRatios(sizes) ?? evenRatios(childCount);
 }
 
+function normalizePaneLabel(label: string | undefined): string | undefined {
+  const trimmed = label?.trim().slice(0, TERMINAL_PANE_LABEL_MAX_LENGTH);
+  return trimmed ? trimmed : undefined;
+}
+
 function rebalanceBranchSizes(
   sizes: number[] | undefined,
   retainedIndices: number[],
@@ -49,10 +57,12 @@ export function normalizeSplitTree(node: PersistedSplitNode, createId: () => str
   const id = node.id ?? createId();
 
   if (node.type === "leaf" || (node.type !== "horizontal" && node.type !== "vertical")) {
+    const label = normalizePaneLabel(node.label);
     return {
       id,
       type: "leaf",
       ptyId: node.ptyId,
+      ...(label ? { label } : {}),
     };
   }
 
@@ -68,7 +78,10 @@ export function normalizeSplitTree(node: PersistedSplitNode, createId: () => str
 
 /** Strip ptyIds from a SplitNode tree, keeping stable ids + canonical ratios. */
 export function toLayoutTemplate(node: SplitNode): SplitNode {
-  if (node.type === "leaf") return { id: node.id, type: "leaf" };
+  if (node.type === "leaf") {
+    const label = normalizePaneLabel(node.label);
+    return label ? { id: node.id, type: "leaf", label } : { id: node.id, type: "leaf" };
+  }
 
   const children = (node.children ?? []).map(toLayoutTemplate);
   return {
@@ -88,7 +101,13 @@ export function countLeaves(node: SplitNode): number {
 /** Assign ptyIds from an array into a layout template's leaf nodes. */
 export function assignPtyIds(node: SplitNode, ids: string[]): SplitNode {
   if (node.type === "leaf") {
-    return { id: node.id, type: "leaf", ptyId: ids.shift() };
+    const label = normalizePaneLabel(node.label);
+    return {
+      id: node.id,
+      type: "leaf",
+      ptyId: ids.shift(),
+      ...(label ? { label } : {}),
+    };
   }
 
   const children = (node.children ?? []).map((child) => assignPtyIds(child, ids));
@@ -98,6 +117,31 @@ export function assignPtyIds(node: SplitNode, ids: string[]): SplitNode {
     sizes: normalizeBranchSizes(node.sizes, children.length),
     children,
   };
+}
+
+export function setLeafLabel(
+  node: SplitNode,
+  paneId: string,
+  label: string | undefined,
+): SplitNode {
+  if (node.type === "leaf") {
+    if (node.id !== paneId) return node;
+    const normalizedLabel = normalizePaneLabel(label);
+    if (node.label === normalizedLabel) return node;
+    if (normalizedLabel) {
+      return { ...node, label: normalizedLabel };
+    }
+    const next = { ...node };
+    delete next.label;
+    return next;
+  }
+
+  if (!node.children) return node;
+  const children = node.children.map((child) => setLeafLabel(child, paneId, label));
+  if (children.every((child, index) => child === node.children![index])) {
+    return node;
+  }
+  return { ...node, children };
 }
 
 export function splitNode(

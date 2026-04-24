@@ -187,4 +187,42 @@ describe("useTerminalStore bell state", () => {
     expect(useTerminalStore.getState().focusedPtyId).toBe("pty-b-1");
     expect(useTerminalStore.getState().focusedPaneIdByWorktree["/tmp/b"]).toBe("pane-b-1");
   });
+
+  it("stores pane labels by stable pane id", () => {
+    useTerminalStore.setState({
+      sessions: {
+        "/tmp/a": makeSplit("root-a", [
+          makeLeaf("pane-a-1", "pty-a-1"),
+          makeLeaf("pane-a-2", "pty-a-2"),
+        ]),
+      },
+    });
+
+    useTerminalStore.getState().setPaneLabel("/tmp/a", "pane-a-2", "  review  ");
+
+    expect(useTerminalStore.getState().sessions["/tmp/a"].children![0]).toEqual(
+      makeLeaf("pane-a-1", "pty-a-1"),
+    );
+    expect(useTerminalStore.getState().sessions["/tmp/a"].children![1]).toEqual({
+      ...makeLeaf("pane-a-2", "pty-a-2"),
+      label: "review",
+    });
+  });
+
+  it("clears pane labels back to the unlabeled leaf shape", () => {
+    useTerminalStore.setState({
+      sessions: {
+        "/tmp/a": {
+          ...makeLeaf("pane-a-1", "pty-a-1"),
+          label: "review",
+        },
+      },
+    });
+
+    useTerminalStore.getState().setPaneLabel("/tmp/a", "pane-a-1", undefined);
+
+    expect(useTerminalStore.getState().sessions["/tmp/a"]).toEqual(
+      makeLeaf("pane-a-1", "pty-a-1"),
+    );
+  });
 });
