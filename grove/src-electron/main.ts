@@ -35,6 +35,8 @@ const JSON_RESPONSE_COMMANDS = new Set([
   "get_commits",
   "get_working_diff",
   "get_commit_diff",
+  "get_working_diff_context",
+  "get_commit_diff_context",
   "get_behind_count",
   "get_env_sync",
   "list_gitignore_patterns",

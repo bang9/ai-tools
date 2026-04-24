@@ -1,10 +1,14 @@
 use crate::process_env::enriched_path;
 use crate::{BehindInfo, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatus};
 use git2::{DiffOptions, Repository, Sort, StatusOptions};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::time::UNIX_EPOCH;
+
+const FILE_CONTENT_CACHE_LIMIT: usize = 256;
 
 // === QUERY OPERATIONS ===
 
@@ -150,7 +154,11 @@ pub fn get_working_diff_impl(worktree_path: &str, path: &str) -> Result<FileDiff
                 .map_err(|e| e.to_string())?;
 
             let file_diffs = parse_diff(&full)?;
-            if let Some(fd) = file_diffs.into_iter().find(|f| f.path == actual_path) {
+            if let Some(mut fd) = file_diffs.into_iter().find(|f| f.path == actual_path) {
+                if should_track_display_line_count(&fd.status) {
+                    let source = get_working_display_source(&repo, worktree_path, &fd.path, want_staged)?;
+                    fd.display_line_count = count_lines_for_source(&repo, &source)?;
+                }
                 return Ok(fd);
             }
             d
@@ -159,13 +167,20 @@ pub fn get_working_diff_impl(worktree_path: &str, path: &str) -> Result<FileDiff
         }
     };
 
-    let file_diffs = parse_diff(&diff)?;
+    let mut file_diffs = parse_diff(&diff)?;
+    for file_diff in &mut file_diffs {
+        if should_track_display_line_count(&file_diff.status) {
+            let source = get_working_display_source(&repo, worktree_path, &file_diff.path, want_staged)?;
+            file_diff.display_line_count = count_lines_for_source(&repo, &source)?;
+        }
+    }
 
     Ok(file_diffs.into_iter().next().unwrap_or(FileDiff {
         path: actual_path.to_string(),
         old_path: None,
         status: "modified".to_string(),
         hunks: vec![],
+        display_line_count: 0,
     }))
 }
 
@@ -184,7 +199,58 @@ pub fn get_commit_diff_impl(
         .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
         .map_err(|e| e.to_string())?;
 
-    parse_diff(&diff)
+    let mut file_diffs = parse_diff(&diff)?;
+    for file_diff in &mut file_diffs {
+        if should_track_display_line_count(&file_diff.status) {
+            let source = get_commit_display_source(&repo, &tree, parent_tree.as_ref(), file_diff)?;
+            file_diff.display_line_count = count_lines_for_source(&repo, &source)?;
+        }
+    }
+
+    Ok(file_diffs)
+}
+
+pub fn get_working_diff_context_impl(
+    worktree_path: &str,
+    path: &str,
+    start_line: u32,
+    line_count: u32,
+) -> Result<Vec<String>, String> {
+    let (actual_path, want_staged) = if let Some(p) = path.strip_prefix("staged:") {
+        (p, true)
+    } else {
+        (path, false)
+    };
+
+    validate_repo_relative_path(actual_path)?;
+    let repo = Repository::open(worktree_path).map_err(|e| e.to_string())?;
+    ensure_working_diff_path_allowed(worktree_path, actual_path, want_staged)?;
+    let source = get_working_display_source(&repo, worktree_path, actual_path, want_staged)?;
+    slice_lines_for_source(&repo, &source, start_line, line_count)
+}
+
+pub fn get_commit_diff_context_impl(
+    worktree_path: &str,
+    commit_hash: &str,
+    path: &str,
+    old_path: Option<&str>,
+    start_line: u32,
+    line_count: u32,
+) -> Result<Vec<String>, String> {
+    validate_repo_relative_path(path)?;
+    if let Some(previous_path) = old_path {
+        validate_repo_relative_path(previous_path)?;
+    }
+
+    let repo = Repository::open(worktree_path).map_err(|e| e.to_string())?;
+    let oid = git2::Oid::from_str(commit_hash).map_err(|e| e.to_string())?;
+    let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+
+    ensure_commit_diff_path_allowed(&repo, &tree, parent_tree.as_ref(), path, old_path)?;
+    let source = get_commit_display_source_from_paths(&repo, &tree, parent_tree.as_ref(), path, old_path)?;
+    slice_lines_for_source(&repo, &source, start_line, line_count)
 }
 
 // === FILE-LEVEL OPERATIONS ===
@@ -433,6 +499,7 @@ fn parse_diff(diff: &git2::Diff) -> Result<Vec<FileDiff>, String> {
                 old_path,
                 status: status.to_string(),
                 hunks: vec![],
+                display_line_count: 0,
             });
         }
 
@@ -534,6 +601,314 @@ fn build_hunk_patch(file_path: &str, old_path: Option<&str>, hunk: &DiffHunk) ->
     }
 
     patch
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum FileContentSource {
+    Missing,
+    Blob {
+        oid: git2::Oid,
+    },
+    Workdir {
+        full_path: String,
+        modified_unix_nanos: u128,
+        len: u64,
+    },
+}
+
+#[derive(Clone)]
+struct CachedFileContent {
+    line_count: u32,
+    lines: Option<Vec<String>>,
+}
+
+static FILE_CONTENT_CACHE: LazyLock<Mutex<HashMap<FileContentSource, CachedFileContent>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn should_track_display_line_count(status: &str) -> bool {
+    !matches!(status, "added" | "deleted")
+}
+
+fn validate_repo_relative_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("Path is required".to_string());
+    }
+
+    let mut has_normal_component = false;
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(_) => has_normal_component = true,
+            Component::CurDir => {}
+            _ => return Err(format!("Invalid repo-relative path: {path}")),
+        }
+    }
+
+    if !has_normal_component {
+        return Err(format!("Invalid repo-relative path: {path}"));
+    }
+
+    Ok(())
+}
+
+fn ensure_working_diff_path_allowed(
+    worktree_path: &str,
+    path: &str,
+    want_staged: bool,
+) -> Result<(), String> {
+    let diff = if want_staged {
+        get_staged_diff(worktree_path, path)?
+    } else {
+        get_unstaged_diff(worktree_path, path)?
+    };
+
+    if diff.path == path {
+        return Ok(());
+    }
+
+    Err(format!("Path is not part of the requested diff: {path}"))
+}
+
+fn ensure_commit_diff_path_allowed(
+    repo: &Repository,
+    tree: &git2::Tree,
+    parent_tree: Option<&git2::Tree>,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<(), String> {
+    let mut opts = DiffOptions::new();
+    opts.pathspec(path);
+    if let Some(previous_path) = old_path.filter(|previous_path| *previous_path != path) {
+        opts.pathspec(previous_path);
+    }
+
+    let diff = repo
+        .diff_tree_to_tree(parent_tree, Some(tree), Some(&mut opts))
+        .map_err(|e| e.to_string())?;
+    let file_diffs = parse_diff(&diff)?;
+    let allowed = file_diffs.into_iter().any(|file_diff| {
+        file_diff.path == path && old_path.map_or(true, |previous_path| file_diff.old_path.as_deref() == Some(previous_path))
+    });
+
+    if allowed {
+        return Ok(());
+    }
+
+    Err(format!("Path is not part of commit diff: {path}"))
+}
+
+fn get_working_display_source(
+    repo: &Repository,
+    worktree_path: &str,
+    path: &str,
+    want_staged: bool,
+) -> Result<FileContentSource, String> {
+    if want_staged {
+        let index = read_index_source(repo, path)?;
+        if !matches!(index, FileContentSource::Missing) {
+            return Ok(index);
+        }
+
+        let head_tree = repo.head().and_then(|head| head.peel_to_tree()).ok();
+        return read_tree_source(repo, head_tree.as_ref(), path);
+    }
+
+    let workdir = read_workdir_source(worktree_path, path)?;
+    if !matches!(workdir, FileContentSource::Missing) {
+        return Ok(workdir);
+    }
+
+    let index = read_index_source(repo, path)?;
+    if !matches!(index, FileContentSource::Missing) {
+        return Ok(index);
+    }
+
+    Ok(FileContentSource::Missing)
+}
+
+fn get_commit_display_source(
+    repo: &Repository,
+    tree: &git2::Tree,
+    parent_tree: Option<&git2::Tree>,
+    file_diff: &FileDiff,
+) -> Result<FileContentSource, String> {
+    get_commit_display_source_from_paths(
+        repo,
+        tree,
+        parent_tree,
+        &file_diff.path,
+        file_diff.old_path.as_deref(),
+    )
+}
+
+fn get_commit_display_source_from_paths(
+    repo: &Repository,
+    tree: &git2::Tree,
+    parent_tree: Option<&git2::Tree>,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<FileContentSource, String> {
+    let new_source = read_tree_source(repo, Some(tree), path)?;
+    if !matches!(new_source, FileContentSource::Missing) {
+        return Ok(new_source);
+    }
+
+    let previous_path = old_path.unwrap_or(path);
+    read_tree_source(repo, parent_tree, previous_path)
+}
+
+fn read_tree_source(
+    repo: &Repository,
+    tree: Option<&git2::Tree>,
+    path: &str,
+) -> Result<FileContentSource, String> {
+    let Some(tree) = tree else {
+        return Ok(FileContentSource::Missing);
+    };
+
+    let Ok(entry) = tree.get_path(Path::new(path)) else {
+        return Ok(FileContentSource::Missing);
+    };
+
+    repo.find_blob(entry.id()).map_err(|e| e.to_string())?;
+    Ok(FileContentSource::Blob { oid: entry.id() })
+}
+
+fn read_index_source(repo: &Repository, path: &str) -> Result<FileContentSource, String> {
+    let index = repo.index().map_err(|e| e.to_string())?;
+    let Some(entry) = index.get_path(Path::new(path), 0) else {
+        return Ok(FileContentSource::Missing);
+    };
+
+    repo.find_blob(entry.id).map_err(|e| e.to_string())?;
+    Ok(FileContentSource::Blob { oid: entry.id })
+}
+
+fn read_workdir_source(worktree_path: &str, path: &str) -> Result<FileContentSource, String> {
+    let full_path = Path::new(worktree_path).join(path);
+    if !full_path.exists() {
+        return Ok(FileContentSource::Missing);
+    }
+
+    let metadata = std::fs::metadata(&full_path).map_err(|e| e.to_string())?;
+    let modified_unix_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+
+    Ok(FileContentSource::Workdir {
+        full_path: full_path.to_string_lossy().to_string(),
+        modified_unix_nanos,
+        len: metadata.len(),
+    })
+}
+
+fn count_lines_for_source(repo: &Repository, source: &FileContentSource) -> Result<u32, String> {
+    if let Some(cached) = get_cached_file_content(source) {
+        return Ok(cached.line_count);
+    }
+
+    let bytes = read_source_bytes(repo, source)?;
+    let line_count = count_lines(&bytes);
+    cache_file_content(
+        source.clone(),
+        CachedFileContent {
+            line_count,
+            lines: None,
+        },
+    );
+    Ok(line_count)
+}
+
+fn slice_lines_for_source(
+    repo: &Repository,
+    source: &FileContentSource,
+    start_line: u32,
+    line_count: u32,
+) -> Result<Vec<String>, String> {
+    if let Some(cached) = get_cached_file_content(source) {
+        if let Some(lines) = cached.lines {
+            return Ok(slice_lines(&lines, start_line, line_count));
+        }
+    }
+
+    let bytes = read_source_bytes(repo, source)?;
+    let lines = decode_lines(&bytes);
+    let result = slice_lines(&lines, start_line, line_count);
+    cache_file_content(
+        source.clone(),
+        CachedFileContent {
+            line_count: lines.len() as u32,
+            lines: Some(lines),
+        },
+    );
+    Ok(result)
+}
+
+fn get_cached_file_content(source: &FileContentSource) -> Option<CachedFileContent> {
+    FILE_CONTENT_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(source)
+        .cloned()
+}
+
+fn cache_file_content(source: FileContentSource, entry: CachedFileContent) {
+    let mut cache = FILE_CONTENT_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.len() >= FILE_CONTENT_CACHE_LIMIT && !cache.contains_key(&source) {
+        cache.clear();
+    }
+    cache.insert(source, entry);
+}
+
+fn read_source_bytes(repo: &Repository, source: &FileContentSource) -> Result<Vec<u8>, String> {
+    match source {
+        FileContentSource::Missing => Ok(vec![]),
+        FileContentSource::Blob { oid } => {
+            let blob = repo.find_blob(*oid).map_err(|e| e.to_string())?;
+            Ok(blob.content().to_vec())
+        }
+        FileContentSource::Workdir { full_path, .. } => {
+            std::fs::read(Path::new(full_path)).map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn count_lines(bytes: &[u8]) -> u32 {
+    if bytes.is_empty() {
+        return 0;
+    }
+
+    let newline_count = bytes.iter().filter(|byte| **byte == b'\n').count() as u32;
+    if bytes.last() == Some(&b'\n') {
+        newline_count
+    } else {
+        newline_count + 1
+    }
+}
+
+fn decode_lines(bytes: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| line.to_string())
+        .collect()
+}
+
+fn slice_lines(lines: &[String], start_line: u32, line_count: u32) -> Vec<String> {
+    if start_line == 0 || line_count == 0 {
+        return vec![];
+    }
+
+    let start_index = (start_line - 1) as usize;
+    if start_index >= lines.len() {
+        return vec![];
+    }
+
+    let end_index = start_index.saturating_add(line_count as usize).min(lines.len());
+    lines[start_index..end_index].to_vec()
 }
 
 fn build_selective_patch(
@@ -774,6 +1149,23 @@ mod tests {
         );
     }
 
+    fn head_hash(repo: &Path) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .env("PATH", enriched_path())
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
     #[test]
     fn stage_files_batches_multiple_paths() {
         let _lock = env_lock();
@@ -901,6 +1293,107 @@ mod tests {
 
         assert!(!repo.join("a.txt").exists());
         assert!(!repo.join("scratch").exists());
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn working_diff_context_rejects_path_traversal() {
+        let _lock = env_lock();
+        let repo = temp_repo("working-context-traversal");
+
+        git(&repo, &["init"]);
+
+        let error =
+            get_working_diff_context_impl(repo.to_str().unwrap(), "../../etc/passwd", 1, 10)
+                .unwrap_err();
+        assert!(error.contains("Invalid repo-relative path"));
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn working_diff_context_reads_staged_file_content() {
+        let _lock = env_lock();
+        let repo = temp_repo("working-context-staged");
+
+        git(&repo, &["init"]);
+        fs::write(repo.join("note.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        git(&repo, &["add", "note.txt"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        fs::write(repo.join("note.txt"), "one\ntwo changed\nthree\nfour\nfive\n").unwrap();
+        git(&repo, &["add", "note.txt"]);
+
+        let diff = get_working_diff_impl(repo.to_str().unwrap(), "staged:note.txt").unwrap();
+        assert_eq!(diff.display_line_count, 5);
+
+        let lines =
+            get_working_diff_context_impl(repo.to_str().unwrap(), "staged:note.txt", 2, 2)
+                .unwrap();
+        assert_eq!(lines, vec!["two changed".to_string(), "three".to_string()]);
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn commit_diff_context_rejects_paths_outside_the_commit_diff() {
+        let _lock = env_lock();
+        let repo = temp_repo("commit-context-path-guard");
+
+        git(&repo, &["init"]);
+        fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        fs::write(repo.join("other.txt"), "untouched\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        fs::write(repo.join("tracked.txt"), "base\nnext\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "-m", "update tracked"]);
+        let commit_hash = head_hash(&repo);
+
+        let error = get_commit_diff_context_impl(
+            repo.to_str().unwrap(),
+            &commit_hash,
+            "other.txt",
+            Some("other.txt"),
+            1,
+            10,
+        )
+        .unwrap_err();
+        assert!(error.contains("Path is not part of commit diff"));
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn commit_diff_context_reads_commit_file_lines() {
+        let _lock = env_lock();
+        let repo = temp_repo("commit-context-lines");
+
+        git(&repo, &["init"]);
+        fs::write(repo.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        fs::write(repo.join("tracked.txt"), "one\ntwo changed\nthree\nfour\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "-m", "update tracked"]);
+        let commit_hash = head_hash(&repo);
+
+        let diff = get_commit_diff_impl(repo.to_str().unwrap(), &commit_hash).unwrap();
+        assert_eq!(diff[0].display_line_count, 4);
+
+        let lines = get_commit_diff_context_impl(
+            repo.to_str().unwrap(),
+            &commit_hash,
+            "tracked.txt",
+            Some("tracked.txt"),
+            2,
+            2,
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["two changed".to_string(), "three".to_string()]);
 
         let _ = fs::remove_dir_all(repo);
     }

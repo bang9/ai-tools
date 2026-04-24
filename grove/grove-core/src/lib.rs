@@ -283,6 +283,7 @@ pub struct FileDiff {
     pub old_path: Option<String>,
     pub status: String,
     pub hunks: Vec<DiffHunk>,
+    pub display_line_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -131,6 +131,7 @@ describe("refreshAll", () => {
       path: "foo.ts",
       status: "modified",
       hunks: [],
+      displayLineCount: 0,
     });
   });
 

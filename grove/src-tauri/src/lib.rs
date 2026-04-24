@@ -430,6 +430,46 @@ async fn get_commit_diff(worktree_path: String, hash: String) -> Result<Vec<File
 }
 
 #[tauri::command]
+async fn get_working_diff_context(
+    worktree_path: String,
+    path: String,
+    start_line: u32,
+    line_count: u32,
+) -> Result<Vec<String>, String> {
+    blocking(move || {
+        grove_core::git_diff::get_working_diff_context_impl(
+            &worktree_path,
+            &path,
+            start_line,
+            line_count,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_commit_diff_context(
+    worktree_path: String,
+    hash: String,
+    path: String,
+    old_path: Option<String>,
+    start_line: u32,
+    line_count: u32,
+) -> Result<Vec<String>, String> {
+    blocking(move || {
+        grove_core::git_diff::get_commit_diff_context_impl(
+            &worktree_path,
+            &hash,
+            &path,
+            old_path.as_deref(),
+            start_line,
+            line_count,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn stage_file(worktree_path: String, path: String) -> Result<(), String> {
     blocking(move || grove_core::git_diff::stage_file_impl(&worktree_path, &path)).await
 }
@@ -605,6 +645,8 @@ pub fn run() {
             get_commits,
             get_working_diff,
             get_commit_diff,
+            get_working_diff_context,
+            get_commit_diff_context,
             stage_file,
             stage_files,
             unstage_file,

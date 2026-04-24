@@ -515,7 +515,12 @@ function CommitChangesView({
         </div>
       </ResizablePanelGroup.Pane>
       <ResizablePanelGroup.Pane minSize={200}>
-        <DiffViewer diffs={store.currentDiff ? [store.currentDiff] : store.commitDiffs} isStaged={false} isCommitView />
+        <DiffViewer
+          diffs={store.currentDiff ? [store.currentDiff] : store.commitDiffs}
+          isStaged={false}
+          isCommitView
+          commitHash={store.selectedView === "changes" ? undefined : store.selectedView.hash}
+        />
       </ResizablePanelGroup.Pane>
     </ResizablePanelGroup>
   );

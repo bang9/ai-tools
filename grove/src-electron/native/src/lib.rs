@@ -378,6 +378,46 @@ pub async fn get_commit_diff(worktree_path: String, hash: String) -> Result<Stri
 }
 
 #[napi]
+pub async fn get_working_diff_context(
+    worktree_path: String,
+    path: String,
+    start_line: u32,
+    line_count: u32,
+) -> Result<String> {
+    blocking_json(move || {
+        grove_core::git_diff::get_working_diff_context_impl(
+            &worktree_path,
+            &path,
+            start_line,
+            line_count,
+        )
+    })
+    .await
+}
+
+#[napi]
+pub async fn get_commit_diff_context(
+    worktree_path: String,
+    hash: String,
+    path: String,
+    old_path: Option<String>,
+    start_line: u32,
+    line_count: u32,
+) -> Result<String> {
+    blocking_json(move || {
+        grove_core::git_diff::get_commit_diff_context_impl(
+            &worktree_path,
+            &hash,
+            &path,
+            old_path.as_deref(),
+            start_line,
+            line_count,
+        )
+    })
+    .await
+}
+
+#[napi]
 pub async fn stage_file(worktree_path: String, path: String) -> Result<()> {
     blocking_core(move || grove_core::git_diff::stage_file_impl(&worktree_path, &path)).await
 }

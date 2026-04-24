@@ -39,4 +39,5 @@ export interface FileDiff {
   oldPath?: string;
   status: FileStatus["status"];
   hunks: DiffHunk[];
+  displayLineCount: number;
 }

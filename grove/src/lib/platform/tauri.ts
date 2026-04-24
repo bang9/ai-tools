@@ -418,6 +418,38 @@ export async function getCommitDiff(
   return platform.invoke<FileDiff[]>("get_commit_diff", { worktreePath, hash });
 }
 
+export async function getWorkingDiffContext(
+  worktreePath: string,
+  path: string,
+  startLine: number,
+  lineCount: number,
+): Promise<string[]> {
+  return platform.invoke<string[]>("get_working_diff_context", {
+    worktreePath,
+    path,
+    startLine,
+    lineCount,
+  });
+}
+
+export async function getCommitDiffContext(
+  worktreePath: string,
+  hash: string,
+  path: string,
+  oldPath: string | null,
+  startLine: number,
+  lineCount: number,
+): Promise<string[]> {
+  return platform.invoke<string[]>("get_commit_diff_context", {
+    worktreePath,
+    hash,
+    path,
+    oldPath,
+    startLine,
+    lineCount,
+  });
+}
+
 export async function stageFile(
   worktreePath: string,
   path: string,

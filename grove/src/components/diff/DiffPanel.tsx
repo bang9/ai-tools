@@ -65,6 +65,7 @@ export default function DiffPanel() {
           diffs={viewerDiffs}
           isStaged={false}
           isCommitView={store.selectedView !== "changes"}
+          commitHash={store.selectedView === "changes" ? undefined : store.selectedView.hash}
         />
       </ResizablePanelGroup.Pane>
     </ResizablePanelGroup>
