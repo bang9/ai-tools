@@ -113,4 +113,29 @@ describe("context-loading", () => {
       loadingKey: "loadingTail",
     });
   });
+
+  it("continues planning loads after an initial middle expansion", () => {
+    const middlePlan = planGapMiddleLoad(sampleGap, EMPTY_GAP_STATE, 5);
+    expect(middlePlan).not.toBeNull();
+
+    let state = mergeGapLines(
+      EMPTY_GAP_STATE,
+      sampleGap,
+      "head",
+      createLoadedContextLines(sampleGap, middlePlan!.head!.startOffset, ["a", "b", "c", "d", "e"]),
+    );
+    state = mergeGapLines(
+      state,
+      sampleGap,
+      "tail",
+      createLoadedContextLines(sampleGap, middlePlan!.tail!.startOffset, ["h", "i", "j", "k", "l"]),
+    );
+
+    expect(getGapRemainingCount(sampleGap, state)).toBe(2);
+    expect(planGapLoad(sampleGap, state, "head", 5)).toEqual({
+      startOffset: 5,
+      requestedCount: 2,
+      loadingKey: "loadingHead",
+    });
+  });
 });

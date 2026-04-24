@@ -20,8 +20,6 @@ import {
   planGapMiddleLoad,
   planGapLoad,
   type GapLoadDirection,
-  type GapMiddleLoadPlan,
-  type GapLoadPlan,
   type GapLoadState,
   type LoadedContextLine,
 } from "./context-loading";
@@ -157,6 +155,7 @@ function FileDiffSection({
   const { toast } = useToast();
   const gapSlots = useMemo(() => buildContextGapSlots(diff), [diff]);
   const [gapStates, setGapStates] = useState<Record<number, GapLoadState>>({});
+  const gapStatesRef = useRef<Record<number, GapLoadState>>({});
   const [collapsed, setCollapsed] = useState(false);
   const gapStateIdentity = useMemo(
     () =>
@@ -181,8 +180,15 @@ function FileDiffSection({
       return;
     }
     gapStateIdentityRef.current = gapStateIdentity;
+    gapStatesRef.current = {};
     setGapStates({});
   }, [gapStateIdentity]);
+
+  const updateGapStates = useCallback((updater: (prev: Record<number, GapLoadState>) => Record<number, GapLoadState>) => {
+    const next = updater(gapStatesRef.current);
+    gapStatesRef.current = next;
+    setGapStates(next);
+  }, []);
 
   const fetchGapLines = useCallback(
     (startLine: number, count: number) => {
@@ -208,29 +214,23 @@ function FileDiffSection({
         return;
       }
 
-      const planRef: { current: GapLoadPlan | null } = { current: null };
-      setGapStates((prev) => {
-        const currentState = getGapState(prev, gap.slot);
-        planRef.current = planGapLoad(gap, currentState, direction, CONTEXT_LOAD_STEP);
-        if (!planRef.current) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [gap.slot]: markGapLoading(currentState, planRef.current),
-        };
-      });
-
-      const requestPlan = planRef.current;
+      const currentState = getGapState(gapStatesRef.current, gap.slot);
+      const requestPlan = planGapLoad(gap, currentState, direction, CONTEXT_LOAD_STEP);
       if (!requestPlan) {
         return;
       }
+
+      updateGapStates((prev) => ({
+        ...prev,
+        [gap.slot]: markGapLoading(getGapState(prev, gap.slot), requestPlan),
+      }));
+
       const startLine = gap.displayStart + requestPlan.startOffset;
       const loaded = await runCommandSafely(() => fetchGapLines(startLine, requestPlan.requestedCount), {
         errorToast: "Failed to load diff context",
       });
 
-      setGapStates((prev) => {
+      updateGapStates((prev) => {
         const nextState = getGapState(prev, gap.slot);
         if (!loaded) {
           return {
@@ -250,7 +250,7 @@ function FileDiffSection({
         };
       });
     },
-    [fetchGapLines, worktreePath],
+    [fetchGapLines, updateGapStates, worktreePath],
   );
 
   const loadGapContextAround = useCallback(
@@ -259,28 +259,20 @@ function FileDiffSection({
         return;
       }
 
-      const planRef: { current: GapMiddleLoadPlan | null } = { current: null };
-      setGapStates((prev) => {
-        const currentState = getGapState(prev, gap.slot);
-        planRef.current = planGapMiddleLoad(gap, currentState, CONTEXT_LOAD_STEP);
-        if (!planRef.current) {
-          return prev;
-        }
-
-        return {
-          ...prev,
-          [gap.slot]: {
-            ...currentState,
-            loadingHead: Boolean(planRef.current.head),
-            loadingTail: Boolean(planRef.current.tail),
-          },
-        };
-      });
-
-      const requestPlan = planRef.current;
+      const currentState = getGapState(gapStatesRef.current, gap.slot);
+      const requestPlan = planGapMiddleLoad(gap, currentState, CONTEXT_LOAD_STEP);
       if (!requestPlan) {
         return;
       }
+
+      updateGapStates((prev) => ({
+        ...prev,
+        [gap.slot]: {
+          ...getGapState(prev, gap.slot),
+          loadingHead: Boolean(requestPlan.head),
+          loadingTail: Boolean(requestPlan.tail),
+        },
+      }));
 
       const [loadedHead, loadedTail] = await Promise.all([
         requestPlan.head
@@ -297,7 +289,7 @@ function FileDiffSection({
           : Promise.resolve(null),
       ]);
 
-      setGapStates((prev) => {
+      updateGapStates((prev) => {
         const currentState = getGapState(prev, gap.slot);
         let nextState = currentState;
 
@@ -325,7 +317,7 @@ function FileDiffSection({
         };
       });
     },
-    [fetchGapLines, worktreePath],
+    [fetchGapLines, updateGapStates, worktreePath],
   );
 
   const added = diff.hunks.reduce((s, h) => s + h.lines.filter((l) => l.type === "add").length, 0);
