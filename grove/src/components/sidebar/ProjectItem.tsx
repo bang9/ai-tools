@@ -83,8 +83,9 @@ const ProjectItem = memo(function ProjectItem({
 
   const toggleCollapse = useProjectStore((s) => s.toggleProjectCollapse);
   const expanded = !project.collapsed;
-  const [adding, setAdding] = useState(false);
-  const [addingLoading, setAddingLoading] = useState(false);
+  const [addingState, setAddingState] = useState<"closed" | "open" | "creating">("closed");
+  const adding = addingState !== "closed";
+  const addingLoading = addingState === "creating";
   const [worktreeName, setWorktreeName] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -98,16 +99,14 @@ const ProjectItem = memo(function ProjectItem({
     e.preventDefault();
     const name = worktreeName.trim();
     if (!name) return;
-    setAddingLoading(true);
+    setAddingState("creating");
     try {
       await addWorktree(project.id, name);
       toast("success", `Worktree '${name}' created`);
       setWorktreeName("");
-      setAdding(false);
+      setAddingState("closed");
     } catch {
-      // Toasts are handled by the command layer.
-    } finally {
-      setAddingLoading(false);
+      setAddingState("open");
     }
   };
 
@@ -315,10 +314,10 @@ const ProjectItem = memo(function ProjectItem({
                     autoFocus
                     disabled={addingLoading}
                     onBlur={() => {
-                      if (!worktreeName.trim() && !addingLoading) setAdding(false);
+                      if (!worktreeName.trim() && !addingLoading) setAddingState("closed");
                     }}
                     onKeyDown={(e) => {
-                      if (e.key === "Escape" && !addingLoading) setAdding(false);
+                      if (e.key === "Escape" && !addingLoading) setAddingState("closed");
                     }}
                   />
                   {addingLoading && (
@@ -334,7 +333,7 @@ const ProjectItem = memo(function ProjectItem({
                   "flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] transition-colors",
                   "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
                 )}
-                onClick={() => setAdding(true)}
+                onClick={() => setAddingState("open")}
               >
                 <span>Add worktree</span>
               </button>

@@ -50,7 +50,7 @@ function CreateStackedWorktreeDialog({
       await addStackedWorktree(projectId, parentWorktree.name, nextName);
       toast("success", `Stacked worktree '${nextName}' created`);
       close();
-    } catch {
+    } finally {
       setCreating(false);
     }
   };
