@@ -256,13 +256,13 @@ function GroupGutterView({
             >
               <span
                 className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
-                style={{ color: "rgba(255, 255, 255, 0.15)" }}
+                style={{ color: "var(--color-text-tertiary)" }}
               >
                 {line.line.oldLineNumber ?? ""}
               </span>
               <span
                 className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
-                style={{ color: "rgba(255, 255, 255, 0.15)" }}
+                style={{ color: "var(--color-text-tertiary)" }}
               >
                 {line.line.newLineNumber ?? ""}
               </span>
