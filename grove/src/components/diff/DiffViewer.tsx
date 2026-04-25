@@ -98,7 +98,7 @@ export default function DiffViewer({ diffs, isStaged, isCommitView, commitHash }
   return (
     <div
       ref={containerRef}
-      className={cn("h-full overflow-y-auto outline-none")}
+      className={cn("h-full overflow-y-auto overscroll-none outline-none")}
       tabIndex={0}
       onKeyDown={handleKeyDown}
       onClick={(e) => {
@@ -650,7 +650,7 @@ function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
           </div>
         ))}
       </div>
-      <div className={cn("flex-1 overflow-x-auto overflow-y-hidden diff-line-content")}>
+      <div className={cn("flex-1 overflow-x-auto overflow-y-hidden overscroll-none diff-line-content")}>
         <div className={cn("min-w-full w-max")} style={{ backgroundColor: CONTEXT_ROW_BACKGROUND }}>
           {lines.map((line) => (
             <div
