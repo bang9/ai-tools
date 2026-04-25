@@ -618,7 +618,10 @@ function ContextExpandRow({
 
 function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
   return (
-    <div className="flex" style={{ backgroundColor: CONTEXT_ROW_BACKGROUND }}>
+    <div
+      className="flex"
+      style={{ backgroundColor: CONTEXT_ROW_BACKGROUND, borderLeft: CONTEXT_GUIDE_BORDER }}
+    >
       <div className="shrink-0" style={{ borderLeft: CONTEXT_GUIDE_BORDER }}>
         {lines.map((line) => (
           <div
