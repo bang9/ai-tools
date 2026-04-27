@@ -331,6 +331,39 @@ describe("useProjectStore", () => {
     expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([newWorktree]);
   });
 
+  it("does not duplicate a worktree when sync applies it before addWorktree resolves", async () => {
+    useProjectStore.setState({
+      projects: [makeProject([])],
+      cloningProjects: [],
+      selectedWorktree: null,
+      loading: false,
+    });
+
+    const newWorktree = makeWorktree("feature-a");
+    const addDeferred = deferred<Worktree>();
+    vi.mocked(tauri.addWorktree).mockReturnValueOnce(addDeferred.promise);
+    vi.mocked(tauri.listProjects).mockResolvedValueOnce([
+      makeProject([newWorktree]),
+    ]);
+
+    const addPromise = useProjectStore
+      .getState()
+      .addWorktree("project-1", "feature-a");
+
+    await useProjectStore.getState().syncProjects();
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
+      newWorktree,
+    ]);
+
+    addDeferred.resolve(newWorktree);
+    await addPromise;
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
+      newWorktree,
+    ]);
+  });
+
   it("adds a stacked worktree to the matching project", async () => {
     useProjectStore.setState({
       projects: [makeProject([makeWorktree("feature-a")])],
@@ -350,6 +383,44 @@ describe("useProjectStore", () => {
     expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
       makeWorktree("feature-a"),
       stackedWorktree,
+    ]);
+  });
+
+  it("does not duplicate a stacked worktree when sync applies it before addStackedWorktree resolves", async () => {
+    const parent = makeWorktree("chore/align-types");
+    const stackedChild = makeWorktree("chore/align-types/fix-token");
+    stackedChild.stackParentName = "chore/align-types";
+
+    useProjectStore.setState({
+      projects: [makeProject([parent])],
+      cloningProjects: [],
+      selectedWorktree: null,
+      loading: false,
+    });
+
+    const addDeferred = deferred<Worktree>();
+    vi.mocked(tauri.addStackedWorktree).mockReturnValueOnce(addDeferred.promise);
+    vi.mocked(tauri.listProjects).mockResolvedValueOnce([
+      makeProject([parent, stackedChild]),
+    ]);
+
+    const addPromise = useProjectStore
+      .getState()
+      .addStackedWorktree("project-1", parent.name, stackedChild.name);
+
+    await useProjectStore.getState().syncProjects();
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
+      parent,
+      stackedChild,
+    ]);
+
+    addDeferred.resolve(stackedChild);
+    await addPromise;
+
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
+      parent,
+      stackedChild,
     ]);
   });
 

@@ -100,6 +100,16 @@ function reconcileSelectedWorktree(
   return null;
 }
 
+function upsertWorktree(worktrees: Worktree[], worktree: Worktree): Worktree[] {
+  const index = worktrees.findIndex((existing) => existing.name === worktree.name);
+  if (index === -1) {
+    return [...worktrees, worktree];
+  }
+  const next = worktrees.slice();
+  next[index] = worktree;
+  return next;
+}
+
 function reorderWorktrees(worktrees: Worktree[], order: string[]): Worktree[] {
   const ordered: Worktree[] = [];
   const remaining = [...worktrees];
@@ -373,7 +383,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId
-          ? { ...p, worktrees: [...p.worktrees, worktree] }
+          ? { ...p, worktrees: upsertWorktree(p.worktrees, worktree) }
           : p,
       ),
     }));
@@ -396,7 +406,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId
-          ? { ...p, worktrees: [...p.worktrees, worktree] }
+          ? { ...p, worktrees: upsertWorktree(p.worktrees, worktree) }
           : p,
       ),
     }));

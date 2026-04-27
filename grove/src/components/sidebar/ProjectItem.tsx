@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import {
   X,
   GitBranch,
@@ -106,9 +106,19 @@ const ProjectItem = memo(function ProjectItem({
       setWorktreeName("");
       setAddingState("closed");
     } catch {
-      setAddingState("open");
+      setAddingState((prev) => (prev === "creating" ? "open" : prev));
     }
   };
+
+  useEffect(() => {
+    if (addingState !== "creating") return;
+    const targetName = worktreeName.trim();
+    if (!targetName) return;
+    if (project.worktrees.some((w) => w.name === targetName)) {
+      setAddingState("closed");
+      setWorktreeName("");
+    }
+  }, [addingState, worktreeName, project.worktrees]);
 
   const displayName = getProjectDisplayName(project, { showOrgPrefix });
   const githubRepoUrl = getGitHubRepoUrl(project.url);
