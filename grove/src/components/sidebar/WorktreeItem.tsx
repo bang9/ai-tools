@@ -47,8 +47,11 @@ function CreateStackedWorktreeDialog({
 
     setCreating(true);
     try {
-      await addStackedWorktree(projectId, parentWorktree.name, nextName);
-      toast("success", `Stacked worktree '${nextName}' created`);
+      const worktree = await addStackedWorktree(projectId, parentWorktree.name, nextName);
+      toast(
+        worktree.warning ? "warning" : "success",
+        worktree.warning ?? `Stacked worktree '${nextName}' created`,
+      );
       close();
     } finally {
       setCreating(false);

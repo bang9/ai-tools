@@ -901,6 +901,7 @@ fn make_worktree(path_str: &str, branch: &str, project_base: &Path) -> Worktree 
         path: display_path,
         branch: branch.to_string(),
         stack_parent_name: None,
+        warning: None,
     }
 }
 
@@ -1495,6 +1496,7 @@ pub fn add_worktree_impl(project_id: &str, name: &str) -> Result<Worktree, Strin
         path: worktree_path_str,
         branch: name.to_string(),
         stack_parent_name: None,
+        warning: None,
     })
 }
 
@@ -1572,6 +1574,27 @@ fn cleanup_failed_stacked_worktree_add(source: &Path, worktree_path: &Path, bran
     let _ = run_git(source, &["branch", "-D", branch_name]);
 }
 
+fn git_is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool, String> {
+    let output = git_command()
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("Failed to run git merge-base: {e}"))?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+
+    Err(format!(
+        "git merge-base failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
 pub fn add_stacked_worktree_impl(
     project_id: &str,
     parent_name: &str,
@@ -1617,25 +1640,33 @@ pub fn add_stacked_worktree_impl(
         ));
     }
 
-    let remote_branches = remote_branch_names(source)?;
-    if remote_branches.iter().any(|branch| branch == name) {
-        return Err(format!(
-            "Cannot create stacked worktree '{name}' because branch '{name}' already exists on origin. Use a new branch name for stacked worktrees."
-        ));
-    }
-
     let parent_head = run_git_output(&parent_worktree_path, &["rev-parse", "HEAD"])?;
+    let remote_branch = format!("origin/{name}");
+    let remote_branches = remote_branch_names(source)?;
+    let remote_exists = remote_branches.iter().any(|branch| branch == name);
+    let stacked_parent_warning = if remote_exists {
+        match git_is_ancestor(source, &parent_head, &remote_branch) {
+            Ok(true) => None,
+            Ok(false) => Some(format!(
+                "Created stacked worktree from {remote_branch}, but it is not a descendant of parent '{parent_name}'."
+            )),
+            Err(error) => Some(format!(
+                "Created stacked worktree from {remote_branch}, but Grove could not verify its parent ancestry: {error}"
+            )),
+        }
+    } else {
+        None
+    };
+    let base_ref = if remote_exists {
+        remote_branch.as_str()
+    } else {
+        parent_head.as_str()
+    };
+
     save_stacked_parent_metadata(project_id, name, parent_name)?;
     if let Err(error) = run_worktree_add(
         source,
-        &[
-            "worktree",
-            "add",
-            &worktree_path_str,
-            "-b",
-            name,
-            &parent_head,
-        ],
+        &["worktree", "add", &worktree_path_str, "-b", name, base_ref],
         name,
     ) {
         rollback_stacked_parent_metadata(project_id, name, parent_name);
@@ -1658,6 +1689,7 @@ pub fn add_stacked_worktree_impl(
         path: worktree_path_str,
         branch: name.to_string(),
         stack_parent_name: Some(parent_name.to_string()),
+        warning: stacked_parent_warning,
     })
 }
 
@@ -2638,12 +2670,14 @@ mod tests {
             path: source_path.to_string(),
             branch: String::new(),
             stack_parent_name: None,
+            warning: None,
         };
         let user_worktree_named_source = Worktree {
             name: SOURCE_WORKTREE_NAME.to_string(),
             path: "/tmp/grove/worktrees/source".to_string(),
             branch: SOURCE_WORKTREE_NAME.to_string(),
             stack_parent_name: None,
+            warning: None,
         };
 
         let visible = visible_worktrees(
@@ -3225,6 +3259,176 @@ mod tests {
         let listed = list_worktrees_impl("project-1").unwrap();
         assert_eq!(
             listed
+                .iter()
+                .find(|worktree| worktree.name == "fix-token")
+                .and_then(|worktree| worktree.stack_parent_name.as_deref()),
+            Some("feature-1")
+        );
+    }
+
+    #[test]
+    fn add_stacked_worktree_checks_out_existing_origin_branch() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir
+            .join("github.com")
+            .join("bang9")
+            .join("grove")
+            .join("source");
+        let remotes_dir = home.root.join("remotes");
+        let (remote_dir, seed_dir) =
+            create_bare_remote(&remotes_dir, "grove-stacked-origin", "main");
+
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "main",
+            "README.md",
+            "# Grove\n",
+            "Initial commit",
+        );
+
+        fs::create_dir_all(source_dir.parent().unwrap()).unwrap();
+        let remote_dir_str = remote_dir.to_string_lossy().to_string();
+        let source_dir_str = source_dir.to_string_lossy().to_string();
+        run_git_ok(
+            source_dir.parent().unwrap(),
+            &["clone", &remote_dir_str, &source_dir_str],
+        );
+        configure_git_identity(&source_dir);
+
+        save_test_config(
+            &base_dir,
+            vec![project_entry(
+                "project-1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+        );
+
+        let parent = add_worktree_impl("project-1", "feature-1").unwrap();
+        let parent_path = PathBuf::from(&parent.path);
+        fs::write(parent_path.join("README.md"), "# Parent branch\n").unwrap();
+        run_git_ok(&parent_path, &["add", "README.md"]);
+        run_git_ok(&parent_path, &["commit", "-m", "Parent branch commit"]);
+        run_git_ok(&parent_path, &["push", "-u", "origin", "feature-1"]);
+        let parent_head = run_git_output(&parent_path, &["rev-parse", "HEAD"]).unwrap();
+
+        run_git_ok(&seed_dir, &["fetch", "origin"]);
+        run_git_ok(
+            &seed_dir,
+            &["checkout", "-B", "fix-token", "origin/feature-1"],
+        );
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "fix-token",
+            "token.txt",
+            "remote child\n",
+            "Remote child commit",
+        );
+
+        let child = add_stacked_worktree_impl("project-1", "feature-1", "fix-token").unwrap();
+        let child_path = PathBuf::from(&child.path);
+        let child_head = run_git_output(&child_path, &["rev-parse", "HEAD"]).unwrap();
+        let origin_child_head =
+            run_git_output(&source_dir, &["rev-parse", "origin/fix-token"]).unwrap();
+
+        assert_eq!(child.stack_parent_name.as_deref(), Some("feature-1"));
+        assert_eq!(child.warning, None);
+        assert_eq!(child_head, origin_child_head);
+        assert_ne!(child_head, parent_head);
+        assert_eq!(
+            run_git_output(&child_path, &["branch", "--show-current"]).unwrap(),
+            "fix-token"
+        );
+        assert_eq!(
+            list_worktrees_impl("project-1")
+                .unwrap()
+                .iter()
+                .find(|worktree| worktree.name == "fix-token")
+                .and_then(|worktree| worktree.stack_parent_name.as_deref()),
+            Some("feature-1")
+        );
+    }
+
+    #[test]
+    fn add_stacked_worktree_warns_when_origin_branch_is_not_parent_descendant() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir
+            .join("github.com")
+            .join("bang9")
+            .join("grove")
+            .join("source");
+        let remotes_dir = home.root.join("remotes");
+        let (remote_dir, seed_dir) =
+            create_bare_remote(&remotes_dir, "grove-stacked-origin-warning", "main");
+
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "main",
+            "README.md",
+            "# Grove\n",
+            "Initial commit",
+        );
+
+        fs::create_dir_all(source_dir.parent().unwrap()).unwrap();
+        let remote_dir_str = remote_dir.to_string_lossy().to_string();
+        let source_dir_str = source_dir.to_string_lossy().to_string();
+        run_git_ok(
+            source_dir.parent().unwrap(),
+            &["clone", &remote_dir_str, &source_dir_str],
+        );
+        configure_git_identity(&source_dir);
+
+        save_test_config(
+            &base_dir,
+            vec![project_entry(
+                "project-1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+        );
+
+        let parent = add_worktree_impl("project-1", "feature-1").unwrap();
+        let parent_path = PathBuf::from(&parent.path);
+        fs::write(parent_path.join("README.md"), "# Parent branch\n").unwrap();
+        run_git_ok(&parent_path, &["add", "README.md"]);
+        run_git_ok(&parent_path, &["commit", "-m", "Parent branch commit"]);
+        let parent_head = run_git_output(&parent_path, &["rev-parse", "HEAD"]).unwrap();
+
+        run_git_ok(&seed_dir, &["checkout", "-B", "fix-token", "main"]);
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "fix-token",
+            "token.txt",
+            "remote child\n",
+            "Remote child commit",
+        );
+
+        let child = add_stacked_worktree_impl("project-1", "feature-1", "fix-token").unwrap();
+        let child_path = PathBuf::from(&child.path);
+        let child_head = run_git_output(&child_path, &["rev-parse", "HEAD"]).unwrap();
+        let origin_child_head =
+            run_git_output(&source_dir, &["rev-parse", "origin/fix-token"]).unwrap();
+
+        assert_eq!(child.stack_parent_name.as_deref(), Some("feature-1"));
+        assert_eq!(
+            child.warning.as_deref(),
+            Some(
+                "Created stacked worktree from origin/fix-token, but it is not a descendant of parent 'feature-1'."
+            )
+        );
+        assert_eq!(child_head, origin_child_head);
+        assert_ne!(child_head, parent_head);
+        assert_eq!(
+            list_worktrees_impl("project-1")
+                .unwrap()
                 .iter()
                 .find(|worktree| worktree.name == "fix-token")
                 .and_then(|worktree| worktree.stack_parent_name.as_deref()),
