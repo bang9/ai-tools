@@ -523,3 +523,52 @@ pub async fn get_behind_count(worktree_path: String) -> Result<String> {
 pub async fn merge_default_branch(worktree_path: String) -> Result<()> {
     blocking_core(move || grove_core::git_diff::merge_default_branch_impl(&worktree_path)).await
 }
+
+#[napi]
+pub async fn list_missions() -> Result<String> {
+    blocking_json(|| Ok(grove_core::mission::load_missions().missions)).await
+}
+
+#[napi]
+pub async fn create_mission(name: String) -> Result<String> {
+    blocking_json(move || grove_core::mission::create_mission(&name)).await
+}
+
+#[napi]
+pub async fn delete_mission(id: String) -> Result<()> {
+    blocking_core(move || grove_core::mission::delete_mission(&id)).await
+}
+
+#[napi]
+pub async fn set_mission_collapsed(mission_id: String, collapsed: bool) -> Result<()> {
+    blocking_core(move || grove_core::mission::set_mission_collapsed(&mission_id, collapsed)).await
+}
+
+#[napi]
+pub async fn add_project_to_mission(mission_id: String, project_id: String) -> Result<String> {
+    blocking_json(move || grove_core::mission::add_project_to_mission(&mission_id, &project_id))
+        .await
+}
+
+#[napi]
+pub async fn remove_project_from_mission(mission_id: String, project_id: String) -> Result<()> {
+    blocking_core(move || {
+        grove_core::mission::remove_project_from_mission(&mission_id, &project_id)
+    })
+    .await
+}
+
+#[napi]
+pub async fn list_notes() -> Result<String> {
+    blocking_json(|| Ok(grove_core::note::load_notes()?.notes)).await
+}
+
+#[napi]
+pub async fn save_note(key: String, content: String) -> Result<()> {
+    blocking_core(move || grove_core::note::save_note(&key, &content)).await
+}
+
+#[napi]
+pub async fn delete_note(key: String) -> Result<()> {
+    blocking_core(move || grove_core::note::delete_note(&key)).await
+}

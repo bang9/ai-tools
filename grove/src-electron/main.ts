@@ -38,8 +38,13 @@ const JSON_RESPONSE_COMMANDS = new Set([
   "get_working_diff_context",
   "get_commit_diff_context",
   "get_behind_count",
+  "get_remote_branches",
   "get_env_sync",
   "list_gitignore_patterns",
+  "list_missions",
+  "create_mission",
+  "add_project_to_mission",
+  "list_notes",
 ]);
 
 interface PtyOutputPayload {

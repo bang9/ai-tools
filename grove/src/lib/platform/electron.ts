@@ -12,6 +12,8 @@ import type {
   FileStatus,
   CommitInfo,
   FileDiff,
+  Mission,
+  MissionProject,
   ProjectEnvSyncConfig,
   StartCloneResult,
 } from "../../types";
@@ -592,6 +594,44 @@ export async function mergeDefaultBranch(
   worktreePath: string,
 ): Promise<void> {
   return platform.invoke("merge_default_branch", { worktreePath });
+}
+
+// === MISSION COMMANDS (W5) ===
+
+export async function listMissions(): Promise<Mission[]> {
+  return platform.invoke<Mission[]>("list_missions");
+}
+
+export async function createMission(name: string): Promise<Mission> {
+  return platform.invoke<Mission>("create_mission", { name });
+}
+
+export async function deleteMission(id: string): Promise<void> {
+  return platform.invoke("delete_mission", { id });
+}
+
+export async function setMissionCollapsed(missionId: string, collapsed: boolean): Promise<void> {
+  return platform.invoke("set_mission_collapsed", { missionId, collapsed });
+}
+
+export async function addProjectToMission(
+  missionId: string,
+  projectId: string,
+): Promise<MissionProject> {
+  return platform.invoke<MissionProject>("add_project_to_mission", {
+    missionId,
+    projectId,
+  });
+}
+
+export async function removeProjectFromMission(
+  missionId: string,
+  projectId: string,
+): Promise<void> {
+  return platform.invoke("remove_project_from_mission", {
+    missionId,
+    projectId,
+  });
 }
 
 // === NOTE COMMANDS ===
