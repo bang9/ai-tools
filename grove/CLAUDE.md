@@ -24,10 +24,11 @@ cd grove
 pnpm install
 pnpm lint              # ESLint for src/**/*.{ts,tsx}
 pnpm test              # Vitest
-pnpm tauri dev         # Dev server + Tauri window (default)
-pnpm tauri build       # Production build (Tauri)
-GROVE_TARGET=electron pnpm electron:dev   # Electron dev
-GROVE_TARGET=electron pnpm electron:build # Electron production build
+pnpm test:core         # grove-core Rust tests
+pnpm dev:tauri         # Dev server + Tauri window (default)
+pnpm build:tauri       # Production build (Tauri)
+pnpm dev:electron      # Dev server + Electron window
+pnpm build:electron    # Production build (Electron)
 ```
 
 ## Platform Abstraction
@@ -43,7 +44,7 @@ src/lib/platform/
 ```
 
 - `@platform` Vite alias resolves to `src/lib/platform/${GROVE_TARGET}.ts` at build time (default: `tauri`)
-- Both files export the same `platform` object + identical command wrappers (40+ commands)
+- Both files export the same `platform` object + matching command wrappers
 - Platform-specific code (drag region props, error sanitization) lives in each file, not shared
 
 ## Structure
@@ -84,10 +85,13 @@ grove-core/src/            # Shared Rust backend (used by both Tauri and Electro
 ├── config.rs              # App config + terminal layout persistence
 ├── git_project.rs         # Clone, worktree, project CRUD
 ├── git_diff.rs            # Diff, stage/unstage/discard (file/hunk/line)
+├── ide.rs                 # IDE and Git GUI launcher resolution
+├── note.rs                # Sidebar note persistence
 ├── pty.rs                 # PTY spawn, read, write, resize, close
 ├── terminal_theme.rs      # Terminal.app color auto-detection (AppleScript)
 ├── mission.rs             # Mission CRUD
 ├── tool_hooks.rs          # Claude/Codex hook execution
+├── url_open.rs            # open-wrapper Unix socket listener
 ├── worktree_lifecycle.rs  # Worktree init/cleanup
 ├── process_env.rs         # Environment variable diagnostics
 └── logger.rs              # Structured logging
@@ -99,7 +103,9 @@ grove-core/src/            # Shared Rust backend (used by both Tauri and Electro
 - `~/.grove/terminal-layouts.json` — split tree structure + size ratios per worktree
 - `~/.grove/terminal-session-snapshots.json` — terminal scrollback/CWD snapshots per pane
 - `~/.grove/panel-layouts.json` — main panel and global terminal ratios
+- `~/.grove/missions.json` — mission metadata and project membership
 - `~/.grove/notes.json` — sidebar notes keyed by source, worktree, and mission ids
+- `~/.grove/missions/<id>/` — mission worktree roots
 - `<baseDir>/<host>/<org>/<repo>/source/` — SOT clone synced to the remote default branch or configured base branch
 - `<baseDir>/<host>/<org>/<repo>/worktrees/<name>/` — git worktrees
 
@@ -141,16 +147,18 @@ className={cn("flex", {
 })}
 ```
 
-### UI primitives — no raw `<button>` / `<input>`
+### UI primitives
 
 ```tsx
 import { Button } from "../ui/button";
 <Button variant="default" size="sm">Save</Button>
-// Variants: default, secondary, ghost, outline, destructive
-// Sizes: sm, md, lg, icon
+// Variants: default, secondary, ghost, outline, destructive, link
+// Sizes: default, sm, lg, icon, icon-sm, icon-lg
 ```
 
-Available: `Button`, `Input`, `Badge`, `Dialog`, `Toast` (via `useToast()`)
+Prefer shared primitives for app actions and standard form fields. Raw semantic controls are still used in focused UI internals such as tab buttons, segmented controls, color/range inputs, and Radix wrapper composition when the local markup needs custom behavior.
+
+Available: `Button`, `IconButton`, `Input`, `Textarea`, `Badge`, `Dialog`, `Toast`/`Toaster`, `Popover`, `Tooltip`, `ContextMenu`, `Separator`, `Skeleton`, `Spinner`, `ResizablePanelGroup`.
 
 ### Layout sizes — 0-1 ratios, not pixels
 

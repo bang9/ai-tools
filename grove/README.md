@@ -1,6 +1,6 @@
 # Grove
 
-Git project manager with split terminal and diff viewer for macOS. Each project gets its own source clone and worktrees, including nested stacked worktrees, and each worktree gets persistent split terminal sessions. Tracks Claude Code and Codex AI session status in real-time with visual indicators. Supports project categories, mission grouping, notes, and line-level staging, unstaging, and discarding.
+Dual-platform macOS desktop app (Tauri v2 by default, Electron optional) for managing git projects with split terminals and a diff viewer. Each project gets its own source clone and worktrees, including nested stacked worktrees, and each worktree gets persistent split terminal sessions. Tracks Claude Code and Codex AI session status in real time with visual indicators. Supports project categories, mission grouping, notes, and line-level staging, unstaging, and discarding.
 
 ## Features
 
@@ -8,8 +8,8 @@ Git project manager with split terminal and diff viewer for macOS. Each project 
 - **Project categories** — Assign projects to custom categories and filter the sidebar by one or more categories
 - **Missions** — Group projects into missions for cross-repo workflows
 - **Split terminal** — Horizontal/vertical splits with persistent layouts per worktree
-- **Terminal broadcast** — Mirror terminal output across panes, Picture-in-Picture floating terminal
-- **Tabbed panels** — Switch between changes, diff, and terminal views per worktree
+- **Terminal broadcast** — Move a live terminal runtime into a Global Terminal mirror tab or Picture-in-Picture overlay
+- **Tabbed panels** — Switch between Terminal, Changes, and optional Browser tabs per worktree
 - **Diff viewer** — Commit history, file diffs, hunk/line-level stage/unstage/discard
 - **Context actions** — Open sidebar items in Finder, Global Terminal, IDEs, Git GUIs, or attach notes
 - **AI status tracking** — Real-time running/idle/attention indicators for Claude Code and Codex sessions
@@ -35,7 +35,9 @@ App metadata lives under `~/.grove/`. Project source clones and worktrees live u
 ├── terminal-layouts.json                    # Split tree per worktree
 ├── terminal-session-snapshots.json          # Scrollback/CWD per pane
 ├── panel-layouts.json                       # 3-panel size ratios
+├── missions.json                            # Mission metadata
 ├── notes.json                               # Sidebar notes
+├── missions/<id>/                           # Mission worktree roots
 └── <host>/<org>/<repo>/
     ├── source/                              # Source clone (remote default/base branch)
     └── worktrees/<name>/                    # Git worktrees
@@ -43,7 +45,7 @@ App metadata lives under `~/.grove/`. Project source clones and worktrees live u
 
 ## Stack
 
-- **Backend**: Rust (Tauri v2, portable-pty, git2, plist)
+- **Backend**: Rust (`grove-core`, Tauri v2 commands, Electron NAPI addon, portable-pty, git2, plist)
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4
 - **UI**: allotment (split panes), xterm.js (terminal), Zustand (state)
 
@@ -61,7 +63,11 @@ bash install-local.sh all      # Both
 ```bash
 cd grove
 pnpm install
-pnpm tauri dev         # Dev server + Tauri window
+pnpm dev:tauri         # Dev server + Tauri window
+pnpm dev:electron      # Dev server + Electron window
 pnpm lint              # ESLint
 pnpm test              # Vitest
+pnpm test:core         # grove-core Rust tests
+pnpm build:tauri       # Production build (Tauri)
+pnpm build:electron    # Production build (Electron)
 ```
