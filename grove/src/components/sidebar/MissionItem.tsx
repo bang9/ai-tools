@@ -17,6 +17,8 @@ import { cn } from "../../lib/cn";
 import { overlay } from "../../lib/overlay";
 import SidebarContextMenu from "./SidebarContextMenu";
 import { getNoteKey, NoteEmoji } from "./NotePopover";
+import { AiStatusIcons } from "./WorktreeItem";
+import { useAiWorktreeSessions } from "./worktree-status";
 
 interface Props {
   mission: Mission;
@@ -34,6 +36,7 @@ function MissionItem({ mission }: Props) {
 
   const [showAddProject, setShowAddProject] = useState(false);
   const noteKey = getNoteKey({ type: "mission", missionId: mission.id });
+  const aiSessions = useAiWorktreeSessions(mission.missionDir);
 
   const isMissionSelected =
     selectedItem?.missionId === mission.id && !selectedItem?.projectId;
@@ -102,6 +105,7 @@ function MissionItem({ mission }: Props) {
             {mission.projects.length}
           </Badge>
         )}
+        <AiStatusIcons sessions={aiSessions} />
         <div className={cn(
           "ml-auto flex shrink-0 items-center gap-0.5 overflow-hidden transition-all duration-150",
           {
