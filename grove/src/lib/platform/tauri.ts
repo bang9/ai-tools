@@ -399,9 +399,13 @@ export async function getStatus(worktreePath: string): Promise<FileStatus[]> {
 }
 
 export async function listDirectoryFiles(
-  worktreePath: string,
+  rootPath: string,
+  parentPath: string | null = null,
 ): Promise<DirectoryFileEntry[]> {
-  return platform.invoke<DirectoryFileEntry[]>("list_directory_files", { worktreePath });
+  return platform.invoke<DirectoryFileEntry[]>("list_directory_files", {
+    rootPath,
+    parentPath,
+  });
 }
 
 export async function getCommits(

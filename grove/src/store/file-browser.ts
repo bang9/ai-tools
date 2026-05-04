@@ -25,46 +25,70 @@ function entriesEqual(
 }
 
 interface FileBrowserState {
-  worktreePath: string | null;
-  entries: DirectoryFileEntry[];
-  loaded: boolean;
-  loading: boolean;
-  setWorktreePath: (path: string | null) => void;
-  loadDirectoryFiles: () => Promise<void>;
+  rootPath: string | null;
+  entriesByParent: Record<string, DirectoryFileEntry[]>;
+  loadedParents: Record<string, boolean>;
+  loadingParents: Record<string, boolean>;
+  setRootPath: (path: string | null) => void;
+  loadChildren: (parentPath?: string | null) => Promise<void>;
+}
+
+const ROOT_PARENT = "";
+
+function parentKey(parentPath?: string | null): string {
+  return parentPath?.replace(/^\/+|\/+$/g, "") ?? ROOT_PARENT;
 }
 
 export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
-  worktreePath: null,
-  entries: [],
-  loaded: false,
-  loading: false,
+  rootPath: null,
+  entriesByParent: {},
+  loadedParents: {},
+  loadingParents: {},
 
-  setWorktreePath: (path) => {
-    if (path === get().worktreePath) return;
+  setRootPath: (path) => {
+    if (path === get().rootPath) return;
     set({
-      worktreePath: path,
-      entries: [],
-      loaded: false,
-      loading: false,
+      rootPath: path,
+      entriesByParent: {},
+      loadedParents: {},
+      loadingParents: {},
     });
   },
 
-  loadDirectoryFiles: async () => {
-    const wp = get().worktreePath;
-    if (!wp) return;
-    set({ loading: true });
-    const next = await runCommandSafely(() => platform.listDirectoryFiles(wp), {
+  loadChildren: async (parentPath = ROOT_PARENT) => {
+    const rootPath = get().rootPath;
+    const key = parentKey(parentPath);
+    if (!rootPath || get().loadedParents[key] || get().loadingParents[key]) return;
+
+    set((state) => ({
+      loadingParents: { ...state.loadingParents, [key]: true },
+    }));
+
+    const next = await runCommandSafely(() => platform.listDirectoryFiles(rootPath, key), {
       errorToast: false,
     });
-    if (get().worktreePath !== wp) return;
+    if (get().rootPath !== rootPath) return;
+
     if (!next) {
-      set({ loading: false, loaded: true });
+      set((state) => ({
+        loadedParents: { ...state.loadedParents, [key]: true },
+        loadingParents: { ...state.loadingParents, [key]: false },
+      }));
       return;
     }
-    if (entriesEqual(get().entries, next)) {
-      set({ loading: false, loaded: true });
+
+    if (entriesEqual(get().entriesByParent[key] ?? [], next)) {
+      set((state) => ({
+        loadedParents: { ...state.loadedParents, [key]: true },
+        loadingParents: { ...state.loadingParents, [key]: false },
+      }));
       return;
     }
-    set({ entries: next, loading: false, loaded: true });
+
+    set((state) => ({
+      entriesByParent: { ...state.entriesByParent, [key]: next },
+      loadedParents: { ...state.loadedParents, [key]: true },
+      loadingParents: { ...state.loadingParents, [key]: false },
+    }));
   },
 }));

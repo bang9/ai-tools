@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { FolderTree, GitCommit, ListChecks } from "lucide-react";
+import { FolderTree, GitCommit } from "lucide-react";
 import { useDiff } from "../../hooks/useDiff";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
 import { useWorktreeBranchLabel } from "../../hooks/useWorktreeBranchLabel";
@@ -9,9 +9,8 @@ import { cn } from "../../lib/cn";
 import CommitList from "../diff/CommitList";
 import type { CommitInfo } from "../../types";
 import FileBrowserPanel from "../file-browser/FileBrowserPanel";
-import FileList from "../diff/FileList";
 
-type RightPanelMode = "commits" | "changes" | "directory";
+type RightPanelMode = "commits" | "file-browser";
 
 function RailButton({
   active,
@@ -49,12 +48,16 @@ function RailButton({
 }
 
 export default function RightPanel() {
-  const { worktreePath } = useResolvedSidebarSelection();
+  const { terminalPath, worktreePath } = useResolvedSidebarSelection();
   const branchName = useWorktreeBranchLabel(worktreePath);
   const store = useDiff(worktreePath);
-  const fileBrowser = useFileBrowserStore();
+  const fileBrowserEntriesByParent = useFileBrowserStore((s) => s.entriesByParent);
+  const fileBrowserLoadingParents = useFileBrowserStore((s) => s.loadingParents);
+  const setFileBrowserRootPath = useFileBrowserStore((s) => s.setRootPath);
+  const loadFileBrowserChildren = useFileBrowserStore((s) => s.loadChildren);
   const addTab = useTabStore((s) => s.addTab);
   const [mode, setMode] = useState<RightPanelMode>("commits");
+  const fileBrowserRootPath = worktreePath ?? terminalPath;
 
   const handleSelectView = useCallback(
     (view: "changes" | CommitInfo) => {
@@ -65,25 +68,34 @@ export default function RightPanel() {
   );
 
   useEffect(() => {
-    fileBrowser.setWorktreePath(worktreePath);
-  }, [worktreePath]);
-
-  useEffect(() => {
-    if (mode === "directory") {
-      void fileBrowser.loadDirectoryFiles();
+    setFileBrowserRootPath(fileBrowserRootPath);
+    if (mode === "file-browser" && fileBrowserRootPath) {
+      void loadFileBrowserChildren("");
     }
-  }, [mode, worktreePath]);
-
-  const handleSelectWorkingFile = useCallback(
-    (path: string | null, staged?: boolean) => {
-      store.selectView("changes");
-      addTab("changes", "Changes");
-      store.selectFile(path, staged);
-    },
-    [store.selectView, store.selectFile, addTab],
-  );
+  }, [fileBrowserRootPath, loadFileBrowserChildren, mode, setFileBrowserRootPath]);
 
   const content = (() => {
+    if (mode === "file-browser") {
+      if (!fileBrowserRootPath) {
+        return (
+          <div className={cn("flex h-full items-center justify-center bg-sidebar")}>
+            <span className={cn("text-sm text-muted-foreground")}>
+              Select a mission or worktree
+            </span>
+          </div>
+        );
+      }
+
+      return (
+        <FileBrowserPanel
+          rootPath={fileBrowserRootPath}
+          entriesByParent={fileBrowserEntriesByParent}
+          loadingParents={fileBrowserLoadingParents}
+          loadChildren={loadFileBrowserChildren}
+        />
+      );
+    }
+
     if (!worktreePath) {
       return (
         <div className={cn("flex h-full items-center justify-center bg-sidebar")}>
@@ -91,27 +103,6 @@ export default function RightPanel() {
             Select a worktree
           </span>
         </div>
-      );
-    }
-
-    if (mode === "changes") {
-      return (
-        <FileList
-          fileStatuses={store.fileStatuses}
-          selectedFile={store.selectedFile}
-          onSelectFile={handleSelectWorkingFile}
-          title="Working Changes"
-        />
-      );
-    }
-
-    if (mode === "directory") {
-      return (
-        <FileBrowserPanel
-          worktreePath={worktreePath}
-          entries={fileBrowser.entries}
-          loading={fileBrowser.loading}
-        />
       );
     }
 
@@ -142,18 +133,11 @@ export default function RightPanel() {
           onClick={() => setMode("commits")}
         />
         <RailButton
-          active={mode === "changes"}
-          disabled={!worktreePath}
-          icon={ListChecks}
-          label="Working changes"
-          onClick={() => setMode("changes")}
-        />
-        <RailButton
-          active={mode === "directory"}
-          disabled={!worktreePath}
+          active={mode === "file-browser"}
+          disabled={!fileBrowserRootPath}
           icon={FolderTree}
-          label="Directory & files"
-          onClick={() => setMode("directory")}
+          label="File browser"
+          onClick={() => setMode("file-browser")}
         />
       </div>
     </div>
