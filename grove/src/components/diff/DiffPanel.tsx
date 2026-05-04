@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { useDiff } from "../../hooks/useDiff";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
 import { useWorktreeBranchLabel } from "../../hooks/useWorktreeBranchLabel";
@@ -7,14 +6,13 @@ import type { FileStatus } from "../../types";
 import { cn } from "../../lib/cn";
 import ResizablePanelGroup from "../ui/resizable-panel-group";
 import CommitList from "./CommitList";
-import DiffFilePane, { type FilePaneMode } from "./DiffFilePane";
+import FileList from "./FileList";
 import DiffViewer from "./DiffViewer";
 
 export default function DiffPanel() {
   const { worktreePath } = useResolvedSidebarSelection();
   const branchName = useWorktreeBranchLabel(worktreePath);
   const store = useDiff(worktreePath);
-  const [filePaneMode, setFilePaneMode] = useState<FilePaneMode>("changes");
   const diffSizes = usePanelLayoutStore((s) => s.diff);
   const updateDiff = usePanelLayoutStore((s) => s.updateDiff);
   const viewerDiffs = store.currentDiff ? [store.currentDiff] : [];
@@ -28,19 +26,6 @@ export default function DiffPanel() {
         status: d.status as FileStatus["status"],
         staged: false,
       }));
-
-  useEffect(() => {
-    if (filePaneMode === "directory") {
-      void store.loadDirectoryFiles();
-    }
-  }, [filePaneMode, worktreePath]);
-
-  const selectDirectoryFile = (path: string) => {
-    if (store.selectedView !== "changes") {
-      store.selectView("changes");
-    }
-    store.selectFile(path);
-  };
 
   if (!worktreePath) {
     return (
@@ -72,15 +57,10 @@ export default function DiffPanel() {
         />
       </ResizablePanelGroup.Pane>
       <ResizablePanelGroup.Pane minSize={60}>
-        <DiffFilePane
-          mode={filePaneMode}
-          onModeChange={setFilePaneMode}
+        <FileList
           fileStatuses={fileStatuses}
-          directoryFiles={store.directoryFiles}
-          directoryFilesLoading={store.directoryFilesLoading}
           selectedFile={store.selectedFile}
-          onSelectChangeFile={store.selectFile}
-          onSelectDirectoryFile={selectDirectoryFile}
+          onSelectFile={store.selectFile}
         />
       </ResizablePanelGroup.Pane>
       <ResizablePanelGroup.Pane minSize={100}>

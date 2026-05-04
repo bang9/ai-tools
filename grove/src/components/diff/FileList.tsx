@@ -6,17 +6,21 @@ interface Props {
   fileStatuses: FileStatus[];
   selectedFile: string | null;
   onSelectFile: (path: string | null, staged?: boolean) => void;
+  title?: string;
+  emptyLabel?: string;
 }
 
 export default function FileList({
   fileStatuses,
   selectedFile,
   onSelectFile,
+  title = "Files",
+  emptyLabel = "No changes",
 }: Props) {
   if (fileStatuses.length === 0) {
     return (
       <div className={cn("flex items-center justify-center h-full text-sm text-muted-foreground")}>
-        No changes
+        {emptyLabel}
       </div>
     );
   }
@@ -25,7 +29,7 @@ export default function FileList({
     <div className={cn("flex flex-col h-full overflow-hidden")}>
       <div className={cn("flex items-center gap-2 px-4 h-9 shrink-0 border-b border-border")}>
         <span className={cn("text-xs font-medium uppercase tracking-wider text-muted-foreground")}>
-          Files
+          {title}
         </span>
         <span className={cn("rounded-full bg-accent/20 px-2 py-0.5 text-xs font-medium text-accent")}>
           {fileStatuses.length}
