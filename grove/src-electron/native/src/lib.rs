@@ -530,8 +530,8 @@ pub async fn list_missions() -> Result<String> {
 }
 
 #[napi]
-pub async fn create_mission(name: String) -> Result<String> {
-    blocking_json(move || grove_core::mission::create_mission(&name)).await
+pub async fn create_mission(name: String, branch_name: Option<String>) -> Result<String> {
+    blocking_json(move || grove_core::mission::create_mission(&name, branch_name)).await
 }
 
 #[napi]

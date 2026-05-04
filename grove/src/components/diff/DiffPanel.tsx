@@ -1,5 +1,6 @@
 import { useDiff } from "../../hooks/useDiff";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
+import { useWorktreeBranchLabel } from "../../hooks/useWorktreeBranchLabel";
 import { usePanelLayoutStore } from "../../store/panel-layout";
 import type { FileStatus } from "../../types";
 import { cn } from "../../lib/cn";
@@ -10,6 +11,7 @@ import DiffViewer from "./DiffViewer";
 
 export default function DiffPanel() {
   const { worktreePath } = useResolvedSidebarSelection();
+  const branchName = useWorktreeBranchLabel(worktreePath);
   const store = useDiff(worktreePath);
   const diffSizes = usePanelLayoutStore((s) => s.diff);
   const updateDiff = usePanelLayoutStore((s) => s.updateDiff);
@@ -49,6 +51,7 @@ export default function DiffPanel() {
           selectedView={store.selectedView}
           onSelectView={store.selectView}
           behindCount={store.behindCount}
+          branchName={branchName}
           merging={store.merging}
           onMerge={store.mergeDefaultBranch}
         />

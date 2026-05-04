@@ -5,6 +5,7 @@ import { getCommandErrorMessage } from "../../lib/platform";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/cn";
+import { sanitizeBranchName } from "../../lib/git-utils";
 
 interface Props {
   onClose: () => void;
@@ -12,6 +13,7 @@ interface Props {
 
 function CreateMissionDialog({ onClose }: Props) {
   const [name, setName] = useState("");
+  const [branchName, setBranchName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const createMission = useMissionStore((s) => s.createMission);
@@ -21,11 +23,12 @@ function CreateMissionDialog({ onClose }: Props) {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
+    const trimmedBranchName = branchName.trim();
 
     setError("");
     setLoading(true);
     try {
-      await createMission(trimmed);
+      await createMission(trimmed, trimmedBranchName || null);
       toast("success", "Mission created");
       onClose();
     } catch (err) {
@@ -44,6 +47,17 @@ function CreateMissionDialog({ onClose }: Props) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoFocus
+          disabled={loading}
+          className="mb-2"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") onClose();
+          }}
+        />
+        <Input
+          type="text"
+          placeholder="Branch name (optional)"
+          value={branchName}
+          onChange={(e) => setBranchName(sanitizeBranchName(e.target.value))}
           disabled={loading}
           className="mb-2"
           onKeyDown={(e) => {

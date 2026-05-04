@@ -253,8 +253,11 @@ async fn list_missions() -> Result<Vec<grove_core::mission::Mission>, String> {
 }
 
 #[tauri::command]
-async fn create_mission(name: String) -> Result<grove_core::mission::Mission, String> {
-    blocking(move || grove_core::mission::create_mission(&name)).await
+async fn create_mission(
+    name: String,
+    branch_name: Option<String>,
+) -> Result<grove_core::mission::Mission, String> {
+    blocking(move || grove_core::mission::create_mission(&name, branch_name)).await
 }
 
 #[tauri::command]

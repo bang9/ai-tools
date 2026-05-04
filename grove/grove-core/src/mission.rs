@@ -20,6 +20,8 @@ pub struct MissionProject {
 pub struct Mission {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
     #[serde(default)]
     pub projects: Vec<MissionProject>,
     /// Absolute path to ~/.grove/missions/{id}. Populated at load time, not persisted.
@@ -41,6 +43,8 @@ pub struct MissionStore {
 struct PersistedMission {
     id: String,
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch_name: Option<String>,
     #[serde(default)]
     projects: Vec<MissionProject>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -148,6 +152,7 @@ pub(crate) fn load_missions_from_path(path: &Path) -> MissionStore {
             .map(|mission| Mission {
                 id: mission.id,
                 name: mission.name,
+                branch_name: mission.branch_name,
                 projects: mission.projects,
                 mission_dir: String::new(),
                 collapsed: mission.collapsed,
@@ -168,6 +173,7 @@ pub(crate) fn save_missions_to_path(path: &Path, store: &MissionStore) -> Result
             .map(|mission| PersistedMission {
                 id: mission.id.clone(),
                 name: mission.name.clone(),
+                branch_name: mission.branch_name.clone(),
                 projects: mission.projects.clone(),
                 collapsed: mission.collapsed,
             })
@@ -181,10 +187,38 @@ fn generate_mission_id() -> String {
     format!("{:08x}", rng.random::<u32>())
 }
 
-pub fn create_mission(name: &str) -> Result<Mission, String> {
+fn normalize_branch_name(branch_name: Option<String>) -> Result<Option<String>, String> {
+    let normalized = branch_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(name) = normalized.as_deref() {
+        crate::git_project::validate_branch_name(name)?;
+    }
+    Ok(normalized)
+}
+
+fn default_mission_branch_name(mission_id: &str) -> String {
+    format!("mission/{mission_id}")
+}
+
+fn branch_already_exists(source: &Path, branch_name: &str) -> bool {
+    let local_ref = format!("refs/heads/{branch_name}");
+    let remote_ref = format!("refs/remotes/origin/{branch_name}");
+    run_git_output(source, &["show-ref", "--verify", &local_ref]).is_ok()
+        || run_git_output(source, &["show-ref", "--verify", &remote_ref]).is_ok()
+}
+
+fn reject_existing_custom_branch(source: &Path, branch_name: &str) -> Result<(), String> {
+    if branch_already_exists(source, branch_name) {
+        return Err(format!("Branch already exists: {branch_name}"));
+    }
+    Ok(())
+}
+
+pub fn create_mission(name: &str, branch_name: Option<String>) -> Result<Mission, String> {
     let path = missions_path()?;
     let dir = missions_dir()?;
-    create_mission_with_paths(&path, &dir, name)
+    create_mission_with_paths(&path, &dir, name, branch_name)
 }
 
 fn resolve_source_path_for_project(project_id: &str) -> Result<PathBuf, String> {
@@ -211,8 +245,10 @@ fn create_mission_with_paths(
     store_path: &Path,
     missions_dir: &Path,
     name: &str,
+    branch_name: Option<String>,
 ) -> Result<Mission, String> {
     let mut store = load_missions_from_path(store_path);
+    let branch_name = normalize_branch_name(branch_name)?;
 
     let id = loop {
         let candidate = generate_mission_id();
@@ -231,6 +267,7 @@ fn create_mission_with_paths(
     let mission = Mission {
         id,
         name: name.to_string(),
+        branch_name,
         projects: vec![],
         mission_dir: mission_dir.to_string_lossy().to_string(),
         collapsed: false,
@@ -295,7 +332,10 @@ fn add_project_to_mission_with_paths(
         return Err("Project already in mission".into());
     }
 
-    let branch_name = format!("mission/{mission_id}");
+    let branch_name = mission
+        .branch_name
+        .clone()
+        .unwrap_or_else(|| default_mission_branch_name(mission_id));
     let worktree_path = missions_dir.join(mission_id).join(repo_name);
     let worktree_path_str = worktree_path.to_string_lossy().to_string();
     let source = Path::new(source_path);
@@ -304,22 +344,33 @@ fn add_project_to_mission_with_paths(
         return Err(format!("Source directory not found: {source_path}"));
     }
 
+    let _ = run_git(source, &["fetch", "--prune", "origin"]);
+
     if let Some(parent) = worktree_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("Failed to create mission worktree parent: {error}"))?;
     }
 
-    let branch_exists = run_git_output(source, &["rev-parse", "--verify", &branch_name]).is_ok();
-    if branch_exists {
-        run_git(
-            source,
-            &["worktree", "add", &worktree_path_str, &branch_name],
-        )?;
-    } else {
+    if mission.branch_name.is_some() {
+        reject_existing_custom_branch(source, &branch_name)?;
         run_git(
             source,
             &["worktree", "add", "-b", &branch_name, &worktree_path_str],
         )?;
+    } else {
+        let branch_exists =
+            run_git_output(source, &["rev-parse", "--verify", &branch_name]).is_ok();
+        if branch_exists {
+            run_git(
+                source,
+                &["worktree", "add", &worktree_path_str, &branch_name],
+            )?;
+        } else {
+            run_git(
+                source,
+                &["worktree", "add", "-b", &branch_name, &worktree_path_str],
+            )?;
+        }
     }
 
     let project = MissionProject {
@@ -578,6 +629,7 @@ mod tests {
             missions: vec![Mission {
                 id: "abcd1234".into(),
                 name: "Test Mission".into(),
+                branch_name: None,
                 projects: vec![MissionProject {
                     project_id: "proj-uuid-1".into(),
                     branch: "mission/abcd1234".into(),
@@ -609,7 +661,7 @@ mod tests {
         let missions_dir = path.parent().unwrap().join("missions");
 
         let mission =
-            create_mission_with_paths(&path, &missions_dir, "SDK v5 마이그레이션").unwrap();
+            create_mission_with_paths(&path, &missions_dir, "SDK v5 마이그레이션", None).unwrap();
 
         assert_eq!(mission.name, "SDK v5 마이그레이션");
         assert_eq!(mission.id.len(), 8);
@@ -629,7 +681,7 @@ mod tests {
         let path = temp_missions_path();
         let missions_dir = path.parent().unwrap().join("missions");
 
-        let mission = create_mission_with_paths(&path, &missions_dir, "To Delete").unwrap();
+        let mission = create_mission_with_paths(&path, &missions_dir, "To Delete", None).unwrap();
         assert!(missions_dir.join(&mission.id).exists());
 
         delete_mission_with_paths(&path, &missions_dir, &mission.id).unwrap();
@@ -646,7 +698,7 @@ mod tests {
     fn delete_mission_cleans_up_mission_root_resources() {
         let path = temp_missions_path();
         let missions_dir = path.parent().unwrap().join("missions");
-        let mission = create_mission_with_paths(&path, &missions_dir, "To Delete").unwrap();
+        let mission = create_mission_with_paths(&path, &missions_dir, "To Delete", None).unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut lifecycle = WorktreeLifecycle::default();
         lifecycle.register(Box::new(TrackingResource {
@@ -680,6 +732,7 @@ mod tests {
                 missions: vec![Mission {
                     id: mission_id.into(),
                     name: "Mission".into(),
+                    branch_name: None,
                     projects: vec![
                         MissionProject {
                             project_id: "project-1".into(),
@@ -743,7 +796,7 @@ mod tests {
             repo_name,
         )]);
 
-        let mission = create_mission("Mission").unwrap();
+        let mission = create_mission("Mission", None).unwrap();
         let project = add_project_to_mission(&mission.id, project_id).unwrap();
         let expected_path = home
             .root
@@ -788,7 +841,7 @@ mod tests {
             repo_name,
         )]);
 
-        let mission = create_mission("Mission").unwrap();
+        let mission = create_mission("Mission", None).unwrap();
         let branch_name = format!("mission/{}", mission.id);
         run_git_ok(&source_dir, &["branch", &branch_name]);
 
@@ -805,6 +858,80 @@ mod tests {
     }
 
     #[test]
+    fn create_mission_stores_custom_branch_name() {
+        let path = temp_missions_path();
+        let missions_dir = path.parent().unwrap().join("missions");
+
+        let mission = create_mission_with_paths(
+            &path,
+            &missions_dir,
+            "SDK v5",
+            Some("feature/sdk-v5".into()),
+        )
+        .unwrap();
+
+        assert_eq!(mission.branch_name.as_deref(), Some("feature/sdk-v5"));
+
+        let store = load_missions_from_path(&path);
+        assert_eq!(
+            store.missions[0].branch_name.as_deref(),
+            Some("feature/sdk-v5")
+        );
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"branchName\""));
+        assert!(raw.contains("\"feature/sdk-v5\""));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn add_project_uses_custom_mission_branch() {
+        let _lock = env_lock();
+        let _home = TestHome::new();
+        let (repo_root, source_dir) = temp_git_repo();
+        let project_id = "project-1";
+        save_test_config(vec![sample_project_entry(project_id, &source_dir, "grove")]);
+
+        let mission = create_mission("Mission", Some("feature/sdk-v5".into())).unwrap();
+        let project = add_project_to_mission(&mission.id, project_id).unwrap();
+
+        assert_eq!(project.branch, "feature/sdk-v5");
+        assert_eq!(
+            run_git_output(Path::new(&project.path), &["branch", "--show-current"]).unwrap(),
+            project.branch
+        );
+
+        delete_mission(&mission.id).unwrap();
+        let _ = fs::remove_dir_all(repo_root);
+    }
+
+    #[test]
+    fn add_project_rejects_existing_custom_mission_branch() {
+        let _lock = env_lock();
+        let _home = TestHome::new();
+        let (repo_root, source_dir) = temp_git_repo();
+        let project_id = "project-1";
+        save_test_config(vec![sample_project_entry(project_id, &source_dir, "grove")]);
+        run_git_ok(&source_dir, &["branch", "feature/sdk-v5"]);
+
+        let mission = create_mission("Mission", Some("feature/sdk-v5".into())).unwrap();
+        let error = add_project_to_mission(&mission.id, project_id).unwrap_err();
+
+        assert_eq!(error, "Branch already exists: feature/sdk-v5");
+        assert!(load_missions()
+            .missions
+            .iter()
+            .find(|saved_mission| saved_mission.id == mission.id)
+            .unwrap()
+            .projects
+            .is_empty());
+
+        delete_mission(&mission.id).unwrap();
+        let _ = fs::remove_dir_all(repo_root);
+    }
+
+    #[test]
     fn remove_project_removes_worktree_and_branch() {
         let _lock = env_lock();
         let _home = TestHome::new();
@@ -812,7 +939,7 @@ mod tests {
         let project_id = "project-1";
         save_test_config(vec![sample_project_entry(project_id, &source_dir, "grove")]);
 
-        let mission = create_mission("Mission").unwrap();
+        let mission = create_mission("Mission", None).unwrap();
         let project = add_project_to_mission(&mission.id, project_id).unwrap();
 
         assert!(Path::new(&project.path).exists());
@@ -848,7 +975,7 @@ mod tests {
             repo_name,
         )]);
 
-        let mission = create_mission("Mission").unwrap();
+        let mission = create_mission("Mission", None).unwrap();
         let project = add_project_to_mission(&mission.id, project_id).unwrap();
         let mission_path = home.root.join(".grove").join("missions").join(&mission.id);
 

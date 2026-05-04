@@ -79,6 +79,24 @@ describe("useMissionStore", () => {
     });
   });
 
+  describe("createMission", () => {
+    it("passes the optional branch name to the platform layer", async () => {
+      const mission = { ...makeMission("m1"), branchName: "feature/sdk-v5" };
+      vi.mocked(tauri.createMission).mockResolvedValue(mission);
+
+      const created = await useMissionStore
+        .getState()
+        .createMission("SDK v5", "feature/sdk-v5");
+
+      expect(tauri.createMission).toHaveBeenCalledWith(
+        "SDK v5",
+        "feature/sdk-v5",
+      );
+      expect(created).toBe(mission);
+      expect(useMissionStore.getState().missions).toEqual([mission]);
+    });
+  });
+
   describe("toggleCollapse", () => {
     it("toggles collapsed state for a mission", () => {
       useMissionStore.setState({ missions: [makeMission("m1")] });

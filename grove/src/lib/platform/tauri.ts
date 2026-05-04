@@ -580,8 +580,14 @@ export async function listMissions(): Promise<Mission[]> {
   return platform.invoke<Mission[]>("list_missions");
 }
 
-export async function createMission(name: string): Promise<Mission> {
-  return platform.invoke<Mission>("create_mission", { name });
+export async function createMission(
+  name: string,
+  branchName?: string | null,
+): Promise<Mission> {
+  return platform.invoke<Mission>("create_mission", {
+    name,
+    branchName: branchName ?? null,
+  });
 }
 
 export async function deleteMission(id: string): Promise<void> {

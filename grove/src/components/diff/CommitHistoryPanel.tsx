@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useDiff } from "../../hooks/useDiff";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
+import { useWorktreeBranchLabel } from "../../hooks/useWorktreeBranchLabel";
 import { useTabStore } from "../../store/tab";
 import { cn } from "../../lib/cn";
 import CommitList from "./CommitList";
@@ -8,6 +9,7 @@ import type { CommitInfo } from "../../types";
 
 export default function CommitHistoryPanel() {
   const { worktreePath } = useResolvedSidebarSelection();
+  const branchName = useWorktreeBranchLabel(worktreePath);
   const store = useDiff(worktreePath);
   const addTab = useTabStore((s) => s.addTab);
 
@@ -37,6 +39,7 @@ export default function CommitHistoryPanel() {
         selectedView={store.selectedView}
         onSelectView={handleSelectView}
         behindCount={store.behindCount}
+        branchName={branchName}
         merging={store.merging}
         onMerge={store.mergeDefaultBranch}
       />

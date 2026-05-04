@@ -2063,7 +2063,7 @@ pub fn refresh_project_impl(project_id: &str) -> Result<Project, String> {
     Ok(project_from_entry(entry))
 }
 
-fn validate_branch_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_branch_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Branch name cannot be empty".to_string());
     }

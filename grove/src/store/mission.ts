@@ -13,7 +13,7 @@ interface MissionState {
   loading: boolean;
 
   loadMissions: () => Promise<void>;
-  createMission: (name: string) => Promise<Mission>;
+  createMission: (name: string, branchName?: string | null) => Promise<Mission>;
   deleteMission: (id: string) => Promise<void>;
   addProject: (missionId: string, projectId: string) => Promise<void>;
   removeProject: (missionId: string, projectId: string) => Promise<void>;
@@ -43,10 +43,13 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     }
   },
 
-  createMission: async (name: string) => {
-    const mission = await runCommand(() => tauri.createMission(name), {
-      errorToast: "Failed to create mission",
-    });
+  createMission: async (name: string, branchName?: string | null) => {
+    const mission = await runCommand(
+      () => tauri.createMission(name, branchName),
+      {
+        errorToast: "Failed to create mission",
+      },
+    );
     set((state) => ({ missions: [...state.missions, mission] }));
     return mission;
   },

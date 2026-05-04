@@ -7,6 +7,7 @@ export interface MissionProject {
 export interface Mission {
   id: string;
   name: string;
+  branchName?: string;
   projects: MissionProject[];
   missionDir: string;
   collapsed: boolean;

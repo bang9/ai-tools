@@ -11,6 +11,7 @@ interface Props {
   selectedView: "changes" | CommitInfo;
   onSelectView: (view: "changes" | CommitInfo) => void;
   behindCount: number;
+  branchName: string | null;
   merging: boolean;
   onMerge: () => void;
 }
@@ -21,6 +22,7 @@ export default function CommitList({
   selectedView,
   onSelectView,
   behindCount,
+  branchName,
   merging,
   onMerge,
 }: Props) {
@@ -28,7 +30,12 @@ export default function CommitList({
 
   return (
     <div className={cn("flex flex-col h-full overflow-hidden")}>
-      <CommitListHeader behindCount={behindCount} merging={merging} onMerge={onMerge} />
+      <CommitListHeader
+        behindCount={behindCount}
+        branchName={branchName}
+        merging={merging}
+        onMerge={onMerge}
+      />
       <div className={cn("flex-1 overflow-y-auto")}>
         <WorkingChanges
           changeCount={changeCount}
