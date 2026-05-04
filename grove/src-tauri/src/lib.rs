@@ -419,7 +419,7 @@ async fn get_status(worktree_path: String) -> Result<Vec<FileStatus>, String> {
 
 #[tauri::command]
 async fn list_directory_files(worktree_path: String) -> Result<Vec<DirectoryFileEntry>, String> {
-    blocking(move || grove_core::git_diff::list_directory_files_impl(&worktree_path)).await
+    blocking(move || grove_core::file_browser::list_directory_files_impl(&worktree_path)).await
 }
 
 #[tauri::command]

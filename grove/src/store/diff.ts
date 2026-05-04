@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { FileStatus, CommitInfo, DirectoryFileEntry, FileDiff } from "../types";
+import type { FileStatus, CommitInfo, FileDiff } from "../types";
 import * as tauri from "../lib/platform";
 import { runCommandSafely, runCommand } from "../lib/command";
 import { useToastStore } from "../store/toast";
@@ -30,33 +30,9 @@ function commitsEqual(a: CommitInfo[], b: CommitInfo[]): boolean {
   return true;
 }
 
-function directoryFilesEqual(
-  a: DirectoryFileEntry[],
-  b: DirectoryFileEntry[],
-): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i];
-    const y = b[i];
-    if (
-      x.path !== y.path ||
-      x.name !== y.name ||
-      x.entryType !== y.entryType ||
-      x.depth !== y.depth
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
 interface DiffState {
   commits: CommitInfo[];
   fileStatuses: FileStatus[];
-  directoryFiles: DirectoryFileEntry[];
-  directoryFilesLoaded: boolean;
-  directoryFilesLoading: boolean;
   currentDiff: FileDiff | null;
   commitDiffs: FileDiff[];
   selectedView: "changes" | CommitInfo;
@@ -69,7 +45,6 @@ interface DiffState {
 
   setWorktreePath: (path: string | null) => void;
   loadStatus: () => Promise<void>;
-  loadDirectoryFiles: () => Promise<void>;
   loadCommits: () => Promise<void>;
   loadBehindCount: () => Promise<void>;
   refreshAll: () => Promise<void>;
@@ -113,9 +88,6 @@ interface DiffState {
 export const useDiffStore = create<DiffState>((set, get) => ({
   commits: [],
   fileStatuses: [],
-  directoryFiles: [],
-  directoryFilesLoaded: false,
-  directoryFilesLoading: false,
   currentDiff: null,
   commitDiffs: [],
   selectedView: "changes",
@@ -131,9 +103,6 @@ export const useDiffStore = create<DiffState>((set, get) => ({
     set({
       worktreePath: path,
       fileStatuses: [],
-      directoryFiles: [],
-      directoryFilesLoaded: false,
-      directoryFilesLoading: false,
       commits: [],
       currentDiff: null,
       commitDiffs: [],
@@ -154,30 +123,6 @@ export const useDiffStore = create<DiffState>((set, get) => ({
     if (!next) return;
     if (fileStatusesEqual(get().fileStatuses, next)) return;
     set({ fileStatuses: next });
-  },
-
-  loadDirectoryFiles: async () => {
-    const wp = get().worktreePath;
-    if (!wp) return;
-    set({ directoryFilesLoading: true });
-    const next = await runCommandSafely(() => tauri.listDirectoryFiles(wp), {
-      errorToast: false,
-    });
-    if (get().worktreePath !== wp) return;
-    if (!next) {
-      set({ directoryFilesLoading: false, directoryFilesLoaded: true });
-      return;
-    }
-
-    if (directoryFilesEqual(get().directoryFiles, next)) {
-      set({ directoryFilesLoading: false, directoryFilesLoaded: true });
-      return;
-    }
-    set({
-      directoryFiles: next,
-      directoryFilesLoading: false,
-      directoryFilesLoaded: true,
-    });
   },
 
   loadCommits: async () => {
@@ -209,9 +154,6 @@ export const useDiffStore = create<DiffState>((set, get) => ({
       state.loadStatus(),
       state.loadCommits(),
       state.loadBehindCount(),
-      state.directoryFilesLoaded
-        ? state.loadDirectoryFiles()
-        : Promise.resolve(),
     ]);
     // If a file is selected in changes view, keep its diff fresh too
     const after = get();

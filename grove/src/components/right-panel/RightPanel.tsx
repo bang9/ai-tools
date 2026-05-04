@@ -3,12 +3,13 @@ import { FolderTree, GitCommit, ListChecks } from "lucide-react";
 import { useDiff } from "../../hooks/useDiff";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
 import { useWorktreeBranchLabel } from "../../hooks/useWorktreeBranchLabel";
+import { useFileBrowserStore } from "../../store/file-browser";
 import { useTabStore } from "../../store/tab";
 import { cn } from "../../lib/cn";
-import CommitList from "./CommitList";
+import CommitList from "../diff/CommitList";
 import type { CommitInfo } from "../../types";
-import DirectoryFileList from "./DirectoryFileList";
-import FileList from "./FileList";
+import FileBrowserPanel from "../file-browser/FileBrowserPanel";
+import FileList from "../diff/FileList";
 
 type RightPanelMode = "commits" | "changes" | "directory";
 
@@ -47,10 +48,11 @@ function RailButton({
   );
 }
 
-export default function CommitHistoryPanel() {
+export default function RightPanel() {
   const { worktreePath } = useResolvedSidebarSelection();
   const branchName = useWorktreeBranchLabel(worktreePath);
   const store = useDiff(worktreePath);
+  const fileBrowser = useFileBrowserStore();
   const addTab = useTabStore((s) => s.addTab);
   const [mode, setMode] = useState<RightPanelMode>("commits");
 
@@ -63,8 +65,12 @@ export default function CommitHistoryPanel() {
   );
 
   useEffect(() => {
+    fileBrowser.setWorktreePath(worktreePath);
+  }, [worktreePath]);
+
+  useEffect(() => {
     if (mode === "directory") {
-      void store.loadDirectoryFiles();
+      void fileBrowser.loadDirectoryFiles();
     }
   }, [mode, worktreePath]);
 
@@ -101,11 +107,10 @@ export default function CommitHistoryPanel() {
 
     if (mode === "directory") {
       return (
-        <DirectoryFileList
-          entries={store.directoryFiles}
-          loading={store.directoryFilesLoading}
-          selectedFile={store.selectedFile}
-          onSelectFile={(path) => handleSelectWorkingFile(path)}
+        <FileBrowserPanel
+          worktreePath={worktreePath}
+          entries={fileBrowser.entries}
+          loading={fileBrowser.loading}
         />
       );
     }

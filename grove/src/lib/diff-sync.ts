@@ -25,9 +25,6 @@ async function runStatusJob() {
   ) {
     await after.loadWorkingDiff(after.selectedFile, after.isViewingStaged);
   }
-  if (after.fileStatuses !== before && after.directoryFilesLoaded) {
-    await after.loadDirectoryFiles();
-  }
 }
 
 async function runCommitsJob() {

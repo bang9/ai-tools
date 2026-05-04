@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/platform", () => ({
   getStatus: vi.fn(),
-  listDirectoryFiles: vi.fn(),
   getCommits: vi.fn(),
   getBehindCount: vi.fn(),
   mergeDefaultBranch: vi.fn(),
@@ -121,9 +120,6 @@ describe("refreshAll", () => {
       selectedFile: null,
       isViewingStaged: false,
       fileStatuses: [],
-      directoryFiles: [],
-      directoryFilesLoaded: false,
-      directoryFilesLoading: false,
     });
     vi.mocked(runCommandSafely).mockImplementation(
       async (action: () => Promise<unknown>) => action() as Promise<null>,
@@ -316,50 +312,5 @@ describe("mergeDefaultBranch", () => {
     vi.mocked(runCommand).mockRejectedValueOnce(new Error("conflict"));
     await useDiffStore.getState().mergeDefaultBranch();
     expect(useDiffStore.getState().merging).toBe(false);
-  });
-});
-
-describe("directory files", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    useDiffStore.setState({
-      worktreePath: "/tmp/repo",
-      directoryFiles: [],
-      directoryFilesLoaded: false,
-      directoryFilesLoading: false,
-    });
-    vi.mocked(runCommandSafely).mockImplementation(
-      async (action: () => Promise<unknown>) => action() as Promise<null>,
-    );
-    vi.mocked(tauri.listDirectoryFiles).mockResolvedValue([
-      { path: "src", name: "src", entryType: "directory", depth: 0 },
-      { path: "src/main.ts", name: "main.ts", entryType: "file", depth: 1 },
-    ]);
-  });
-
-  it("loads directory file entries for the current worktree", async () => {
-    await useDiffStore.getState().loadDirectoryFiles();
-
-    expect(tauri.listDirectoryFiles).toHaveBeenCalledWith("/tmp/repo");
-    expect(useDiffStore.getState().directoryFiles).toEqual([
-      { path: "src", name: "src", entryType: "directory", depth: 0 },
-      { path: "src/main.ts", name: "main.ts", entryType: "file", depth: 1 },
-    ]);
-    expect(useDiffStore.getState().directoryFilesLoaded).toBe(true);
-    expect(useDiffStore.getState().directoryFilesLoading).toBe(false);
-  });
-
-  it("resets directory files when the worktree changes", () => {
-    useDiffStore.setState({
-      directoryFiles: [
-        { path: "src", name: "src", entryType: "directory", depth: 0 },
-      ],
-      directoryFilesLoaded: true,
-    });
-
-    useDiffStore.getState().setWorktreePath("/tmp/other");
-
-    expect(useDiffStore.getState().directoryFiles).toEqual([]);
-    expect(useDiffStore.getState().directoryFilesLoaded).toBe(false);
   });
 });

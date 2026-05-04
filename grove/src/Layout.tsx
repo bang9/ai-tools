@@ -4,7 +4,7 @@ import { cn } from "./lib/cn";
 import Sidebar from "./components/sidebar/Sidebar";
 import AppTabBar from "./components/tab/AppTabBar";
 import AppTabContent from "./components/tab/AppTabContent";
-import CommitHistoryPanel from "./components/diff/CommitHistoryPanel";
+import RightPanel from "./components/right-panel/RightPanel";
 import ResizablePanelGroup from "./components/ui/resizable-panel-group";
 import { windowDragRegionProps } from "./lib/platform";
 import { usePanelLayoutStore } from "./store/panel-layout";
@@ -72,7 +72,7 @@ function Layout() {
           </div>
         </ResizablePanelGroup.Pane>
         <ResizablePanelGroup.Pane minSize={200}>
-          <CommitHistoryPanel />
+          <RightPanel />
         </ResizablePanelGroup.Pane>
       </ResizablePanelGroup>
     </div>
