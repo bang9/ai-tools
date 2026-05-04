@@ -246,6 +246,16 @@ pub struct FileStatus {
     pub staged: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryFileEntry {
+    pub path: String,
+    pub name: String,
+    #[serde(rename = "entryType")]
+    pub entry_type: String,
+    pub depth: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitInfo {

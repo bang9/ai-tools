@@ -32,6 +32,7 @@ const JSON_RESPONSE_COMMANDS = new Set([
   "load_terminal_session_snapshot",
   "run_terminal_gc",
   "get_status",
+  "list_directory_files",
   "get_commits",
   "get_working_diff",
   "get_commit_diff",

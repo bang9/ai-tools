@@ -363,6 +363,11 @@ pub async fn get_status(worktree_path: String) -> Result<String> {
 }
 
 #[napi]
+pub async fn list_directory_files(worktree_path: String) -> Result<String> {
+    blocking_json(move || grove_core::git_diff::list_directory_files_impl(&worktree_path)).await
+}
+
+#[napi]
 pub async fn get_commits(worktree_path: String, limit: u32) -> Result<String> {
     blocking_json(move || grove_core::git_diff::get_commits_impl(&worktree_path, limit)).await
 }

@@ -12,6 +12,7 @@ import type {
   WorktreePullRequest,
   BehindInfo,
   FileStatus,
+  DirectoryFileEntry,
   CommitInfo,
   FileDiff,
   Mission,
@@ -395,6 +396,12 @@ export async function runTerminalGc(
 
 export async function getStatus(worktreePath: string): Promise<FileStatus[]> {
   return platform.invoke<FileStatus[]>("get_status", { worktreePath });
+}
+
+export async function listDirectoryFiles(
+  worktreePath: string,
+): Promise<DirectoryFileEntry[]> {
+  return platform.invoke<DirectoryFileEntry[]>("list_directory_files", { worktreePath });
 }
 
 export async function getCommits(

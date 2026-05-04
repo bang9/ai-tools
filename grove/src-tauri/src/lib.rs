@@ -1,9 +1,9 @@
 mod eventbus;
 use grove_core::{
     AppConfig, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest, CreatePtyRestore,
-    CreatePtyResult, DetectedThemeResult, FileDiff, FileStatus, GrovePreferences, IdeMenuItem,
-    Project, PtyBellEvent, SaveTerminalSessionSnapshotRequest, TerminalGcReport,
-    TerminalSessionSnapshot, Worktree, WorktreePullRequest,
+    CreatePtyResult, DetectedThemeResult, DirectoryFileEntry, FileDiff, FileStatus,
+    GrovePreferences, IdeMenuItem, Project, PtyBellEvent, SaveTerminalSessionSnapshotRequest,
+    TerminalGcReport, TerminalSessionSnapshot, Worktree, WorktreePullRequest,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -418,6 +418,11 @@ async fn get_status(worktree_path: String) -> Result<Vec<FileStatus>, String> {
 }
 
 #[tauri::command]
+async fn list_directory_files(worktree_path: String) -> Result<Vec<DirectoryFileEntry>, String> {
+    blocking(move || grove_core::git_diff::list_directory_files_impl(&worktree_path)).await
+}
+
+#[tauri::command]
 async fn get_commits(worktree_path: String, limit: u32) -> Result<Vec<CommitInfo>, String> {
     blocking(move || grove_core::git_diff::get_commits_impl(&worktree_path, limit)).await
 }
@@ -645,6 +650,7 @@ pub fn run() {
             run_terminal_gc,
             // Git Diff (W4)
             get_status,
+            list_directory_files,
             get_commits,
             get_working_diff,
             get_commit_diff,

@@ -5,7 +5,7 @@ import { cn } from "../../lib/cn";
 interface Props {
   fileStatuses: FileStatus[];
   selectedFile: string | null;
-  onSelectFile: (path: string | null) => void;
+  onSelectFile: (path: string | null, staged?: boolean) => void;
 }
 
 export default function FileList({
@@ -43,7 +43,7 @@ export default function FileList({
                   selectedFile !== file.path,
               },
             )}
-            onClick={() => onSelectFile(file.path)}
+            onClick={() => onSelectFile(file.path, file.staged)}
           >
             <FileText className={cn("h-3.5 w-3.5 shrink-0")} />
             <span className={cn("min-w-0 truncate", {

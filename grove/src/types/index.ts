@@ -16,6 +16,7 @@ export type {
 export type {
   BehindInfo,
   CommitInfo,
+  DirectoryFileEntry,
   FileStatus,
   DiffLine,
   DiffHunk,

@@ -12,6 +12,13 @@ export interface FileStatus {
   staged: boolean;
 }
 
+export interface DirectoryFileEntry {
+  path: string;
+  name: string;
+  entryType: "directory" | "file";
+  depth: number;
+}
+
 export interface DiffLine {
   type: "add" | "remove" | "context";
   content: string;
