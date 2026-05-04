@@ -89,7 +89,7 @@ export default function FileBrowserPanel({
     }
   }, [selectedPath, visibleEntries]);
 
-  const revealEntry = useCallback(
+  const openEntry = useCallback(
     (entry: DirectoryFileEntry) => {
       void runCommandSafely(() => revealInFinder(joinRootPath(rootPath, entry.path)));
     },
@@ -206,7 +206,7 @@ export default function FileBrowserPanel({
         if (currentEntry.entryType === "directory") {
           toggleDirectory(currentEntry.path);
         } else {
-          revealEntry(currentEntry);
+          openEntry(currentEntry);
         }
         return;
       }
@@ -221,7 +221,7 @@ export default function FileBrowserPanel({
       entriesByParent,
       expandedPaths,
       expandDirectory,
-      revealEntry,
+      openEntry,
       rowVirtualizer,
       selectByIndex,
       selectedPath,
@@ -236,7 +236,7 @@ export default function FileBrowserPanel({
         <span className={cn("text-xs font-medium uppercase tracking-wider text-muted-foreground")}>
           File Browser
         </span>
-        <span className={cn("rounded-full bg-accent/20 px-2 py-0.5 text-xs font-medium text-accent")}>
+        <span className={cn("rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-muted-foreground")}>
           {visibleEntries.length}
         </span>
         {loading && (
@@ -250,9 +250,10 @@ export default function FileBrowserPanel({
       ) : (
         <div
           ref={scrollRef}
-          className={cn("relative flex-1 overflow-y-auto outline-none")}
+          className={cn("relative flex-1 select-none overflow-y-auto outline-none")}
           tabIndex={0}
           onKeyDown={handleKeyDown}
+          onDragStart={(event) => event.preventDefault()}
         >
           <div
             className={cn("relative w-full")}
@@ -266,16 +267,33 @@ export default function FileBrowserPanel({
               const directoryLoading = !!loadingParents[entry.path];
               const Icon = isFile ? FileText : Folder;
               const ToggleIcon = expanded ? ChevronDown : ChevronRight;
-              let disclosureIcon = <span className={cn("size-3.5 shrink-0")} />;
-              if (!isFile && directoryLoading) {
-                disclosureIcon = (
-                  <Loader2 className={cn("size-3.5 shrink-0 animate-spin text-muted-foreground")} />
+              const disclosure = (() => {
+                if (isFile) {
+                  return <span className={cn("size-4 shrink-0")} />;
+                }
+
+                return (
+                  <button
+                    type="button"
+                    aria-label={expanded ? "Collapse folder" : "Expand folder"}
+                    className={cn(
+                      "flex size-4 shrink-0 select-none items-center justify-center rounded-sm text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+                    )}
+                    draggable={false}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedPath(entry.path);
+                      toggleDirectory(entry.path);
+                    }}
+                  >
+                    {directoryLoading ? (
+                      <Loader2 className={cn("size-3.5 animate-spin")} />
+                    ) : (
+                      <ToggleIcon className={cn("size-3.5")} />
+                    )}
+                  </button>
                 );
-              } else if (!isFile) {
-                disclosureIcon = (
-                  <ToggleIcon className={cn("size-3.5 shrink-0 text-muted-foreground")} />
-                );
-              }
+              })();
 
               return (
                 <div
@@ -288,32 +306,33 @@ export default function FileBrowserPanel({
                 >
                   <ContextMenu>
                     <ContextMenuTrigger asChild>
-                      <button
-                        type="button"
+                      <div
+                        role="treeitem"
                         title={entry.path}
                         className={cn(
-                          "flex h-6 w-full items-center gap-2 pr-3 text-left text-sm transition-colors",
+                          "flex h-6 w-full select-none items-center gap-2 pr-3 text-left text-sm transition-colors",
                           {
-                            "bg-selected text-foreground": selected,
+                            "bg-secondary/60 text-foreground": selected,
                             "text-muted-foreground hover:bg-secondary/30 hover:text-foreground":
                               !selected,
                           },
                         )}
                         style={{ paddingLeft: 16 + entry.depth * 14 }}
+                        draggable={false}
                         onClick={() => setSelectedPath(entry.path)}
+                        onDragStart={(event) => event.preventDefault()}
                         onDoubleClick={() => {
                           if (isFile) {
-                            revealEntry(entry);
-                          } else {
-                            toggleDirectory(entry.path);
+                            openEntry(entry);
                           }
                         }}
                         aria-expanded={isFile ? undefined : expanded}
+                        aria-selected={selected}
                       >
-                        {disclosureIcon}
+                        {disclosure}
                         <Icon
                           className={cn("size-3.5 shrink-0", {
-                            "text-accent": !isFile,
+                            "text-muted-foreground": !isFile,
                           })}
                         />
                         <span className={cn("min-w-0 flex-1 truncate", {
@@ -321,12 +340,16 @@ export default function FileBrowserPanel({
                         })}>
                           {entry.name}
                         </span>
-                      </button>
+                      </div>
                     </ContextMenuTrigger>
                     <ContextMenuContent>
-                      <ContextMenuItem onSelect={() => revealEntry(entry)}>
-                        <FolderOpen className={cn("mr-1.5 size-3.5")} />
-                        Open in Finder
+                      <ContextMenuItem onSelect={() => openEntry(entry)}>
+                        {isFile ? (
+                          <FileText className={cn("mr-1.5 size-3.5")} />
+                        ) : (
+                          <FolderOpen className={cn("mr-1.5 size-3.5")} />
+                        )}
+                        {isFile ? "Open" : "Open in Finder"}
                       </ContextMenuItem>
                     </ContextMenuContent>
                   </ContextMenu>
