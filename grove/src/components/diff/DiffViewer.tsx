@@ -650,7 +650,7 @@ function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
           </div>
         ))}
       </div>
-      <div className={cn("flex-1 overflow-x-auto overflow-y-hidden overscroll-none diff-line-content")}>
+      <div className={cn("min-w-0 flex-1 overflow-x-auto overflow-y-hidden diff-line-content")}>
         <div className={cn("min-w-full w-max")} style={{ backgroundColor: CONTEXT_ROW_BACKGROUND }}>
           {lines.map((line) => (
             <div
