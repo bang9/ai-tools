@@ -834,14 +834,14 @@ fn parse_worktree_list(output: &str, project_base: &Path) -> Vec<Worktree> {
     let mut current_path = String::new();
     let mut current_branch = String::new();
     let mut is_bare = false;
-    let normalized_project_base = normalized_path(project_base);
+    let worktrees_root = normalized_path(&project_base.join("worktrees"));
 
     for line in output.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
             // Flush previous entry
             if !current_path.is_empty()
                 && !is_bare
-                && normalized_path(Path::new(&current_path)).starts_with(&normalized_project_base)
+                && normalized_path(Path::new(&current_path)).starts_with(&worktrees_root)
             {
                 worktrees.push(make_worktree(&current_path, &current_branch, project_base));
             }
@@ -861,7 +861,7 @@ fn parse_worktree_list(output: &str, project_base: &Path) -> Vec<Worktree> {
     // Flush last entry
     if !current_path.is_empty()
         && !is_bare
-        && normalized_path(Path::new(&current_path)).starts_with(&normalized_project_base)
+        && normalized_path(Path::new(&current_path)).starts_with(&worktrees_root)
     {
         worktrees.push(make_worktree(&current_path, &current_branch, project_base));
     }
@@ -3128,6 +3128,72 @@ mod tests {
             run_git_output(&source_dir, &["rev-parse", "origin/trunk"]).unwrap()
         );
         assert_eq!(list_worktrees_impl("project-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_worktrees_ignores_worktrees_outside_worktrees_dir() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir
+            .join("github.com")
+            .join("bang9")
+            .join("grove")
+            .join("source");
+        let remotes_dir = home.root.join("remotes");
+        let (remote_dir, seed_dir) =
+            create_bare_remote(&remotes_dir, "grove-stray-worktree", "main");
+
+        commit_and_push(
+            &seed_dir,
+            &remote_dir,
+            "main",
+            "README.md",
+            "# Grove\n",
+            "Initial commit",
+        );
+
+        fs::create_dir_all(source_dir.parent().unwrap()).unwrap();
+        let remote_dir_str = remote_dir.to_string_lossy().to_string();
+        let source_dir_str = source_dir.to_string_lossy().to_string();
+        run_git_ok(
+            source_dir.parent().unwrap(),
+            &["clone", &remote_dir_str, &source_dir_str],
+        );
+
+        save_test_config(
+            &base_dir,
+            vec![project_entry(
+                "project-1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+        );
+
+        add_worktree_impl("project-1", "feature-1").unwrap();
+
+        // Stray worktree registered under source/.claude/worktrees/ — must not leak into the listing.
+        let stray_path = source_dir
+            .join(".claude")
+            .join("worktrees")
+            .join("stray-branch");
+        fs::create_dir_all(stray_path.parent().unwrap()).unwrap();
+        run_git_ok(
+            &source_dir,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "stray-branch",
+                stray_path.to_str().unwrap(),
+            ],
+        );
+
+        let listed = list_worktrees_impl("project-1").unwrap();
+        let names: Vec<&str> = listed.iter().map(|w| w.name.as_str()).collect();
+
+        assert_eq!(listed.len(), 1, "expected only the managed worktree, got {names:?}");
+        assert_eq!(names, vec!["feature-1"]);
     }
 
     #[test]
