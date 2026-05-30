@@ -60,7 +60,7 @@ func (b *CodexBackend) commonArgs(task *Task) []string {
 }
 
 func (b *CodexBackend) modelConfig(task *Task) (model string, effort string) {
-	model = "gpt-5.4"
+	model = "gpt-5.5"
 	switch task.Difficulty {
 	case "hard":
 		return model, "xhigh"

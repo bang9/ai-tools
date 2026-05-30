@@ -15,7 +15,7 @@ func TestCodexBackend_BuildLaunchCmd_FirstSpawn(t *testing.T) {
 	if !strings.Contains(cmd, "codex") {
 		t.Fatalf("cmd should contain codex: %s", cmd)
 	}
-	if !strings.Contains(cmd, "gpt-5.4") {
+	if !strings.Contains(cmd, "gpt-5.5") {
 		t.Fatalf("cmd should contain codex model: %s", cmd)
 	}
 	if !strings.Contains(cmd, `model_reasoning_effort="xhigh"`) {
