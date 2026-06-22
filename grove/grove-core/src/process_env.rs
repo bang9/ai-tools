@@ -437,6 +437,12 @@ trait EnvSourceLookup {
     fn ancestor_process_env_var(&self, key: &str) -> Option<String>;
     fn interactive_shell_env_var(&self, key: &str) -> Option<String>;
     fn login_shell_path(&self) -> Option<String>;
+    /// Standard binary directories to fold into PATH unconditionally, so tool
+    /// resolution never depends on a successful shell snapshot. Returns `None`
+    /// off macOS (and in hermetic tests).
+    fn well_known_path_dirs(&self) -> Option<String> {
+        None
+    }
 }
 
 struct SystemEnvSourceLookup;
@@ -465,6 +471,10 @@ impl EnvSourceLookup for SystemEnvSourceLookup {
     fn login_shell_path(&self) -> Option<String> {
         resolve_login_shell_path()
     }
+
+    fn well_known_path_dirs(&self) -> Option<String> {
+        well_known_path_suffix()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -474,6 +484,7 @@ struct EnvSourceSnapshot {
     ancestor_process_env: Option<String>,
     interactive_shell_env: Option<String>,
     login_shell_env: Option<String>,
+    well_known_dirs: Option<String>,
 }
 
 fn collect_env_snapshot(
@@ -498,6 +509,7 @@ fn collect_env_snapshot(
         login_shell_env: include_login_shell
             .then(|| lookup.login_shell_path())
             .flatten(),
+        well_known_dirs: lookup.well_known_path_dirs(),
     }
 }
 
@@ -572,6 +584,7 @@ fn preferred_ssh_auth_sock_from(
         ancestor_process_env: normalize_env_value(ancestor_value),
         interactive_shell_env: normalize_env_value(shell_value),
         login_shell_env: None,
+        well_known_dirs: None,
     })
     .map(|(_, value)| value)
 }
@@ -583,12 +596,43 @@ fn build_enriched_path(base: String) -> String {
     }
 }
 
+/// Standard binary directories that GUI launches frequently omit from PATH.
+/// Folded into the merged PATH unconditionally (when present on disk) so that
+/// resolving tools like tmux/claude/codex/gh never depends on a successful
+/// login- or interactive-shell snapshot.
+#[cfg(target_os = "macos")]
+const WELL_KNOWN_BIN_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+];
+
+#[cfg(target_os = "macos")]
+fn well_known_path_suffix() -> Option<String> {
+    let dirs: Vec<&str> = WELL_KNOWN_BIN_DIRS
+        .iter()
+        .copied()
+        .filter(|dir| std::path::Path::new(dir).is_dir())
+        .collect();
+    (!dirs.is_empty()).then(|| dirs.join(":"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn well_known_path_suffix() -> Option<String> {
+    None
+}
+
 fn merged_path_value(snapshot: &EnvSourceSnapshot) -> Option<String> {
     let merged = merge_path_candidates(
         snapshot.process_env.clone(),
         snapshot.interactive_shell_env.clone(),
     );
-    merge_path_candidates(merged, snapshot.login_shell_env.clone())
+    let merged = merge_path_candidates(merged, snapshot.login_shell_env.clone());
+    // Appended last (lowest precedence) so a successfully resolved shell PATH
+    // still wins; deduped by merge_path_candidates. Guarantees Homebrew/standard
+    // dirs are present even when every shell snapshot fails.
+    merge_path_candidates(merged, snapshot.well_known_dirs.clone())
 }
 
 fn path_diagnostics(lookup: &impl EnvSourceLookup) -> PathDiagnostics {
@@ -699,11 +743,14 @@ pub fn login_shell_output(command: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        enriched_path, is_posix_like_shell, merge_path_candidates, normalize_env_value,
-        parse_env_marker_output, parse_env_var_from_ps_output, parse_path_marker, path_diagnostics,
-        preferred_env_var, preferred_ssh_auth_sock, preferred_ssh_auth_sock_from,
-        resolve_with_retry, ssh_auth_sock_diagnostics, EnvSourceLookup, EnvValueSource,
+        enriched_path, is_posix_like_shell, merge_path_candidates, merged_path_value,
+        normalize_env_value, parse_env_marker_output, parse_env_var_from_ps_output,
+        parse_path_marker, path_diagnostics, preferred_env_var, preferred_ssh_auth_sock,
+        preferred_ssh_auth_sock_from, resolve_with_retry, ssh_auth_sock_diagnostics,
+        EnvSourceLookup, EnvSourceSnapshot, EnvValueSource,
     };
+    #[cfg(target_os = "macos")]
+    use super::well_known_path_suffix;
     use crate::test_support::env_lock;
     use std::collections::HashMap;
     #[cfg(unix)]
@@ -1017,6 +1064,43 @@ mod tests {
             ),
             Some("/a:/b:/bin:/c".to_string())
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn well_known_path_suffix_lists_only_existing_dirs() {
+        if let Some(suffix) = well_known_path_suffix() {
+            for dir in suffix.split(':') {
+                assert!(
+                    std::path::Path::new(dir).is_dir(),
+                    "{dir} should exist on disk"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn merged_path_includes_well_known_dirs_when_shell_sources_missing() {
+        let snapshot = EnvSourceSnapshot {
+            process_env: Some("/usr/bin:/bin".to_string()),
+            interactive_shell_env: None,
+            login_shell_env: None,
+            well_known_dirs: well_known_path_suffix(),
+            ..Default::default()
+        };
+        let merged = merged_path_value(&snapshot).expect("merged path is present");
+        // Process PATH keeps highest precedence.
+        assert!(merged.starts_with("/usr/bin:/bin"));
+        // Every existing well-known dir is folded in even with no shell sources.
+        if let Some(suffix) = well_known_path_suffix() {
+            for dir in suffix.split(':') {
+                assert!(
+                    merged.split(':').any(|entry| entry == dir),
+                    "{dir} missing from {merged}"
+                );
+            }
+        }
     }
 
     #[test]
