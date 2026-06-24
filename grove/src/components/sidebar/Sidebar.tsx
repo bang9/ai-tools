@@ -98,7 +98,7 @@ function Sidebar() {
           </button>
         </div>
       );
-    } else if (filteredProjectCount === 0) {
+    } else if (filteredProjectCount === 0 && !focusViewActive) {
       content = (
         <div className={cn("flex flex-col items-center justify-center gap-2 px-3 py-10")}>
           <span className={cn("text-xs text-muted-foreground")}>

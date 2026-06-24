@@ -126,7 +126,7 @@ export default function ProjectCategoryFilterBar({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  if (projectCategories.length === 0) {
+  if (projectCategories.length === 0 && !hasFocusedProjects(projects)) {
     return null;
   }
 
