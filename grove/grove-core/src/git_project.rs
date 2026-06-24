@@ -412,6 +412,7 @@ fn make_project_entry(
         stacked_parents: BTreeMap::new(),
         base_branch: None,
         collapsed: false,
+        focused: false,
         category_id: None,
         env_sync: None,
     }
@@ -683,6 +684,7 @@ fn project_from_entry(entry: ProjectEntry) -> Project {
         base_branch: entry.base_branch,
         resolved_default_branch,
         collapsed: entry.collapsed,
+        focused: entry.focused,
         category_id: entry
             .category_id
             .unwrap_or_else(|| config::DEFAULT_PROJECT_CATEGORY_ID.to_string()),
@@ -1925,6 +1927,17 @@ pub fn set_project_collapsed_impl(project_id: &str, collapsed: bool) -> Result<(
     config::save_config(&config)
 }
 
+pub fn set_project_focus_impl(project_id: &str, focused: bool) -> Result<(), String> {
+    let mut config = config::load_config();
+    let entry = config
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    entry.focused = focused;
+    config::save_config(&config)
+}
+
 pub fn rename_project_impl(project_id: &str, name: String) -> Result<(), String> {
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() {
@@ -2553,6 +2566,7 @@ mod tests {
             stacked_parents: BTreeMap::new(),
             base_branch: None,
             collapsed: false,
+            focused: false,
             category_id: None,
             env_sync: None,
         }
@@ -4497,5 +4511,42 @@ exec /bin/sh -c "$remote_cmd"
 
         let error = set_project_category_impl("p1", "missing").unwrap_err();
         assert!(error.contains("Project category not found"));
+    }
+
+    #[test]
+    fn set_project_focus_persists_flag() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        let source_dir = base_dir.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        save_test_config(
+            &base_dir,
+            vec![project_entry(
+                "p1",
+                "https://github.com/bang9/grove.git",
+                &source_dir,
+            )],
+        );
+
+        set_project_focus_impl("p1", true).unwrap();
+        let focused = config::load_config();
+        assert!(focused.projects[0].focused);
+
+        set_project_focus_impl("p1", false).unwrap();
+        let unfocused = config::load_config();
+        assert!(!unfocused.projects[0].focused);
+    }
+
+    #[test]
+    fn set_project_focus_rejects_unknown_project() {
+        let _lock = env_lock();
+        let home = TestHome::new();
+        let base_dir = home.root.join("grove-data");
+        fs::create_dir_all(&base_dir).unwrap();
+        save_test_config(&base_dir, vec![]);
+
+        let error = set_project_focus_impl("missing", true).unwrap_err();
+        assert!(error.contains("Project not found"));
     }
 }

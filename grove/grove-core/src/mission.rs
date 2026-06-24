@@ -585,6 +585,7 @@ mod tests {
             stacked_parents: std::collections::BTreeMap::new(),
             base_branch: None,
             collapsed: false,
+            focused: false,
             category_id: None,
             env_sync: None,
         }

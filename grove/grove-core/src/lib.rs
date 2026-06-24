@@ -42,6 +42,7 @@ pub struct Project {
     pub base_branch: Option<String>,
     pub resolved_default_branch: String,
     pub collapsed: bool,
+    pub focused: bool,
     pub category_id: String,
 }
 

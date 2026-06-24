@@ -23,6 +23,8 @@ pub struct ProjectEntry {
     pub base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -823,6 +825,7 @@ mod tests {
             stacked_parents: BTreeMap::new(),
             base_branch: None,
             collapsed: false,
+            focused: false,
             category_id: Some("ops".into()),
             env_sync: None,
         }
