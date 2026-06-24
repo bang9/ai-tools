@@ -160,6 +160,11 @@ async fn set_project_collapsed(project_id: String, collapsed: bool) -> Result<()
 }
 
 #[tauri::command]
+async fn set_project_focus(project_id: String, focused: bool) -> Result<(), String> {
+    blocking(move || grove_core::git_project::set_project_focus_impl(&project_id, focused)).await
+}
+
+#[tauri::command]
 async fn is_source_dirty(project_id: String) -> Result<bool, String> {
     blocking(move || grove_core::git_project::is_source_dirty_impl(&project_id)).await
 }
@@ -614,6 +619,7 @@ pub fn run() {
             set_project_category,
             delete_project_category,
             set_project_collapsed,
+            set_project_focus,
             is_source_dirty,
             refresh_project,
             add_worktree,

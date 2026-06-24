@@ -203,6 +203,14 @@ pub async fn set_project_collapsed(project_id: String, collapsed: bool) -> Resul
 }
 
 #[napi]
+pub async fn set_project_focus(project_id: String, focused: bool) -> Result<()> {
+    blocking_core(move || {
+        grove_core::git_project::set_project_focus_impl(&project_id, focused)
+    })
+    .await
+}
+
+#[napi]
 pub async fn is_source_dirty(project_id: String) -> Result<bool> {
     blocking_core(move || grove_core::git_project::is_source_dirty_impl(&project_id)).await
 }

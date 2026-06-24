@@ -322,6 +322,10 @@ export async function setProjectCollapsed(projectId: string, collapsed: boolean)
   return platform.invoke("set_project_collapsed", { projectId, collapsed });
 }
 
+export async function setProjectFocus(projectId: string, focused: boolean): Promise<void> {
+  return platform.invoke("set_project_focus", { projectId, focused });
+}
+
 export async function setBaseBranch(projectId: string, branch: string | null): Promise<void> {
   return platform.invoke("set_base_branch", { projectId, branch });
 }
