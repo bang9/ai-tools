@@ -5,6 +5,8 @@ import {
   Pencil,
   Settings,
   Github,
+  Star,
+  StarOff,
 } from "lucide-react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -92,6 +94,7 @@ const ProjectItem = memo(function ProjectItem({
   const addWorktree = useProjectStore((s) => s.addWorktree);
   const removeProject = useProjectStore((s) => s.removeProject);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const setProjectFocus = useProjectStore((s) => s.setProjectFocus);
   const projectCategories = usePreferencesStore((s) => s.projectCategories);
   const { toast } = useToast();
 
@@ -166,6 +169,10 @@ const ProjectItem = memo(function ProjectItem({
     void runCommand(() => openExternal(githubRepoUrl), {
       errorToast: "Failed to open GitHub repository",
     });
+  };
+
+  const handleToggleFocus = () => {
+    void setProjectFocus(project.id, !project.focused);
   };
 
   const handleRemoveProject = async (e: React.MouseEvent) => {
@@ -294,6 +301,14 @@ const ProjectItem = memo(function ProjectItem({
             Open in GitHub
           </ContextMenuItem>
         )}
+        <ContextMenuItem onSelect={handleToggleFocus}>
+          {project.focused ? (
+            <StarOff className={cn("mr-1.5 h-3.5 w-3.5")} />
+          ) : (
+            <Star className={cn("mr-1.5 h-3.5 w-3.5")} />
+          )}
+          {project.focused ? "Unfocus" : "Focus"}
+        </ContextMenuItem>
       </ContextMenuContent>
       </ContextMenu>
 
