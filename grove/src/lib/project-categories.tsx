@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { arrayMove } from "@dnd-kit/sortable";
 import {
   BookOpen,
   Bot,
@@ -91,6 +92,19 @@ export function getProjectCategories(
   projectCategories: ProjectCategory[],
 ): ProjectCategory[] {
   return [DEFAULT_PROJECT_CATEGORY, ...projectCategories];
+}
+
+export function reorderProjectCategories(
+  categories: ProjectCategory[],
+  activeId: string,
+  overId: string,
+): ProjectCategory[] {
+  const oldIndex = categories.findIndex((category) => category.id === activeId);
+  const newIndex = categories.findIndex((category) => category.id === overId);
+  if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) {
+    return categories;
+  }
+  return arrayMove(categories, oldIndex, newIndex);
 }
 
 export function resolveProjectCategory(

@@ -1,5 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getRandomProjectCategoryColor } from "./project-categories";
+import { getRandomProjectCategoryColor, reorderProjectCategories } from "./project-categories";
+import type { ProjectCategory } from "../types";
+
+function cat(id: string): ProjectCategory {
+  return { id, name: id, color: "#000000", icon: { type: "lucide", value: "folder" } };
+}
+
+describe("reorderProjectCategories", () => {
+  const cats = [cat("a"), cat("b"), cat("c")];
+
+  it("moves an item from one index to another", () => {
+    const next = reorderProjectCategories(cats, "a", "c");
+    expect(next.map((c) => c.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("returns the same order when active equals over", () => {
+    const next = reorderProjectCategories(cats, "b", "b");
+    expect(next.map((c) => c.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("returns the original array when an id is missing", () => {
+    const next = reorderProjectCategories(cats, "a", "z");
+    expect(next).toBe(cats);
+  });
+});
 
 describe("getRandomProjectCategoryColor", () => {
   afterEach(() => {
