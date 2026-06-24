@@ -24,16 +24,13 @@ function Sidebar() {
   const [showCreateMissionDialog, setShowCreateMissionDialog] = useState(false);
   const [activeCategoryIds, setActiveCategoryIds] = useState<string[]>([]);
   const [focusViewActive, setFocusViewActive] = useState(false);
-  let filteredProjectCount: number;
-  if (focusViewActive) {
-    filteredProjectCount = getFocusedProjects(projects).length;
-  } else if (activeCategoryIds.length === 0) {
-    filteredProjectCount = projects.length;
-  } else {
-    filteredProjectCount = projects.filter((project) =>
+  const filteredProjectCount = (() => {
+    if (focusViewActive) return getFocusedProjects(projects).length;
+    if (activeCategoryIds.length === 0) return projects.length;
+    return projects.filter((project) =>
       activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
     ).length;
-  }
+  })();
 
   const isProjectsMode = sidebarMode === "projects";
   const addButtonTitle = isProjectsMode ? "Add project" : "Create mission";
@@ -176,7 +173,10 @@ function Sidebar() {
                 : [...current, categoryId],
             );
           }}
-          onClearCategories={() => setActiveCategoryIds([])}
+          onClearCategories={() => {
+            setFocusViewActive(false);
+            setActiveCategoryIds([]);
+          }}
           onSelectFocus={() =>
             setFocusViewActive((active) => {
               const next = !active;
