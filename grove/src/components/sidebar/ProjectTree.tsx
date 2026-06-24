@@ -35,6 +35,7 @@ interface Props {
   projects: Project[];
   cloningProjects: CloningProject[];
   activeCategoryIds?: string[];
+  focusViewActive?: boolean;
 }
 
 interface ProjectOrgSectionProps {
@@ -287,6 +288,7 @@ function ProjectTree({
   projects,
   cloningProjects,
   activeCategoryIds = [],
+  focusViewActive = false,
 }: Props) {
   const projectViewMode = usePreferencesStore((s) => s.projectViewMode);
   const preferencesLoaded = usePreferencesStore((s) => s.loaded);
@@ -295,22 +297,24 @@ function ProjectTree({
   const setProjectOrgCollapsed = usePreferencesStore((s) => s.setProjectOrgCollapsed);
   const setProjectOrgOrder = usePreferencesStore((s) => s.setProjectOrgOrder);
   const reorderProjects = useProjectStore((s) => s.reorderProjects);
-  const sortingEnabled = activeCategoryIds.length === 0;
+  const sortingEnabled = !focusViewActive && activeCategoryIds.length === 0;
 
   const allOrgGroups = useMemo(() => groupProjectsByOrg(projects), [projects]);
   const orderedAllOrgGroups = useMemo(
     () => orderProjectOrgGroups(allOrgGroups, projectOrgOrder),
     [allOrgGroups, projectOrgOrder],
   );
-  const filteredProjects = useMemo(
-    () =>
-      activeCategoryIds.length === 0
-        ? projects
-        : projects.filter((project) =>
-            activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
-          ),
-    [activeCategoryIds, projects],
-  );
+  const filteredProjects = useMemo(() => {
+    if (focusViewActive) {
+      return projects.filter((project) => project.focused);
+    }
+    if (activeCategoryIds.length === 0) {
+      return projects;
+    }
+    return projects.filter((project) =>
+      activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
+    );
+  }, [focusViewActive, activeCategoryIds, projects]);
   const filteredOrgGroups = useMemo(
     () => orderProjectOrgGroups(groupProjectsByOrg(filteredProjects), projectOrgOrder),
     [filteredProjects, projectOrgOrder],

@@ -88,6 +88,15 @@ export const DEFAULT_PROJECT_CATEGORY: ProjectCategory = {
   icon: { type: "lucide", value: "sprout" },
 };
 
+export const FOCUSING_PROJECT_CATEGORY_ID = "__focusing__";
+
+export const FOCUSING_PROJECT_CATEGORY: ProjectCategory = {
+  id: FOCUSING_PROJECT_CATEGORY_ID,
+  name: "Focusing",
+  color: "#f59e0b",
+  icon: { type: "lucide", value: "star" },
+};
+
 export function getProjectCategories(
   projectCategories: ProjectCategory[],
 ): ProjectCategory[] {

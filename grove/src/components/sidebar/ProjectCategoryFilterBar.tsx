@@ -20,19 +20,23 @@ import type { Project, ProjectCategory } from "../../types";
 import { cn } from "../../lib/cn";
 import {
   DEFAULT_PROJECT_CATEGORY,
+  FOCUSING_PROJECT_CATEGORY,
   colorWithAlpha,
   getProjectCategoryBadgeStyle,
   reorderProjectCategories,
   resolveProjectCategoryId,
   ProjectCategoryIconGlyph,
 } from "../../lib/project-categories";
+import { hasFocusedProjects, getFocusedProjects } from "../../lib/project-focus";
 import { usePreferencesStore } from "../../store/preferences";
 
 interface Props {
   projects: Project[];
   activeCategoryIds: string[];
+  focusViewActive: boolean;
   onToggleCategory: (categoryId: string) => void;
   onClearCategories: () => void;
+  onSelectFocus: () => void;
 }
 
 function categoryBadgeClassName(isActive: boolean): string {
@@ -109,8 +113,10 @@ function SortableCategoryBadge({ id, ...badgeProps }: SortableCategoryBadgeProps
 export default function ProjectCategoryFilterBar({
   projects,
   activeCategoryIds,
+  focusViewActive,
   onToggleCategory,
   onClearCategories,
+  onSelectFocus,
 }: Props) {
   const projectCategories = usePreferencesStore((state) => state.projectCategories);
   const setProjectCategories = usePreferencesStore((state) => state.setProjectCategories);
@@ -157,6 +163,15 @@ export default function ProjectCategoryFilterBar({
             isActive={activeCategoryIds.includes(DEFAULT_PROJECT_CATEGORY.id)}
             onToggle={() => onToggleCategory(DEFAULT_PROJECT_CATEGORY.id)}
           />
+
+          {hasFocusedProjects(projects) && (
+            <CategoryBadge
+              category={FOCUSING_PROJECT_CATEGORY}
+              projectCount={getFocusedProjects(projects).length}
+              isActive={focusViewActive}
+              onToggle={onSelectFocus}
+            />
+          )}
 
           <DndContext
             sensors={sensors}

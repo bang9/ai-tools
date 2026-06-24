@@ -13,6 +13,7 @@ import MissionPanel from "./MissionPanel";
 import { IconButton } from "../ui/button";
 import { cn } from "../../lib/cn";
 import { DEFAULT_PROJECT_CATEGORY_ID, resolveProjectCategoryId } from "../../lib/project-categories";
+import { hasFocusedProjects, getFocusedProjects } from "../../lib/project-focus";
 
 function Sidebar() {
   const { projects, cloningProjects, loading } = useProject();
@@ -22,12 +23,17 @@ function Sidebar() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showCreateMissionDialog, setShowCreateMissionDialog] = useState(false);
   const [activeCategoryIds, setActiveCategoryIds] = useState<string[]>([]);
-  const filteredProjectCount =
-    activeCategoryIds.length === 0
-      ? projects.length
-      : projects.filter((project) =>
-          activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
-        ).length;
+  const [focusViewActive, setFocusViewActive] = useState(false);
+  let filteredProjectCount: number;
+  if (focusViewActive) {
+    filteredProjectCount = getFocusedProjects(projects).length;
+  } else if (activeCategoryIds.length === 0) {
+    filteredProjectCount = projects.length;
+  } else {
+    filteredProjectCount = projects.filter((project) =>
+      activeCategoryIds.includes(resolveProjectCategoryId(project.categoryId)),
+    ).length;
+  }
 
   const isProjectsMode = sidebarMode === "projects";
   const addButtonTitle = isProjectsMode ? "Add project" : "Create mission";
@@ -57,6 +63,12 @@ function Sidebar() {
       return next.length === current.length ? current : next;
     });
   }, [projectCategories]);
+
+  useEffect(() => {
+    if (focusViewActive && !hasFocusedProjects(projects)) {
+      setFocusViewActive(false);
+    }
+  }, [focusViewActive, projects]);
 
   let content: React.ReactNode;
   if (isProjectsMode) {
@@ -109,6 +121,7 @@ function Sidebar() {
           projects={projects}
           cloningProjects={cloningProjects}
           activeCategoryIds={activeCategoryIds}
+          focusViewActive={focusViewActive}
         />
       );
     }
@@ -154,14 +167,25 @@ function Sidebar() {
         <ProjectCategoryFilterBar
           projects={projects}
           activeCategoryIds={activeCategoryIds}
-          onToggleCategory={(categoryId) =>
+          focusViewActive={focusViewActive}
+          onToggleCategory={(categoryId) => {
+            setFocusViewActive(false);
             setActiveCategoryIds((current) =>
               current.includes(categoryId)
                 ? current.filter((id) => id !== categoryId)
                 : [...current, categoryId],
-            )
-          }
+            );
+          }}
           onClearCategories={() => setActiveCategoryIds([])}
+          onSelectFocus={() =>
+            setFocusViewActive((active) => {
+              const next = !active;
+              if (next) {
+                setActiveCategoryIds([]);
+              }
+              return next;
+            })
+          }
         />
       )}
 
