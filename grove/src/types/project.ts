@@ -12,6 +12,7 @@ export interface Project {
   resolvedDefaultBranch: string;
   collapsed: boolean;
   categoryId: string;
+  focused: boolean;
 }
 
 export interface Worktree {

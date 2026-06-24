@@ -36,6 +36,7 @@ interface ProjectState {
   setWorktreeOrder: (projectId: string, order: string[]) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   setProjectCategory: (projectId: string, categoryId: string) => Promise<void>;
+  setProjectFocus: (projectId: string, focused: boolean) => Promise<void>;
   remapDeletedProjectCategory: (categoryId: string) => void;
   setBaseBranch: (projectId: string, branch: string | null) => Promise<void>;
   toggleProjectCollapse: (id: string) => void;
@@ -505,6 +506,18 @@ export const useProjectStore = create<ProjectState>((set) => ({
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId ? { ...p, categoryId } : p,
+      ),
+    }));
+  },
+
+  setProjectFocus: async (projectId: string, focused: boolean) => {
+    markProjectMutationStarted(set);
+    await runCommand(() => tauri.setProjectFocus(projectId, focused), {
+      errorToast: "Failed to update project focus",
+    });
+    commitProjectMutation(set, (state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId ? { ...p, focused } : p,
       ),
     }));
   },
