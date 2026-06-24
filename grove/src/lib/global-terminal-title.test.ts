@@ -24,6 +24,7 @@ function makeProject(worktrees: Worktree[] = []): Project {
     resolvedDefaultBranch: "main",
     collapsed: false,
     categoryId: "default",
+    focused: false,
   };
 }
 

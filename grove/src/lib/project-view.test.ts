@@ -23,6 +23,7 @@ function makeProject(id: string, org: string, repo: string): Project {
     resolvedDefaultBranch: "main",
     collapsed: false,
     categoryId: "default",
+    focused: false,
   };
 }
 

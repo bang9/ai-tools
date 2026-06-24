@@ -22,6 +22,7 @@ const project: Project = {
   resolvedDefaultBranch: "main",
   collapsed: false,
   categoryId: "default",
+  focused: false,
 };
 
 const mission: Mission = {
