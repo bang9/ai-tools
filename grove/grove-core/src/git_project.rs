@@ -27,6 +27,17 @@ pub(crate) fn git_command() -> Command {
     for (key, value) in subprocess_env_pairs() {
         command.env(key, value);
     }
+    // Never let a git subprocess block forever on the network or an interactive
+    // prompt. A stalled SSH connection to the remote previously kept fetches
+    // alive for hours (orphaned `git`/`ssh` processes), freezing any command
+    // that ran git synchronously. These guards make git fail fast instead.
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        command.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3",
+        );
+    }
     command
 }
 
@@ -2790,6 +2801,78 @@ mod tests {
             },
             None => unsafe {
                 std::env::remove_var("SSH_AUTH_SOCK");
+            },
+        }
+    }
+
+    #[test]
+    fn git_command_sets_non_interactive_and_default_ssh_timeouts() {
+        let _lock = env_lock();
+        let original = std::env::var_os("GIT_SSH_COMMAND");
+        unsafe {
+            std::env::remove_var("GIT_SSH_COMMAND");
+        }
+
+        let command = git_command();
+        let terminal_prompt =
+            command
+                .get_envs()
+                .find_map(|(key, value)| match (key.to_str(), value) {
+                    (Some("GIT_TERMINAL_PROMPT"), Some(value)) => {
+                        Some(value.to_string_lossy().into_owned())
+                    }
+                    _ => None,
+                });
+        let ssh_command =
+            command
+                .get_envs()
+                .find_map(|(key, value)| match (key.to_str(), value) {
+                    (Some("GIT_SSH_COMMAND"), Some(value)) => {
+                        Some(value.to_string_lossy().into_owned())
+                    }
+                    _ => None,
+                });
+
+        assert_eq!(terminal_prompt.as_deref(), Some("0"));
+        let ssh_command = ssh_command.expect("default GIT_SSH_COMMAND should be injected");
+        assert!(ssh_command.contains("ConnectTimeout="));
+        assert!(ssh_command.contains("ServerAliveInterval="));
+        assert!(ssh_command.contains("BatchMode=yes"));
+
+        if let Some(value) = original {
+            unsafe {
+                std::env::set_var("GIT_SSH_COMMAND", value);
+            }
+        }
+    }
+
+    #[test]
+    fn git_command_respects_existing_ssh_command() {
+        let _lock = env_lock();
+        let original = std::env::var_os("GIT_SSH_COMMAND");
+        unsafe {
+            std::env::set_var("GIT_SSH_COMMAND", "my-custom-ssh");
+        }
+
+        let command = git_command();
+        // We must not override an inherited GIT_SSH_COMMAND, otherwise a user's
+        // ssh config (and the fake-ssh test harness) would be clobbered. The
+        // value is inherited from the process env, so it must not be set
+        // explicitly on the Command.
+        let overrides_ssh_command = command
+            .get_envs()
+            .any(|(key, _)| key.to_str() == Some("GIT_SSH_COMMAND"));
+        assert!(
+            !overrides_ssh_command,
+            "git_command must not override an existing GIT_SSH_COMMAND"
+        );
+
+        match original {
+            Some(value) => unsafe {
+                std::env::set_var("GIT_SSH_COMMAND", value);
+            },
+            None => unsafe {
+                std::env::remove_var("GIT_SSH_COMMAND");
             },
         }
     }

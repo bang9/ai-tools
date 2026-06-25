@@ -344,7 +344,10 @@ fn add_project_to_mission_with_paths(
         return Err(format!("Source directory not found: {source_path}"));
     }
 
-    let _ = run_git(source, &["fetch", "--prune", "origin"]);
+    // No synchronous `git fetch` here. The worktree branches from the source's
+    // local HEAD (not origin/*), so fetching does not change the result, and the
+    // background source-sync job already keeps origin refs fresh. Fetching on the
+    // add path only risked blocking the whole command on a stalled network.
 
     if let Some(parent) = worktree_path.parent() {
         fs::create_dir_all(parent)
