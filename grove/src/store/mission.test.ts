@@ -66,6 +66,7 @@ describe("useMissionStore", () => {
       selectedItem: null,
       deletingMissions: {},
       deletingMissionProjects: {},
+      addingMissionProjects: {},
       loading: false,
     });
     useTerminalStore.setState({
@@ -153,6 +154,56 @@ describe("useMissionStore", () => {
     it("returns null when selected mission does not exist", () => {
       useMissionStore.getState().selectItem("nonexistent");
       expect(useMissionStore.getState().getSelectedPath()).toBeNull();
+    });
+  });
+
+  describe("addProject", () => {
+    it("marks the project as adding while the add is in flight, then appends it", async () => {
+      let resolveAdd: ((project: MissionProject) => void) | undefined;
+      vi.mocked(tauri.addProjectToMission).mockImplementation(
+        () =>
+          new Promise<MissionProject>((resolve) => {
+            resolveAdd = resolve;
+          }),
+      );
+
+      useMissionStore.setState({
+        missions: [makeMission("m1")],
+        addingMissionProjects: {},
+      });
+
+      const pending = useMissionStore.getState().addProject("m1", "p1");
+
+      expect(useMissionStore.getState().addingMissionProjects).toEqual({
+        "m1:p1": true,
+      });
+      expect(useMissionStore.getState().missions[0]?.projects).toEqual([]);
+
+      resolveAdd?.(makeMissionProject("p1", "/tmp/p1"));
+      await pending;
+
+      expect(useMissionStore.getState().addingMissionProjects).toEqual({});
+      expect(useMissionStore.getState().missions[0]?.projects).toEqual([
+        makeMissionProject("p1", "/tmp/p1"),
+      ]);
+    });
+
+    it("clears the adding flag when the add fails", async () => {
+      vi.mocked(tauri.addProjectToMission).mockRejectedValue(
+        new Error("boom"),
+      );
+
+      useMissionStore.setState({
+        missions: [makeMission("m1")],
+        addingMissionProjects: {},
+      });
+
+      await expect(
+        useMissionStore.getState().addProject("m1", "p1"),
+      ).rejects.toThrow("boom");
+
+      expect(useMissionStore.getState().addingMissionProjects).toEqual({});
+      expect(useMissionStore.getState().missions[0]?.projects).toEqual([]);
     });
   });
 

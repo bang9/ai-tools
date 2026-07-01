@@ -1,8 +1,5 @@
-import { useState } from "react";
-import { Loader2 } from "lucide-react";
 import { useProjectStore } from "../../store/project";
 import { useMissionStore } from "../../store/mission";
-import { useToast } from "../../store/toast";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/cn";
 
@@ -19,24 +16,18 @@ function AddProjectToMissionDialog({
 }: Props) {
   const projects = useProjectStore((s) => s.projects);
   const addProject = useMissionStore((s) => s.addProject);
-  const { toast } = useToast();
-  const [loading, setLoading] = useState<string | null>(null);
 
   const available = projects.filter(
     (p) => !existingProjectIds.includes(p.id),
   );
 
-  const handleSelect = async (projectId: string) => {
-    setLoading(projectId);
-    try {
-      await addProject(missionId, projectId);
-      toast("success", "Project added to mission");
-      onClose();
-    } catch {
-      // Toasts are handled by the command layer.
-    } finally {
-      setLoading(null);
-    }
+  const handleSelect = (projectId: string) => {
+    // Close the selection list immediately; the mission tree shows a loading
+    // placeholder while the add runs in the background. Failures surface via a
+    // toast from the store; swallow the rejection here so the fire-and-forget
+    // call does not become an unhandled promise rejection.
+    onClose();
+    void addProject(missionId, projectId).catch(() => {});
   };
 
   return (
@@ -52,17 +43,12 @@ function AddProjectToMissionDialog({
             className={cn(
               "flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] transition-colors",
               "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-              "disabled:pointer-events-none disabled:opacity-50",
             )}
             onClick={() => handleSelect(project.id)}
-            disabled={loading !== null}
           >
             <span className={cn("min-w-0 flex-1 truncate text-left")}>
               {project.org}/{project.repo}
             </span>
-            {loading === project.id && (
-              <Loader2 className={cn("h-3 w-3 shrink-0 animate-spin")} />
-            )}
           </button>
         ))
       )}
@@ -71,7 +57,6 @@ function AddProjectToMissionDialog({
           variant="ghost"
           size="sm"
           onClick={onClose}
-          disabled={loading !== null}
           className={cn("text-[11px] h-6")}
         >
           Cancel

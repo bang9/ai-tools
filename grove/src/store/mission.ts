@@ -3,13 +3,25 @@ import type { Mission } from "../types";
 import * as tauri from "../lib/platform";
 import { runCommand, runCommandSafely } from "../lib/command";
 import { useTerminalStore } from "./terminal";
+import { useProjectStore } from "./project";
 import { runTerminalGcNow } from "../lib/terminal-gc";
+
+function projectAddLabel(projectId: string): string {
+  const project = useProjectStore
+    .getState()
+    .projects.find((p) => p.id === projectId);
+  if (!project) return "project";
+  return project.name !== project.repo
+    ? project.name
+    : `${project.org}/${project.repo}`;
+}
 
 interface MissionState {
   missions: Mission[];
   selectedItem: { missionId: string; projectId?: string } | null;
   deletingMissions: Record<string, boolean>;
   deletingMissionProjects: Record<string, boolean>;
+  addingMissionProjects: Record<string, boolean>;
   loading: boolean;
 
   loadMissions: () => Promise<void>;
@@ -27,6 +39,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   selectedItem: null,
   deletingMissions: {},
   deletingMissionProjects: {},
+  addingMissionProjects: {},
   loading: false,
 
   loadMissions: async () => {
@@ -115,17 +128,39 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   },
 
   addProject: async (missionId: string, projectId: string) => {
-    const missionProject = await runCommand(
-      () => tauri.addProjectToMission(missionId, projectId),
-      { errorToast: "Failed to add project to mission" },
-    );
+    const addingKey = `${missionId}:${projectId}`;
     set((state) => ({
-      missions: state.missions.map((m) =>
-        m.id === missionId
-          ? { ...m, projects: [...m.projects, missionProject] }
-          : m,
-      ),
+      addingMissionProjects: {
+        ...state.addingMissionProjects,
+        [addingKey]: true,
+      },
     }));
+
+    try {
+      const missionProject = await runCommand(
+        () => tauri.addProjectToMission(missionId, projectId),
+        { errorToast: `Failed to add ${projectAddLabel(projectId)} to mission` },
+      );
+      set((state) => {
+        const { [addingKey]: _, ...remainingAdding } =
+          state.addingMissionProjects;
+        return {
+          addingMissionProjects: remainingAdding,
+          missions: state.missions.map((m) =>
+            m.id === missionId
+              ? { ...m, projects: [...m.projects, missionProject] }
+              : m,
+          ),
+        };
+      });
+    } catch (error) {
+      set((state) => {
+        const { [addingKey]: _, ...remainingAdding } =
+          state.addingMissionProjects;
+        return { addingMissionProjects: remainingAdding };
+      });
+      throw error;
+    }
   },
 
   removeProject: async (missionId: string, projectId: string) => {

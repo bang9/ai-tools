@@ -1,11 +1,29 @@
-use crate::config::{grove_data_path, load_json_file_or_default, save_json_file};
+use crate::config::{grove_data_path, load_json_file_or_default};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, OnceLock},
 };
+
+/// Serializes the load-mutate-save critical section for every mission store
+/// mutation. Add/remove/delete each read the store, run slow git worktree
+/// operations, then write the whole store back. Without this lock, concurrent
+/// mutations (e.g. queuing several project adds from the UI) would race:
+/// the last writer clobbers the others, silently dropping projects from
+/// `missions.json`. Reads are safe without the lock because saves are atomic.
+fn mission_store_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn lock_mission_store_writes() -> Result<MutexGuard<'static, ()>, String> {
+    mission_store_write_lock()
+        .lock()
+        .map_err(|_| "Mission store write lock poisoned".to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,7 +116,18 @@ fn load_missions_with_paths(
     let changed = reconcile_missions(&mut store, dir, project_ids);
 
     if changed {
-        let _ = save_missions_to_path(path, &store);
+        // Persisting the reconciled store is a write and must be serialized with
+        // mission mutations. Re-read and re-reconcile under the lock so this
+        // cleanup cannot clobber a project a concurrent add committed between
+        // our unlocked read above and this save (and cannot collide with a
+        // mutation on the shared temp file).
+        if let Ok(_guard) = lock_mission_store_writes() {
+            let mut fresh = load_missions_from_path(path);
+            if reconcile_missions(&mut fresh, dir, project_ids) {
+                let _ = save_missions_to_path(path, &fresh);
+            }
+            store = fresh;
+        }
     }
 
     for mission in &mut store.missions {
@@ -179,7 +208,27 @@ pub(crate) fn save_missions_to_path(path: &Path, store: &MissionStore) -> Result
             })
             .collect(),
     };
-    save_json_file(path, &persisted)
+    save_missions_atomic(path, &persisted)
+}
+
+/// Writes the store to a sibling temp file and renames it into place, so a
+/// concurrent lock-free reader (e.g. the mission list poll) never observes a
+/// truncated file mid-write. `fs::rename` replaces the destination atomically
+/// on both POSIX and Windows. Mission writes are serialized by
+/// `mission_store_write_lock`, so the fixed temp name cannot collide.
+fn save_missions_atomic(path: &Path, persisted: &PersistedMissionStore) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {e}"))?;
+    }
+    let content = serde_json::to_string_pretty(persisted)
+        .map_err(|e| format!("Failed to serialize {}: {e}", path.display()))?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, content)
+        .map_err(|e| format!("Failed to write {}: {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("Failed to persist {}: {e}", path.display())
+    })
 }
 
 fn generate_mission_id() -> String {
@@ -216,6 +265,7 @@ fn reject_existing_custom_branch(source: &Path, branch_name: &str) -> Result<(),
 }
 
 pub fn create_mission(name: &str, branch_name: Option<String>) -> Result<Mission, String> {
+    let _guard = lock_mission_store_writes()?;
     let path = missions_path()?;
     let dir = missions_dir()?;
     create_mission_with_paths(&path, &dir, name, branch_name)
@@ -282,6 +332,7 @@ pub fn add_project_to_mission(
     mission_id: &str,
     project_id: &str,
 ) -> Result<MissionProject, String> {
+    let _guard = lock_mission_store_writes()?;
     let store_path = missions_path()?;
     let dir = missions_dir()?;
     let entry = crate::config::find_project_entry_by_id(project_id)?;
@@ -387,6 +438,7 @@ fn add_project_to_mission_with_paths(
 }
 
 pub fn remove_project_from_mission(mission_id: &str, project_id: &str) -> Result<(), String> {
+    let _guard = lock_mission_store_writes()?;
     let store_path = missions_path()?;
     let dir = missions_dir()?;
     remove_project_from_mission_with_paths(&store_path, &dir, mission_id, project_id)
@@ -428,6 +480,7 @@ fn remove_project_from_mission_with_paths(
 }
 
 pub fn set_mission_collapsed(id: &str, collapsed: bool) -> Result<(), String> {
+    let _guard = lock_mission_store_writes()?;
     let path = missions_path()?;
     let mut store = load_missions_from_path(&path);
     let mission = store
@@ -440,6 +493,7 @@ pub fn set_mission_collapsed(id: &str, collapsed: bool) -> Result<(), String> {
 }
 
 pub fn delete_mission(id: &str) -> Result<(), String> {
+    let _guard = lock_mission_store_writes()?;
     let path = missions_path()?;
     let dir = missions_dir()?;
     delete_mission_with_paths(&path, &dir, id)
@@ -830,6 +884,51 @@ mod tests {
 
         delete_mission(&mission.id).unwrap();
         let _ = fs::remove_dir_all(repo_root);
+    }
+
+    #[test]
+    fn concurrent_add_project_persists_every_entry() {
+        let _lock = env_lock();
+        let _home = TestHome::new();
+        let (repo_root_a, source_a) = temp_git_repo();
+        let (repo_root_b, source_b) = temp_git_repo();
+        save_test_config(vec![
+            sample_project_entry("project-a", &source_a, "repo-a"),
+            sample_project_entry("project-b", &source_b, "repo-b"),
+        ]);
+
+        let mission = create_mission("Mission", None).unwrap();
+        let mission_id = mission.id.clone();
+
+        // Two adds racing on the same mission. The load-mutate-save critical
+        // section must be serialized, otherwise the last writer clobbers the
+        // other and a project silently vanishes from missions.json.
+        let id_a = mission_id.clone();
+        let id_b = mission_id.clone();
+        let handle_a =
+            std::thread::spawn(move || add_project_to_mission(&id_a, "project-a").unwrap());
+        let handle_b =
+            std::thread::spawn(move || add_project_to_mission(&id_b, "project-b").unwrap());
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+
+        let store = load_missions();
+        let saved = store
+            .missions
+            .iter()
+            .find(|mission| mission.id == mission_id)
+            .unwrap();
+        let mut ids: Vec<&str> = saved
+            .projects
+            .iter()
+            .map(|project| project.project_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["project-a", "project-b"]);
+
+        delete_mission(&mission_id).unwrap();
+        let _ = fs::remove_dir_all(repo_root_a);
+        let _ = fs::remove_dir_all(repo_root_b);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -12,6 +12,7 @@ import { useTerminalStore } from "../../store/terminal";
 import { IconButton } from "../ui/button";
 import { Badge } from "../ui/badge";
 import MissionProjectItem from "./MissionProjectItem";
+import MissionProjectPlaceholder from "./MissionProjectPlaceholder";
 import AddProjectToMissionDialog from "./AddProjectToMissionDialog";
 import { cn } from "../../lib/cn";
 import { overlay } from "../../lib/overlay";
@@ -33,6 +34,20 @@ function MissionItem({ mission }: Props) {
   const toggleCollapse = useMissionStore((s) => s.toggleCollapse);
   const selectItem = useMissionStore((s) => s.selectItem);
   const deleteMission = useMissionStore((s) => s.deleteMission);
+  const addingMissionProjects = useMissionStore(
+    (s) => s.addingMissionProjects,
+  );
+
+  const pendingProjectIds = useMemo(
+    () =>
+      Object.keys(addingMissionProjects)
+        .filter(
+          (key) =>
+            key.startsWith(`${mission.id}:`) && addingMissionProjects[key],
+        )
+        .map((key) => key.slice(mission.id.length + 1)),
+    [addingMissionProjects, mission.id],
+  );
 
   const [showAddProject, setShowAddProject] = useState(false);
   const noteKey = getNoteKey({ type: "mission", missionId: mission.id });
@@ -155,10 +170,16 @@ function MissionItem({ mission }: Props) {
                 project={project}
               />
             ))}
+            {pendingProjectIds.map((projectId) => (
+              <MissionProjectPlaceholder key={projectId} projectId={projectId} />
+            ))}
             {showAddProject && !deleting && (
               <AddProjectToMissionDialog
                 missionId={mission.id}
-                existingProjectIds={mission.projects.map((p) => p.projectId)}
+                existingProjectIds={[
+                  ...mission.projects.map((p) => p.projectId),
+                  ...pendingProjectIds,
+                ]}
                 onClose={() => setShowAddProject(false)}
               />
             )}
