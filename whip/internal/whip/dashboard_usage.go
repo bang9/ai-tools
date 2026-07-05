@@ -145,6 +145,8 @@ var dashboardCodexPricingTable = map[string]dashboardCodexPricing{
 }
 
 var dashboardClaudePricingTable = map[string]dashboardClaudePricing{
+	"claude-fable-5":             {InputPerToken: 1e-5, OutputPerToken: 5e-5, CacheCreationPerToken: 1.25e-5, CacheReadPerToken: 1e-6},
+	"claude-mythos-5":            {InputPerToken: 1e-5, OutputPerToken: 5e-5, CacheCreationPerToken: 1.25e-5, CacheReadPerToken: 1e-6},
 	"claude-haiku-4-5":           {InputPerToken: 1e-6, OutputPerToken: 5e-6, CacheCreationPerToken: 1.25e-6, CacheReadPerToken: 1e-7},
 	"claude-haiku-4-5-20251001":  {InputPerToken: 1e-6, OutputPerToken: 5e-6, CacheCreationPerToken: 1.25e-6, CacheReadPerToken: 1e-7},
 	"claude-opus-4-5":            {InputPerToken: 5e-6, OutputPerToken: 2.5e-5, CacheCreationPerToken: 6.25e-6, CacheReadPerToken: 5e-7},
@@ -155,6 +157,7 @@ var dashboardClaudePricingTable = map[string]dashboardClaudePricing{
 	"claude-opus-4-8-20260528":   {InputPerToken: 5e-6, OutputPerToken: 2.5e-5, CacheCreationPerToken: 6.25e-6, CacheReadPerToken: 5e-7},
 	"claude-opus-4-20250514":     {InputPerToken: 1.5e-5, OutputPerToken: 7.5e-5, CacheCreationPerToken: 1.875e-5, CacheReadPerToken: 1.5e-6},
 	"claude-opus-4-1":            {InputPerToken: 1.5e-5, OutputPerToken: 7.5e-5, CacheCreationPerToken: 1.875e-5, CacheReadPerToken: 1.5e-6},
+	"claude-sonnet-5":            {InputPerToken: 3e-6, OutputPerToken: 1.5e-5, CacheCreationPerToken: 3.75e-6, CacheReadPerToken: 3e-7},
 	"claude-sonnet-4-5":          makeTieredClaudePricing(3e-6, 1.5e-5, 3.75e-6, 3e-7, 200_000, 6e-6, 2.25e-5, 7.5e-6, 6e-7),
 	"claude-sonnet-4-5-20250929": makeTieredClaudePricing(3e-6, 1.5e-5, 3.75e-6, 3e-7, 200_000, 6e-6, 2.25e-5, 7.5e-6, 6e-7),
 	"claude-sonnet-4-20250514":   makeTieredClaudePricing(3e-6, 1.5e-5, 3.75e-6, 3e-7, 200_000, 6e-6, 2.25e-5, 7.5e-6, 6e-7),
