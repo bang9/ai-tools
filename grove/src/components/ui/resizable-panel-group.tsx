@@ -164,6 +164,10 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
         onDoubleClickCapture={handleSashDoubleClickCapture}
       >
         <Allotment
+          // Allotment fixes its SplitView orientation at construction; flipping
+          // `vertical` on a live instance leaves views styled for the old axis
+          // (zero-sized panes), so remount when the orientation changes.
+          key={props.vertical ? "vertical" : "horizontal"}
           ref={allotmentRef}
           className={cn(allotmentClassName)}
           defaultSizes={defaultSizes}
