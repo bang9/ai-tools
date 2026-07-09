@@ -15,6 +15,7 @@ import type { AppTabType } from "../../types";
 import { useWorktreePrUrl } from "../sidebar/worktree-pr";
 import { runCommand } from "../../lib/command";
 import { createWorktreePr, openExternal } from "../../lib/platform";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import PreferencesModal from "../preferences/PreferencesModal";
 
 const ADD_TAB_OPTIONS: { type: Exclude<AppTabType, "terminal" | "changes">; label: string; icon: typeof Globe }[] = [
@@ -204,7 +205,7 @@ function AppTabBar() {
                 },
               )}
             >
-              <span>{tab.title}</span>
+              <span className={cn("max-w-40 truncate")}>{tab.title}</span>
               {tab.closable && (
                 <span
                   role="button"
@@ -225,29 +226,19 @@ function AppTabBar() {
           );
         })}
 
-        {/* Add tab dropdown */}
-        <div className={cn("relative shrink-0")}>
-          <IconButton
-            onClick={() => setMenuOpen((v) => !v)}
-            onBlur={() => {
-              setTimeout(() => setMenuOpen(false), 150);
-            }}
-            title="Add tab"
-            aria-label="Add tab"
-          >
-            <Plus className={cn("size-3")} />
-          </IconButton>
-          {menuOpen && (
-            <div
-              className={cn(
-                "absolute top-full left-0 mt-1 z-50 min-w-[140px] rounded-md border border-border bg-popover p-1 shadow-md",
-              )}
-            >
+        {/* Add tab dropdown — hidden without a worktree (tabs are per-worktree) */}
+        {worktreePath && (
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger asChild>
+              <IconButton title="Add tab" aria-label="Add tab" className={cn("shrink-0")}>
+                <Plus className={cn("size-3")} />
+              </IconButton>
+            </PopoverTrigger>
+            <PopoverContent className={cn("w-auto min-w-[140px] p-1")}>
               {ADD_TAB_OPTIONS.map(({ type, label, icon: Icon }) => (
                 <button
                   key={type}
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => handleAddTab(type, label)}
                   className={cn(
                     "flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-xs",
@@ -258,9 +249,9 @@ function AppTabBar() {
                   <span>{label}</span>
                 </button>
               ))}
-            </div>
-          )}
-        </div>
+            </PopoverContent>
+          </Popover>
+        )}
 
         {/* Workspace actions */}
         <div className={cn("ml-auto flex items-center gap-1.5 pl-2")}>

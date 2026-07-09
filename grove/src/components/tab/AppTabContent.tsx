@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Globe } from "lucide-react";
-import { useTabStore, selectActiveTabIdForWorktree } from "../../store/tab";
+import {
+  useTabStore,
+  selectActiveTabIdForWorktree,
+  selectTabsForWorktree,
+} from "../../store/tab";
 import { useTerminalStore } from "../../store/terminal";
 import { usePanelLayoutStore } from "../../store/panel-layout";
 import { useBroadcastStore } from "../../store/broadcast";
@@ -23,20 +26,13 @@ import {
   type PipPresentationState,
 } from "../../lib/pip-floating";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
+import { initBrowserWebviewBridge } from "../../lib/browser-webview";
 import TerminalPanel from "../terminal/TerminalPanel";
 import ChangesPanel from "./ChangesPanel";
+import BrowserPanel from "./BrowserPanel";
 import PipTerminal from "./PipTerminal";
 import GlobalTerminalPanel from "../terminal/GlobalTerminalPanel";
 import { ResizablePanelGroup } from "../ui/resizable-panel-group";
-
-function BrowserPlaceholder() {
-  return (
-    <div className={cn("flex h-full items-center justify-center gap-2 text-muted-foreground")}>
-      <Globe className={cn("h-5 w-5")} />
-      <span className={cn("text-sm")}>Browser (coming soon)</span>
-    </div>
-  );
-}
 
 /** Find paneId for a given ptyId in the terminal sessions */
 function findPaneIdForPty(ptyId: string): string | null {
@@ -57,11 +53,20 @@ function AppTabContent() {
     setActiveWorktree(worktreePath);
   }, [worktreePath, setActiveWorktree]);
 
+  // Wire native browser nav events + orphan cleanup at app startup, not just
+  // when the first browser tab mounts (idempotent).
+  useEffect(() => {
+    initBrowserWebviewBridge();
+  }, []);
+
   const activeTabId = useTabStore((state) =>
     selectActiveTabIdForWorktree(state, worktreePath),
   );
+  const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
+  const browserTabs = tabs.filter((tab) => tab.type === "browser");
   const isTerminal = activeTabId === "terminal";
   const isChanges = activeTabId === "changes";
+  const activeTabIsBrowser = browserTabs.some((tab) => tab.id === activeTabId);
 
   const theme = useTerminalStore((s) => s.theme);
   const focusedPtyId = useTerminalStore((s) => s.focusedPtyId);
@@ -121,6 +126,7 @@ function AppTabContent() {
         focusedPtyId,
         hasActivePip: Boolean(pip),
         isFocusedPtyMirroring,
+        activeTabIsBrowser,
       })
     ) {
       if (!focusedPtyId) {
@@ -135,6 +141,7 @@ function AppTabContent() {
       }
     }
   }, [
+    activeTabIsBrowser,
     isFocusedPtyMirroring,
     isTerminal,
     focusedPtyId,
@@ -300,7 +307,7 @@ function AppTabContent() {
     ? buildBroadcastSessionKey(worktreePath, pip)
     : null;
 
-  const pipElement = hasPipBroadcast && (
+  const pipElement = hasPipBroadcast && !activeTabIsBrowser && (
     <PipTerminal
       key={activePipKey ?? "pip"}
       boundaryRef={pipBoundsRef}
@@ -327,11 +334,16 @@ function AppTabContent() {
         </div>
       )}
 
-      {activeTabId !== "terminal" && activeTabId !== "changes" && (
-        <div className={cn("absolute inset-0")}>
-          <BrowserPlaceholder />
+      {/* Browser tabs stay mounted so pages survive tab switches */}
+      {browserTabs.map((tab) => (
+        <div
+          key={tab.id}
+          className={cn("absolute inset-0")}
+          style={{ display: tab.id === activeTabId ? "block" : "none" }}
+        >
+          <BrowserPanel tabId={tab.id} isActive={tab.id === activeTabId} />
         </div>
-      )}
+      ))}
 
       {pipElement}
     </>

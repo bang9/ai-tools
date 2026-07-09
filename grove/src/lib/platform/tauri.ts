@@ -20,7 +20,13 @@ import type {
   ProjectEnvSyncConfig,
   StartCloneResult,
 } from "../../types";
-import type { Platform } from "./types";
+import type {
+  BrowserBounds,
+  BrowserNavEvent,
+  BrowserNewWindowEvent,
+  Platform,
+  UnlistenFn,
+} from "./types";
 
 export const windowDragRegionProps = {
   "data-tauri-drag-region": "",
@@ -326,6 +332,76 @@ export async function openDevConsole(): Promise<void> {
 
 export async function reloadAppWindow(): Promise<void> {
   return platform.invoke("reload_app_window");
+}
+
+// === BROWSER COMMANDS ===
+
+export async function browserCreate(
+  tabId: string,
+  url: string,
+  bounds: BrowserBounds,
+): Promise<void> {
+  return platform.invoke("browser_create", { tabId, url, bounds });
+}
+
+export async function browserNavigate(tabId: string, url: string): Promise<void> {
+  return platform.invoke("browser_navigate", { tabId, url });
+}
+
+export async function browserGoBack(tabId: string): Promise<void> {
+  return platform.invoke("browser_go_back", { tabId });
+}
+
+export async function browserGoForward(tabId: string): Promise<void> {
+  return platform.invoke("browser_go_forward", { tabId });
+}
+
+export async function browserReload(tabId: string): Promise<void> {
+  return platform.invoke("browser_reload", { tabId });
+}
+
+export async function browserSetBounds(
+  tabId: string,
+  bounds: BrowserBounds,
+): Promise<void> {
+  return platform.invoke("browser_set_bounds", { tabId, bounds });
+}
+
+export async function browserSetVisible(
+  tabId: string,
+  visible: boolean,
+): Promise<void> {
+  return platform.invoke("browser_set_visible", { tabId, visible });
+}
+
+export async function browserClose(tabId: string): Promise<void> {
+  return platform.invoke("browser_close", { tabId });
+}
+
+export async function browserCloseAll(): Promise<void> {
+  return platform.invoke("browser_close_all");
+}
+
+export async function browserOpenDevtools(tabId: string): Promise<void> {
+  return platform.invoke("browser_open_devtools", { tabId });
+}
+
+/**
+ * Tauri's Webview exposes no session-history API, so back/forward are driven
+ * by the frontend URL stack via explicit navigation.
+ */
+export const browserHasNativeHistory = false;
+
+export function onBrowserNav(
+  handler: (event: BrowserNavEvent) => void,
+): Promise<UnlistenFn> {
+  return platform.listen<BrowserNavEvent>("browser:nav", handler);
+}
+
+export function onBrowserNewWindow(
+  handler: (event: BrowserNewWindowEvent) => void,
+): Promise<UnlistenFn> {
+  return platform.listen<BrowserNewWindowEvent>("browser:new-window", handler);
 }
 
 // === ENV SYNC COMMANDS ===

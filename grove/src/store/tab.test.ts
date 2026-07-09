@@ -6,6 +6,7 @@ import {
   selectCurrentTabs,
   selectTabsForWorktree,
 } from "./tab";
+import { useBrowserStore } from "./browser";
 
 function initWorktree(path = "/tmp/wt") {
   useTabStore.getState().setActiveWorktree(path);
@@ -14,6 +15,7 @@ function initWorktree(path = "/tmp/wt") {
 describe("useTabStore", () => {
   beforeEach(() => {
     useTabStore.setState({ sessions: {}, activeWorktree: null });
+    useBrowserStore.setState({ navs: {} });
   });
 
   it("initializes with pinned Terminal and Changes tabs", () => {
@@ -152,6 +154,42 @@ describe("useTabStore", () => {
       useTabStore.getState().addTab("browser", "Browser");
       useTabStore.getState().removeSession("/tmp/a");
       expect(useTabStore.getState().sessions["/tmp/a"]).toBeUndefined();
+    });
+  });
+
+  describe("updateTabTitle", () => {
+    it("renames a closable tab", () => {
+      initWorktree();
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useTabStore.getState().updateTabTitle(id, "localhost:3000");
+      const tab = selectCurrentTabs(useTabStore.getState()).find((t) => t.id === id);
+      expect(tab?.title).toBe("localhost:3000");
+    });
+
+    it("ignores pinned tabs and unknown ids", () => {
+      initWorktree();
+      useTabStore.getState().updateTabTitle("terminal", "Hacked");
+      useTabStore.getState().updateTabTitle("missing", "Nope");
+      const tabs = selectCurrentTabs(useTabStore.getState());
+      expect(tabs.find((t) => t.id === "terminal")?.title).toBe("Terminal");
+    });
+  });
+
+  describe("browser nav cleanup", () => {
+    it("closeTab removes the tab's browser nav state", () => {
+      initWorktree();
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useBrowserStore.getState().navigate(id, "http://localhost:3000/");
+      useTabStore.getState().closeTab(id);
+      expect(useBrowserStore.getState().navs[id]).toBeUndefined();
+    });
+
+    it("removeSession removes nav state for the session's browser tabs", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useBrowserStore.getState().navigate(id, "http://localhost:3000/");
+      useTabStore.getState().removeSession("/tmp/a");
+      expect(useBrowserStore.getState().navs[id]).toBeUndefined();
     });
   });
 });

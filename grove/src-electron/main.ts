@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, shell, WebContentsView } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -199,6 +199,292 @@ function requireNumberArg(args: Record<string, unknown>, key: string): number {
   return value;
 }
 
+function requireBooleanArg(args: Record<string, unknown>, key: string): boolean {
+  const value = args[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`Expected boolean argument '${key}'`);
+  }
+
+  return value;
+}
+
+interface BrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function requireBoundsArg(args: Record<string, unknown>): BrowserBounds {
+  const raw = args.bounds;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Expected object argument 'bounds'");
+  }
+
+  const bounds = raw as Record<string, unknown>;
+  return {
+    x: requireNumberArg(bounds, "x"),
+    y: requireNumberArg(bounds, "y"),
+    width: requireNumberArg(bounds, "width"),
+    height: requireNumberArg(bounds, "height"),
+  };
+}
+
+function roundBounds(bounds: BrowserBounds): BrowserBounds {
+  return {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  };
+}
+
+function isAllowedBrowserUrl(url: string): boolean {
+  if (url === "about:blank") {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// --- Browser tab (native webview) support ---
+
+interface BrowserTabEntry {
+  view: WebContentsView;
+  window: BrowserWindow;
+}
+
+const browserViews = new Map<string, BrowserTabEntry>();
+
+const BROWSER_COMMANDS = new Set([
+  "browser_create",
+  "browser_navigate",
+  "browser_go_back",
+  "browser_go_forward",
+  "browser_reload",
+  "browser_set_bounds",
+  "browser_set_visible",
+  "browser_close",
+  "browser_close_all",
+  "browser_open_devtools",
+]);
+
+function sendBrowserNav(
+  win: BrowserWindow,
+  tabId: string,
+  view: WebContentsView,
+  loadingOverride?: boolean,
+) {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) {
+    return;
+  }
+
+  const wc = view.webContents;
+  if (wc.isDestroyed()) {
+    return;
+  }
+
+  win.webContents.send("browser:nav", {
+    tabId,
+    url: wc.getURL(),
+    title: wc.getTitle() || null,
+    loading: loadingOverride ?? wc.isLoading(),
+    canGoBack: wc.navigationHistory.canGoBack(),
+    canGoForward: wc.navigationHistory.canGoForward(),
+  });
+}
+
+function wireBrowserViewEvents(
+  win: BrowserWindow,
+  tabId: string,
+  view: WebContentsView,
+) {
+  const wc = view.webContents;
+
+  wc.on("did-start-loading", () => sendBrowserNav(win, tabId, view));
+  wc.on("did-stop-loading", () => sendBrowserNav(win, tabId, view));
+  wc.on("did-navigate", () => sendBrowserNav(win, tabId, view));
+  wc.on("did-navigate-in-page", () => sendBrowserNav(win, tabId, view));
+  wc.on("page-title-updated", () => sendBrowserNav(win, tabId, view));
+  wc.on("did-fail-load", () => sendBrowserNav(win, tabId, view, false));
+
+  wc.setWindowOpenHandler(({ url }) => {
+    // target="_blank" links / window.open: never load in this view or open a
+    // native window — the frontend opens a Grove browser tab instead. Only
+    // http/https URLs are forwarded ("about:blank" is allowed for
+    // navigation but not a real new-window request).
+    if (
+      url !== "about:blank" &&
+      isAllowedBrowserUrl(url) &&
+      !win.isDestroyed() &&
+      !win.webContents.isDestroyed()
+    ) {
+      win.webContents.send("browser:new-window", { openerTabId: tabId, url });
+    }
+    return { action: "deny" };
+  });
+
+  wc.on("will-navigate", (event, url) => {
+    if (!isAllowedBrowserUrl(url)) {
+      event.preventDefault();
+    }
+  });
+}
+
+function closeBrowserViewsForWindow(win: BrowserWindow) {
+  for (const [tabId, entry] of browserViews) {
+    if (entry.window !== win) {
+      continue;
+    }
+
+    try {
+      if (!win.isDestroyed()) {
+        win.contentView.removeChildView(entry.view);
+      }
+    } catch (error) {
+      console.error("[grove-electron] Failed to remove browser view:", error);
+    }
+
+    try {
+      if (!entry.view.webContents.isDestroyed()) {
+        entry.view.webContents.close();
+      }
+    } catch (error) {
+      console.error(
+        "[grove-electron] Failed to close browser view webContents:",
+        error,
+      );
+    }
+
+    browserViews.delete(tabId);
+  }
+}
+
+async function handleBrowserCommand(
+  targetWindow: BrowserWindow,
+  command: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  if (command === "browser_close_all") {
+    // A freshly reloaded renderer calls this once to clean up webviews
+    // orphaned by its previous session (tab state is in-memory).
+    closeBrowserViewsForWindow(targetWindow);
+    return;
+  }
+
+  const tabId = requireStringArg(args, "tabId");
+
+  if (command === "browser_create") {
+    const url = requireStringArg(args, "url");
+    if (!isAllowedBrowserUrl(url)) {
+      throw new Error(`Blocked navigation to disallowed URL: ${url}`);
+    }
+
+    const existing = browserViews.get(tabId);
+    if (existing && !existing.view.webContents.isDestroyed()) {
+      await existing.view.webContents.loadURL(url);
+      return;
+    }
+
+    const bounds = roundBounds(requireBoundsArg(args));
+    const view = new WebContentsView({
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    targetWindow.contentView.addChildView(view);
+    view.setBounds(bounds);
+    wireBrowserViewEvents(targetWindow, tabId, view);
+    browserViews.set(tabId, { view, window: targetWindow });
+
+    await view.webContents.loadURL(url);
+    return;
+  }
+
+  const entry = browserViews.get(tabId);
+  if (!entry || entry.view.webContents.isDestroyed()) {
+    // All commands other than browser_create are silent no-ops for unknown tabs.
+    return;
+  }
+
+  const { view } = entry;
+  const wc = view.webContents;
+
+  switch (command) {
+    case "browser_navigate": {
+      const url = requireStringArg(args, "url");
+      if (isAllowedBrowserUrl(url)) {
+        void wc.loadURL(url);
+      }
+      return;
+    }
+
+    case "browser_go_back": {
+      if (wc.navigationHistory.canGoBack()) {
+        wc.navigationHistory.goBack();
+      }
+      return;
+    }
+
+    case "browser_go_forward": {
+      if (wc.navigationHistory.canGoForward()) {
+        wc.navigationHistory.goForward();
+      }
+      return;
+    }
+
+    case "browser_reload": {
+      wc.reload();
+      return;
+    }
+
+    case "browser_open_devtools": {
+      // Detached window — a docked mode would fight the manually-positioned
+      // WebContentsView and overlap the app UI.
+      wc.openDevTools({ mode: "detach" });
+      return;
+    }
+
+    case "browser_set_bounds": {
+      view.setBounds(roundBounds(requireBoundsArg(args)));
+      return;
+    }
+
+    case "browser_set_visible": {
+      view.setVisible(requireBooleanArg(args, "visible"));
+      return;
+    }
+
+    case "browser_close": {
+      try {
+        if (!entry.window.isDestroyed()) {
+          entry.window.contentView.removeChildView(view);
+        }
+      } catch (error) {
+        console.error("[grove-electron] Failed to remove browser view:", error);
+      }
+
+      if (!wc.isDestroyed()) {
+        wc.close();
+      }
+
+      browserViews.delete(tabId);
+      return;
+    }
+
+    default:
+      return;
+  }
+}
+
 async function invokeNative(
   targetWindow: BrowserWindow,
   command: string,
@@ -325,6 +611,9 @@ function createMainWindow() {
       mainWindow.webContents.send("fullscreen-change", false);
     }
   });
+  mainWindow.on("closed", () => {
+    closeBrowserViewsForWindow(mainWindow);
+  });
 
   void loadRenderer(mainWindow);
   return mainWindow;
@@ -364,6 +653,10 @@ function registerIpcHandlers() {
       if (command === "reload_app_window") {
         targetWindow.webContents.reload();
         return;
+      }
+
+      if (BROWSER_COMMANDS.has(command)) {
+        return handleBrowserCommand(targetWindow, command, args);
       }
 
       return invokeNative(targetWindow, command, args);

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AppTab, AppTabType } from "../types";
+import { useBrowserStore } from "./browser";
 
 export interface TabSession {
   tabs: AppTab[];
@@ -13,6 +14,7 @@ interface TabState {
   addTab: (type: AppTabType, title: string) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
+  updateTabTitle: (tabId: string, title: string) => void;
   removeSession: (worktreePath: string) => void;
 }
 
@@ -98,22 +100,25 @@ export const useTabStore = create<TabState>((set, get) => ({
     return id;
   },
 
-  closeTab: (tabId) =>
-    set((state) => {
-      const session = getSession(state);
-      const tab = session.tabs.find((t) => t.id === tabId);
-      if (!tab || !tab.closable) return {};
-      const tabIndex = session.tabs.findIndex((t) => t.id === tabId);
-      const newTabs = session.tabs.filter((t) => t.id !== tabId);
-      const wasActive = session.activeTabId === tabId;
-      const newActiveTabId = wasActive
-        ? newTabs[Math.min(tabIndex, newTabs.length - 1)].id
-        : session.activeTabId;
-      return updateSession(state, () => ({
-        tabs: newTabs,
-        activeTabId: newActiveTabId,
-      }));
-    }),
+  closeTab: (tabId) => {
+    const state = get();
+    const session = getSession(state);
+    const tab = session.tabs.find((t) => t.id === tabId);
+    if (!tab || !tab.closable) return;
+    const tabIndex = session.tabs.findIndex((t) => t.id === tabId);
+    const newTabs = session.tabs.filter((t) => t.id !== tabId);
+    const wasActive = session.activeTabId === tabId;
+    const newActiveTabId = wasActive
+      ? newTabs[Math.min(tabIndex, newTabs.length - 1)].id
+      : session.activeTabId;
+    set(updateSession(state, () => ({
+      tabs: newTabs,
+      activeTabId: newActiveTabId,
+    })));
+    if (tab.type === "browser") {
+      useBrowserStore.getState().removeTab(tabId);
+    }
+  },
 
   setActiveTab: (tabId) =>
     set((state) => {
@@ -125,13 +130,33 @@ export const useTabStore = create<TabState>((set, get) => ({
       }));
     }),
 
-  removeSession: (worktreePath) =>
+  updateTabTitle: (tabId, title) =>
     set((state) => {
-      if (!state.sessions[worktreePath]) return {};
-      const newSessions = { ...state.sessions };
-      delete newSessions[worktreePath];
-      return { sessions: newSessions };
+      const session = getSession(state);
+      const tab = session.tabs.find((t) => t.id === tabId);
+      if (!tab || !tab.closable || tab.title === title) return {};
+      return updateSession(state, () => ({
+        ...session,
+        tabs: session.tabs.map((t) =>
+          t.id === tabId ? { ...t, title } : t,
+        ),
+      }));
     }),
+
+  removeSession: (worktreePath) => {
+    const state = get();
+    const session = state.sessions[worktreePath];
+    if (!session) return;
+    const newSessions = { ...state.sessions };
+    delete newSessions[worktreePath];
+    set({ sessions: newSessions });
+    const browserStore = useBrowserStore.getState();
+    for (const tab of session.tabs) {
+      if (tab.type === "browser") {
+        browserStore.removeTab(tab.id);
+      }
+    }
+  },
 }));
 
 // Derived selectors for consumers

@@ -1,3 +1,4 @@
+mod browser;
 mod eventbus;
 use grove_core::{
     AppConfig, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest, CreatePtyRestore,
@@ -684,7 +685,19 @@ pub fn run() {
             // Git Merge
             get_behind_count,
             merge_default_branch,
+            // Browser (native webview tabs)
+            browser::browser_create,
+            browser::browser_navigate,
+            browser::browser_go_back,
+            browser::browser_go_forward,
+            browser::browser_reload,
+            browser::browser_set_bounds,
+            browser::browser_set_visible,
+            browser::browser_close,
+            browser::browser_close_all,
+            browser::browser_open_devtools,
         ])
+        .manage(browser::BrowserState::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
