@@ -73,9 +73,10 @@ type dashboardCodexCredentials struct {
 }
 
 type dashboardCodexUsageResponse struct {
-	PlanType  string                    `json:"plan_type"`
-	RateLimit *dashboardCodexRateLimit  `json:"rate_limit"`
-	Credits   *dashboardCodexCreditData `json:"credits"`
+	PlanType     string                          `json:"plan_type"`
+	RateLimit    *dashboardCodexRateLimit        `json:"rate_limit"`
+	Credits      *dashboardCodexCreditData       `json:"credits"`
+	SpendControl *dashboardCodexSpendControlData `json:"spend_control"`
 }
 
 type dashboardCodexRateLimit struct {
@@ -84,13 +85,22 @@ type dashboardCodexRateLimit struct {
 }
 
 type dashboardCodexRateLimitWindow struct {
-	UsedPercent        int `json:"used_percent"`
-	ResetAtUnix        int `json:"reset_at"`
-	LimitWindowSeconds int `json:"limit_window_seconds"`
+	UsedPercent        int   `json:"used_percent"`
+	ResetAtUnix        int64 `json:"reset_at"`
+	LimitWindowSeconds int   `json:"limit_window_seconds"`
 }
 
 type dashboardCodexCreditData struct {
 	Unlimited bool `json:"unlimited"`
+}
+
+type dashboardCodexSpendControlData struct {
+	IndividualLimit *dashboardCodexIndividualLimit `json:"individual_limit"`
+}
+
+type dashboardCodexIndividualLimit struct {
+	RemainingPercent *int  `json:"remaining_percent"`
+	ResetAtUnix      int64 `json:"reset_at"`
 }
 
 type dashboardCodexTokenTotals struct {
@@ -142,6 +152,9 @@ var dashboardCodexPricingTable = map[string]dashboardCodexPricing{
 	"gpt-5.4-pro":         {InputPerToken: 3e-5, OutputPerToken: 1.8e-4},
 	"gpt-5.5":             {InputPerToken: 5e-6, OutputPerToken: 3e-5, CacheReadPerToken: float64Ptr(5e-7)},
 	"gpt-5.5-pro":         {InputPerToken: 3e-5, OutputPerToken: 1.8e-4},
+	"gpt-5.6-sol":         {InputPerToken: 5e-6, OutputPerToken: 3e-5, CacheReadPerToken: float64Ptr(5e-7)},
+	"gpt-5.6-terra":       {InputPerToken: 2.5e-6, OutputPerToken: 1.5e-5, CacheReadPerToken: float64Ptr(2.5e-7)},
+	"gpt-5.6-luna":        {InputPerToken: 1e-6, OutputPerToken: 6e-6, CacheReadPerToken: float64Ptr(1e-7)},
 }
 
 var dashboardClaudePricingTable = map[string]dashboardClaudePricing{
@@ -382,18 +395,13 @@ func fetchCodexUsage(ctx context.Context) (dashboardUsageProviderSummary, error)
 	result := dashboardUsageProviderSummary{Provider: "Codex"}
 	if payload.RateLimit != nil && payload.RateLimit.PrimaryWindow != nil {
 		window := payload.RateLimit.PrimaryWindow
-		var resetAt *time.Time
-		if window.ResetAtUnix > 0 {
-			t := time.Unix(int64(window.ResetAtUnix), 0).In(time.Local)
-			resetAt = &t
+		result.Primary = dashboardCodexUsageWindow(100-window.UsedPercent, window.ResetAtUnix)
+	} else if payload.SpendControl != nil && payload.SpendControl.IndividualLimit != nil {
+		limit := payload.SpendControl.IndividualLimit
+		if limit.RemainingPercent != nil {
+			result.Primary = dashboardCodexUsageWindow(*limit.RemainingPercent, limit.ResetAtUnix)
 		}
-		result.Primary = &dashboardUsageWindow{
-			LeftPercent: clampPercent(100 - window.UsedPercent),
-			ResetAt:     resetAt,
-		}
-	} else if payload.Credits != nil && payload.Credits.Unlimited || payload.PlanType != "" {
-		// Business and unlimited plans often omit an explicit rate_limit window in the OAuth response.
-		// The Codex CLI still surfaces these as "100% left", so mirror that behavior here.
+	} else if payload.Credits != nil && payload.Credits.Unlimited {
 		result.Primary = &dashboardUsageWindow{LeftPercent: 100}
 	}
 
@@ -402,6 +410,18 @@ func fetchCodexUsage(ctx context.Context) (dashboardUsageProviderSummary, error)
 	}
 
 	return result, nil
+}
+
+func dashboardCodexUsageWindow(leftPercent int, resetAtUnix int64) *dashboardUsageWindow {
+	var resetAt *time.Time
+	if resetAtUnix > 0 {
+		t := time.Unix(resetAtUnix, 0).In(time.Local)
+		resetAt = &t
+	}
+	return &dashboardUsageWindow{
+		LeftPercent: clampPercent(leftPercent),
+		ResetAt:     resetAt,
+	}
 }
 
 func loadClaudeCredentials(ctx context.Context) (dashboardClaudeCredentials, error) {
