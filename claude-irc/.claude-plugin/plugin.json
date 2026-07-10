@@ -1,6 +1,6 @@
 {
   "name": "claude-irc",
-  "version": "v2.16.9",
+  "version": "v2.16.10",
   "description": "IRC-inspired inter-session communication for Claude Code agents",
   "author": {
     "name": "Airen Kang",
