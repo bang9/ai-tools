@@ -127,10 +127,18 @@ func renderUsageBar(leftPercent int, width int) string {
 }
 
 func formatDashboardPrimaryReset(resetAt *time.Time) string {
+	return formatDashboardPrimaryResetAt(resetAt, time.Now())
+}
+
+func formatDashboardPrimaryResetAt(resetAt *time.Time, now time.Time) string {
 	if resetAt == nil {
 		return "-"
 	}
-	return resetAt.In(time.Local).Format("3:04 PM")
+	layout := "3:04 PM"
+	if resetAt.Sub(now) >= 24*time.Hour {
+		layout = "1/2 3:04 PM"
+	}
+	return resetAt.In(time.Local).Format(layout)
 }
 
 func formatDashboardWeeklyReset(resetAt *time.Time) string {

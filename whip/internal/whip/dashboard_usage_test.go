@@ -1,9 +1,12 @@
 package whip
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestRenderUsageStripShowsClaudeAndCodexSummaries(t *testing.T) {
@@ -51,6 +54,9 @@ func TestRenderUsageStripShowsClaudeAndCodexSummaries(t *testing.T) {
 			t.Fatalf("usage strip missing %q in:\n%s", want, got)
 		}
 	}
+	if plain := ansi.Strip(got); regexp.MustCompile(`Codex\s+M\s+`).MatchString(plain) {
+		t.Fatalf("Codex primary usage should not include an M label:\n%s", plain)
+	}
 }
 
 func TestRenderListViewPlacesUsageStripAboveFooter(t *testing.T) {
@@ -83,6 +89,33 @@ func TestRenderListViewPlacesUsageStripAboveFooter(t *testing.T) {
 	if usageIdx > footerIdx {
 		t.Fatalf("usage strip should render above footer:\n%s", got)
 	}
+}
+
+func TestFormatDashboardPrimaryResetIncludesDateAtTwentyFourHours(t *testing.T) {
+	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name    string
+		resetAt *time.Time
+		want    string
+	}{
+		{name: "missing", resetAt: nil, want: "-"},
+		{name: "just under 24 hours", resetAt: timePtr(now.Add(24*time.Hour - time.Nanosecond)), want: "8:59 AM"},
+		{name: "exactly 24 hours", resetAt: timePtr(now.Add(24 * time.Hour)), want: "7/11 9:00 AM"},
+		{name: "just over 24 hours", resetAt: timePtr(now.Add(24*time.Hour + time.Nanosecond)), want: "7/11 9:00 AM"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatDashboardPrimaryResetAt(tt.resetAt, now); got != tt.want {
+				t.Fatalf("formatDashboardPrimaryResetAt() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }
 
 func TestUsageCacheRoundTrip(t *testing.T) {
