@@ -17,25 +17,26 @@ import { log, error as logError } from "../../lib/logger";
 import {
   buildTerminalPaneTopologySignature,
   buildTerminalSnapshotRequest,
-  collectTerminalPanes,
+  collectSessionPanes,
 } from "../../lib/terminal-session";
+import TerminalTabBar from "./TerminalTabBar";
 import {
   getTerminalPaneLaunchCwd,
   subscribeTerminalPaneActivity,
 } from "../../lib/terminal-runtime";
 import { registerSyncJob, unregisterSyncJob } from "../../lib/sync-manager";
 import { cn } from "../../lib/cn";
-import type { SplitNode } from "../../types";
+import type { WorktreeTerminalSession } from "../../types";
 
 const SNAPSHOT_SAVE_DEBOUNCE_MS = 750;
 const PTY_BELL_POLL_MS = 1000;
 const PTY_BELL_STATUS_JOB_KEY = "pty-bell-status";
 
-function buildPaneTopologySignatures(sessions: Record<string, SplitNode>) {
+function buildPaneTopologySignatures(sessions: Record<string, WorktreeTerminalSession>) {
   const signatures = new Map<string, string>();
 
-  for (const [worktreePath, node] of Object.entries(sessions)) {
-    const signature = buildTerminalPaneTopologySignature(node);
+  for (const [worktreePath, session] of Object.entries(sessions)) {
+    const signature = buildTerminalPaneTopologySignature(session);
     if (signature) {
       signatures.set(worktreePath, signature);
     }
@@ -50,11 +51,11 @@ function buildPaneTopologySignatures(sessions: Record<string, SplitNode>) {
  * mutated incrementally) so a rebound ptyId never resolves to a stale
  * worktree after a split-tree move.
  */
-export function buildPtyIdToWorktreeIndex(sessions: Record<string, SplitNode>) {
+export function buildPtyIdToWorktreeIndex(sessions: Record<string, WorktreeTerminalSession>) {
   const index = new Map<string, string>();
 
-  for (const [worktreePath, node] of Object.entries(sessions)) {
-    for (const pane of collectTerminalPanes(node)) {
+  for (const [worktreePath, session] of Object.entries(sessions)) {
+    for (const pane of collectSessionPanes(session)) {
       if (pane.ptyId) {
         index.set(pane.ptyId, worktreePath);
       }
@@ -70,15 +71,29 @@ const TerminalSessionView = memo(function TerminalSessionView({
   worktreePath: string;
 }) {
   const isActive = useTerminalStore((s) => s.activeWorktree === worktreePath);
-  const node = useTerminalStore((s) => s.sessions[worktreePath] ?? null);
+  const session = useTerminalStore((s) => s.sessions[worktreePath] ?? null);
 
-  if (!node) {
+  if (!session) {
     return null;
   }
 
   return (
-    <div className={cn("absolute inset-0")} style={{ display: isActive ? "block" : "none" }}>
-      <SplitContainer node={node} worktreePath={worktreePath} />
+    <div
+      className={cn("absolute inset-0 flex-col")}
+      style={{ display: isActive ? "flex" : "none" }}
+    >
+      <TerminalTabBar worktreePath={worktreePath} session={session} />
+      <div className={cn("relative flex-1 overflow-hidden")}>
+        {session.tabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={cn("absolute inset-0")}
+            style={{ display: tab.id === session.activeTabId ? "block" : "none" }}
+          >
+            <SplitContainer node={tab.node} worktreePath={worktreePath} tabId={tab.id} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 });
@@ -103,13 +118,13 @@ function TerminalPanel() {
   const ptyIdToWorktreeRef = useRef(new Map<string, string>());
 
   const persistSnapshot = (worktreePath: string) => {
-    const node = sessionsRef.current[worktreePath];
+    const session = sessionsRef.current[worktreePath];
     void saveTerminalSessionSnapshot(
       buildTerminalSnapshotRequest(
         worktreePath,
-        node,
+        session,
         new Map(
-          (node ? collectTerminalPanes(node) : []).map((pane) => [
+          collectSessionPanes(session).map((pane) => [
             pane.paneId,
             getTerminalPaneLaunchCwd(pane.paneId) ?? worktreePath,
           ]),

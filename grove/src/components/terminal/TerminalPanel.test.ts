@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { SplitNode } from "../../types";
+import type { SplitNode, WorktreeTerminalSession } from "../../types";
 import { restoreLayoutWithPtyIds } from "../../lib/terminal-session";
 import { buildPtyIdToWorktreeIndex } from "./TerminalPanel";
+
+function makeSession(node: SplitNode, tabId = "tab-1"): WorktreeTerminalSession {
+  return { tabs: [{ id: tabId, node }], activeTabId: tabId };
+}
 
 const layout: SplitNode = {
   id: "root",
@@ -24,13 +28,17 @@ const layout: SplitNode = {
 describe("buildPtyIdToWorktreeIndex", () => {
   it("maps every pty id to its owning worktree path", () => {
     const sessions = {
-      "/tmp/project-a": restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]])),
-      "/tmp/project-b": restoreLayoutWithPtyIds(
-        layout,
-        new Map([
-          ["pane-b", "pty-b"],
-          ["pane-c", "pty-c"],
-        ]),
+      "/tmp/project-a": makeSession(
+        restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]])),
+      ),
+      "/tmp/project-b": makeSession(
+        restoreLayoutWithPtyIds(
+          layout,
+          new Map([
+            ["pane-b", "pty-b"],
+            ["pane-c", "pty-c"],
+          ]),
+        ),
       ),
     };
 
@@ -43,7 +51,7 @@ describe("buildPtyIdToWorktreeIndex", () => {
   });
 
   it("skips leaf panes without a live pty id", () => {
-    const sessions = { "/tmp/project-a": layout };
+    const sessions = { "/tmp/project-a": makeSession(layout) };
 
     const index = buildPtyIdToWorktreeIndex(sessions);
 
@@ -52,15 +60,16 @@ describe("buildPtyIdToWorktreeIndex", () => {
 
   it("re-resolves a ptyId rebound to a different worktree after a rebuild", () => {
     const movedLayout = restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]]));
+    const movedSession = makeSession(movedLayout);
 
     const before = buildPtyIdToWorktreeIndex({
-      "/tmp/project-a": movedLayout,
+      "/tmp/project-a": movedSession,
     });
     expect(before.get("pty-a")).toBe("/tmp/project-a");
 
     // Simulate the pty moving to a different worktree's tree (split-tree move).
     const after = buildPtyIdToWorktreeIndex({
-      "/tmp/project-b": movedLayout,
+      "/tmp/project-b": movedSession,
     });
     expect(after.get("pty-a")).toBe("/tmp/project-b");
   });

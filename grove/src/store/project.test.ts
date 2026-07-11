@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Project, SplitNode, Worktree } from "../types";
+import type { Project, SplitNode, Worktree, WorktreeTerminalSession } from "../types";
 
 const runCommandMock = vi.fn();
 const runCommandSafelyMock = vi.fn();
@@ -83,6 +83,10 @@ function makeLeaf(id: string, ptyId: string): SplitNode {
   };
 }
 
+function makeSession(node: SplitNode, tabId = "tab-1"): WorktreeTerminalSession {
+  return { tabs: [{ id: tabId, node }], activeTabId: tabId };
+}
+
 function makeProjectWithId(id: string, overrides: Partial<Project> = {}): Project {
   return {
     ...makeProject([]),
@@ -108,7 +112,7 @@ describe("useProjectStore", () => {
       sessions: {},
       activeWorktree: null,
       focusedPtyId: null,
-      focusedPaneIdByWorktree: {},
+      focusedPaneIdByTab: {},
       bellPtyIds: new Set<string>(),
       aiSessions: {},
       theme: null,
@@ -220,8 +224,11 @@ describe("useProjectStore", () => {
 
     useTerminalStore.setState({
       sessions: {
-        [selectedWorktree.path]: makeLeaf("pane-feature", "pty-feature"),
-        "/tmp/source": makeLeaf("pane-source", "pty-source"),
+        [selectedWorktree.path]: makeSession(
+          makeLeaf("pane-feature", "pty-feature"),
+          "tab-feature",
+        ),
+        "/tmp/source": makeSession(makeLeaf("pane-source", "pty-source"), "tab-source"),
       },
       activeWorktree: selectedWorktree.path,
       focusedPtyId: "pty-feature",
@@ -250,7 +257,10 @@ describe("useProjectStore", () => {
     });
     useTerminalStore.setState({
       sessions: {
-        [selectedWorktree.path]: makeLeaf("pane-feature", "pty-feature"),
+        [selectedWorktree.path]: makeSession(
+          makeLeaf("pane-feature", "pty-feature"),
+          "tab-feature",
+        ),
       },
       activeWorktree: selectedWorktree.path,
       focusedPtyId: "pty-feature",

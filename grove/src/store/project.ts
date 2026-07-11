@@ -5,7 +5,7 @@ import * as tauri from "../lib/platform";
 import { runCommand, runCommandSafely } from "../lib/command";
 import { useTerminalStore } from "./terminal";
 import { useBroadcastStore } from "./broadcast";
-import { collectTerminalPanes } from "../lib/terminal-session";
+import { collectSessionPanes } from "../lib/terminal-session";
 import { useMissionStore } from "./mission";
 import { overlay } from "../lib/overlay";
 import { runTerminalGcNow } from "../lib/terminal-gc";
@@ -410,7 +410,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
         const broadcastStore = useBroadcastStore.getState();
         broadcastStore.stopPip(worktreePath);
         if (removedSession) {
-          for (const pane of collectTerminalPanes(removedSession)) {
+          for (const pane of collectSessionPanes(removedSession)) {
             if (pane.ptyId) {
               broadcastStore.stopMirror(pane.ptyId);
               broadcastStore.stopPipByPty(pane.ptyId);

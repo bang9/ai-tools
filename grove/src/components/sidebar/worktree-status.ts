@@ -1,13 +1,13 @@
 import { useShallow } from "zustand/react/shallow";
-import { collectTerminalPanes } from "../../lib/terminal-session";
-import type { SplitNode } from "../../types";
+import { collectSessionPanes } from "../../lib/terminal-session";
+import type { WorktreeTerminalSession } from "../../types";
 import type { AiSession } from "../../store/terminal";
 import { useTerminalStore } from "../../store/terminal";
 
 const EMPTY_SESSIONS: AiSession[] = [];
 
 interface WorktreeStatusState {
-  sessions: Record<string, SplitNode>;
+  sessions: Record<string, WorktreeTerminalSession>;
   bellPtyIds: Set<string>;
   aiSessions: Record<string, AiSession>;
 }
@@ -22,7 +22,7 @@ export function selectAiWorktreeSessions(
   }
 
   const result: AiSession[] = [];
-  for (const { ptyId } of collectTerminalPanes(session)) {
+  for (const { ptyId } of collectSessionPanes(session)) {
     const ai = ptyId ? state.aiSessions[ptyId] : undefined;
     if (ai) result.push(ai);
   }
@@ -39,7 +39,7 @@ export function selectWorktreeBell(state: WorktreeStatusState, worktreePath: str
     return false;
   }
 
-  return collectTerminalPanes(session).some(({ ptyId }) => !!ptyId && state.bellPtyIds.has(ptyId));
+  return collectSessionPanes(session).some(({ ptyId }) => !!ptyId && state.bellPtyIds.has(ptyId));
 }
 
 export function useWorktreeBell(worktreePath: string): boolean {

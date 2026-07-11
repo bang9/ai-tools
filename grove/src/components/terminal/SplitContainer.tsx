@@ -11,6 +11,7 @@ import ResizablePanelGroup from "../ui/resizable-panel-group";
 interface Props {
   node: SplitNode;
   worktreePath: string;
+  tabId: string;
   path?: number[];
 }
 
@@ -30,13 +31,13 @@ function pathsEqual(left: number[] | undefined, right: number[] | undefined) {
   return true;
 }
 
-function SplitContainer({ node, worktreePath, path = [] }: Props) {
+function SplitContainer({ node, worktreePath, tabId, path = [] }: Props) {
   const updateSizes = useTerminalStore((s) => s.updateSizes);
   const handleCommit = useCallback(
     (ratios: number[]) => {
-      updateSizes(worktreePath, path, ratios);
+      updateSizes(worktreePath, tabId, path, ratios);
     },
-    [path, updateSizes, worktreePath],
+    [path, tabId, updateSizes, worktreePath],
   );
 
   // Scope panelResize layout-sync to the leaf panes under this split so a sash
@@ -51,6 +52,7 @@ function SplitContainer({ node, worktreePath, path = [] }: Props) {
           paneId={node.id}
           ptyId={node.ptyId}
           worktreePath={worktreePath}
+          tabId={tabId}
           label={node.label}
         />
       </div>
@@ -74,7 +76,12 @@ function SplitContainer({ node, worktreePath, path = [] }: Props) {
           key={child.id}
           preferredSize={node.sizes?.[i] !== undefined ? `${node.sizes[i] * 100}%` : undefined}
         >
-          <SplitContainer node={child} worktreePath={worktreePath} path={[...path, i]} />
+          <SplitContainer
+            node={child}
+            worktreePath={worktreePath}
+            tabId={tabId}
+            path={[...path, i]}
+          />
         </ResizablePanelGroup.Pane>
       ))}
     </ResizablePanelGroup>
@@ -86,5 +93,6 @@ export default memo(
   (prev, next) =>
     prev.node === next.node &&
     prev.worktreePath === next.worktreePath &&
+    prev.tabId === next.tabId &&
     pathsEqual(prev.path, next.path),
 );

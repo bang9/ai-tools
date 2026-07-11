@@ -8,7 +8,13 @@ export type {
   StartCloneResult,
 } from "./project";
 export type { Mission, MissionProject } from "./mission";
-export type { TerminalTheme, PtySession, SplitNode } from "./terminal";
+export type {
+  TerminalTheme,
+  PtySession,
+  SplitNode,
+  TerminalTab,
+  WorktreeTerminalSession,
+} from "./terminal";
 export type {
   BehindInfo,
   CommitInfo,

@@ -23,25 +23,37 @@ vi.mock("./command", () => ({
 vi.mock("./terminal-runtime", () => ({
   getRuntimeSize: vi.fn(() => ({ cols: 120, rows: 30 })),
   captureRuntimeSnapshot: vi.fn(() => "snapshot-data"),
+  getTerminalPaneOsc7Cwd: vi.fn(() => null),
 }));
 
+import type { SplitNode, WorktreeTerminalSession } from "../types";
 import * as platform from "./platform";
 import { useTerminalStore } from "../store/terminal";
 import { useBroadcastStore } from "../store/broadcast";
 import { usePanelLayoutStore } from "../store/panel-layout";
-import { countLeaves } from "./split-tree";
+import { collectSessionPanes } from "./terminal-session";
 import { closeTerminalPane, mirrorTerminalPane, splitTerminalPane } from "./terminal-pane-commands";
 
 const WORKTREE = "/tmp/worktree";
+
+function makeSession(node: SplitNode, tabId = "tab-1"): WorktreeTerminalSession {
+  return { tabs: [{ id: tabId, node }], activeTabId: tabId };
+}
+
+function countLeaves(session: WorktreeTerminalSession): number {
+  return collectSessionPanes(session).length;
+}
 
 describe("terminal pane commands", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useTerminalStore.setState({
-      sessions: { [WORKTREE]: { id: "pane-1", type: "leaf", ptyId: "pty-1" } },
+      sessions: {
+        [WORKTREE]: makeSession({ id: "pane-1", type: "leaf", ptyId: "pty-1" }, "tab-1"),
+      },
       activeWorktree: WORKTREE,
       focusedPtyId: "pty-1",
-      focusedPaneIdByWorktree: { [WORKTREE]: "pane-1" },
+      focusedPaneIdByTab: { "tab-1": "pane-1" },
       bellPtyIds: new Set<string>(),
       aiSessions: {},
     });

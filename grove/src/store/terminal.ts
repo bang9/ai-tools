@@ -1,8 +1,7 @@
 import { create } from "zustand";
-import type { SplitNode, TerminalTheme } from "../types";
+import type { SplitNode, TerminalTab, TerminalTheme, WorktreeTerminalSession } from "../types";
 import {
   toLayoutTemplate,
-  countLeaves,
   splitNode,
   removeNode,
   setSizesAtPath,
@@ -10,29 +9,77 @@ import {
   setLeafLabel,
 } from "../lib/split-tree";
 import {
+  collectSessionPanes,
   collectTerminalPanes,
+  findActiveTab,
   findFirstTerminalPane,
+  findTabByPaneId,
+  findTabByPtyId,
   findTerminalPaneByPaneId,
   findTerminalPaneByPtyId,
-  findWorktreePathForPtyId,
 } from "../lib/terminal-session";
 import { loadTerminalLayouts, saveTerminalLayouts } from "../lib/platform";
 
 // In-memory cache populated at startup via initLayouts()
-let layoutCache: Record<string, SplitNode> = {};
+let layoutCache: Record<string, WorktreeTerminalSession> = {};
+
+interface PersistedTerminalTab {
+  id?: string;
+  node?: SplitNode;
+}
+
+interface PersistedWorktreeSession {
+  tabs?: PersistedTerminalTab[];
+  activeTabId?: string;
+}
+
+/**
+ * Saved layouts hold either the tabbed session shape or, for files written
+ * before terminal tabs existed, a bare SplitNode — wrap those in a single tab.
+ */
+function normalizeSavedSession(
+  value: PersistedWorktreeSession | SplitNode,
+  createId: () => string,
+): WorktreeTerminalSession | null {
+  if ("type" in value) {
+    const node = normalizeSplitTree(value, createId);
+    const tabId = createId();
+    return { tabs: [{ id: tabId, node }], activeTabId: tabId };
+  }
+
+  const tabs: TerminalTab[] = [];
+  for (const tab of value.tabs ?? []) {
+    if (!tab.node) {
+      continue;
+    }
+    tabs.push({
+      id: tab.id ?? createId(),
+      node: normalizeSplitTree(tab.node, createId),
+    });
+  }
+  if (tabs.length === 0) {
+    return null;
+  }
+
+  const activeTabId = tabs.some((tab) => tab.id === value.activeTabId)
+    ? (value.activeTabId as string)
+    : tabs[0].id;
+  return { tabs, activeTabId };
+}
+
+function toSessionTemplate(session: WorktreeTerminalSession): WorktreeTerminalSession {
+  return {
+    tabs: session.tabs.map((tab) => ({ id: tab.id, node: toLayoutTemplate(tab.node) })),
+    activeTabId: session.activeTabId,
+  };
+}
 
 // Debounced save to Rust file backend — MERGES with existing saved layouts
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-function saveLayouts(sessions: Record<string, SplitNode>) {
+function saveLayouts(sessions: Record<string, WorktreeTerminalSession>) {
   // Merge current sessions into existing cache (don't wipe other worktree layouts)
-  for (const [path, node] of Object.entries(sessions)) {
-    layoutCache[path] = toLayoutTemplate(node);
-  }
-  // Remove layouts for sessions that were explicitly deleted (0 leaves)
-  for (const path of Object.keys(layoutCache)) {
-    if (sessions[path] === undefined && Object.keys(sessions).length > 0) {
-      // Don't delete — session might just not be active right now
-    }
+  for (const [path, session] of Object.entries(sessions)) {
+    layoutCache[path] = toSessionTemplate(session);
   }
 
   if (saveTimer) clearTimeout(saveTimer);
@@ -54,16 +101,17 @@ export interface AiSession {
 export type ClaudeSessionStatus = AiStatus;
 
 interface TerminalState {
-  sessions: Record<string, SplitNode>;
+  sessions: Record<string, WorktreeTerminalSession>;
   activeWorktree: string | null;
   focusedPtyId: string | null;
-  focusedPaneIdByWorktree: Record<string, string | null>;
+  /** Remembered focused pane per terminal tab (tab ids are globally unique). */
+  focusedPaneIdByTab: Record<string, string | null>;
   bellPtyIds: Set<string>;
   aiSessions: Record<string, AiSession>;
   theme: TerminalTheme | null;
   detectedTheme: TerminalTheme | null;
   createSession: (worktreePath: string, paneId: string, ptyId: string) => void;
-  restoreSession: (worktreePath: string, node: SplitNode) => void;
+  restoreSession: (worktreePath: string, session: WorktreeTerminalSession) => void;
   splitTerminal: (
     worktreePath: string,
     ptyId: string,
@@ -72,6 +120,9 @@ interface TerminalState {
     newPtyId: string,
   ) => void;
   closeTerminal: (worktreePath: string, ptyId: string) => void;
+  addTab: (worktreePath: string, paneId: string, ptyId: string) => void;
+  setActiveTab: (worktreePath: string, tabId: string) => void;
+  closeTab: (worktreePath: string, tabId: string) => void;
   setActiveWorktree: (worktreePath: string | null) => void;
   setFocusedPtyId: (ptyId: string | null) => void;
   markBellPty: (ptyId: string) => void;
@@ -79,14 +130,27 @@ interface TerminalState {
   setDetectedTheme: (theme: TerminalTheme) => void;
   loadTheme: (theme: TerminalTheme) => void;
   removeSession: (worktreePath: string, nextActiveWorktree?: string | null) => void;
-  updateSizes: (worktreePath: string, nodePath: number[], ratios: number[]) => void;
+  updateSizes: (worktreePath: string, tabId: string, nodePath: number[], ratios: number[]) => void;
   setPaneLabel: (worktreePath: string, paneId: string, label: string | undefined) => void;
-  getSavedLayout: (worktreePath: string) => SplitNode | null;
+  getSavedLayout: (worktreePath: string) => WorktreeTerminalSession | null;
   initLayouts: () => Promise<void>;
 }
 
-function sessionContainsPty(node: SplitNode | undefined, ptyId: string): boolean {
-  return !!node && collectTerminalPanes(node).some((pane) => pane.ptyId === ptyId);
+/** Panes of the tab the user actually sees: active worktree's active tab. */
+function visibleTabPanes(state: {
+  sessions: Record<string, WorktreeTerminalSession>;
+  activeWorktree: string | null;
+}) {
+  const session = state.activeWorktree ? state.sessions[state.activeWorktree] : undefined;
+  const tab = findActiveTab(session);
+  return tab ? collectTerminalPanes(tab.node) : [];
+}
+
+function visibleTabContainsPty(
+  state: { sessions: Record<string, WorktreeTerminalSession>; activeWorktree: string | null },
+  ptyId: string,
+): boolean {
+  return visibleTabPanes(state).some((pane) => pane.ptyId === ptyId);
 }
 
 function clearAttentionForPty(
@@ -107,45 +171,60 @@ function clearAttentionForPty(
     [ptyId]: { ...session, status: "idle" },
   };
 }
-interface WorktreeFocus {
+
+interface TabFocus {
   paneId: string | null;
   ptyId: string | null;
 }
 
-function setFocusedPaneForWorktree(
-  focusedPaneIdByWorktree: Record<string, string | null>,
-  worktreePath: string,
+function setFocusedPaneForTab(
+  focusedPaneIdByTab: Record<string, string | null>,
+  tabId: string,
   paneId: string | null,
 ): Record<string, string | null> {
   if (paneId === null) {
-    if (!(worktreePath in focusedPaneIdByWorktree)) {
-      return focusedPaneIdByWorktree;
+    if (!(tabId in focusedPaneIdByTab)) {
+      return focusedPaneIdByTab;
     }
-    const next = { ...focusedPaneIdByWorktree };
-    delete next[worktreePath];
+    const next = { ...focusedPaneIdByTab };
+    delete next[tabId];
     return next;
   }
 
-  if (focusedPaneIdByWorktree[worktreePath] === paneId) {
-    return focusedPaneIdByWorktree;
+  if (focusedPaneIdByTab[tabId] === paneId) {
+    return focusedPaneIdByTab;
   }
 
   return {
-    ...focusedPaneIdByWorktree,
-    [worktreePath]: paneId,
+    ...focusedPaneIdByTab,
+    [tabId]: paneId,
   };
 }
 
-function resolveWorktreeFocus(
-  node: SplitNode | undefined,
+function dropTabFocusEntries(
+  focusedPaneIdByTab: Record<string, string | null>,
+  tabIds: string[],
+): Record<string, string | null> {
+  if (!tabIds.some((tabId) => tabId in focusedPaneIdByTab)) {
+    return focusedPaneIdByTab;
+  }
+  const next = { ...focusedPaneIdByTab };
+  for (const tabId of tabIds) {
+    delete next[tabId];
+  }
+  return next;
+}
+
+function resolveTabFocus(
+  tab: TerminalTab | null,
   rememberedPaneId: string | null | undefined,
-): WorktreeFocus {
-  if (!node) {
+): TabFocus {
+  if (!tab) {
     return { paneId: null, ptyId: null };
   }
 
   if (rememberedPaneId) {
-    const rememberedPane = findTerminalPaneByPaneId(node, rememberedPaneId);
+    const rememberedPane = findTerminalPaneByPaneId(tab.node, rememberedPaneId);
     if (rememberedPane?.ptyId) {
       return {
         paneId: rememberedPane.paneId,
@@ -154,21 +233,41 @@ function resolveWorktreeFocus(
     }
   }
 
-  const firstPane = findFirstTerminalPane(node);
+  const firstPane = findFirstTerminalPane(tab.node);
   return {
     paneId: firstPane?.paneId ?? null,
     ptyId: firstPane?.ptyId ?? null,
   };
 }
 
+function resolveSessionFocus(
+  session: WorktreeTerminalSession | undefined,
+  focusedPaneIdByTab: Record<string, string | null>,
+): TabFocus {
+  const tab = findActiveTab(session);
+  return resolveTabFocus(tab, tab ? focusedPaneIdByTab[tab.id] : null);
+}
+
+function replaceTabNode(
+  session: WorktreeTerminalSession,
+  tabId: string,
+  node: SplitNode,
+): WorktreeTerminalSession {
+  return {
+    ...session,
+    tabs: session.tabs.map((tab) => (tab.id === tabId ? { ...tab, node } : tab)),
+  };
+}
+
 function shouldSyncActiveFocus(activeWorktree: string | null, targetWorktree: string): boolean {
   return activeWorktree === null || activeWorktree === targetWorktree;
 }
+
 export const useTerminalStore = create<TerminalState>((set) => ({
   sessions: {},
   activeWorktree: null,
   focusedPtyId: null,
-  focusedPaneIdByWorktree: {},
+  focusedPaneIdByTab: {},
   bellPtyIds: new Set<string>(),
   aiSessions: {},
   theme: null,
@@ -176,44 +275,46 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
   getSavedLayout: (worktreePath) => {
     const template = layoutCache[worktreePath];
-    if (!template || countLeaves(template) === 0) return null;
+    if (!template || collectSessionPanes(template).length === 0) return null;
     return template;
   },
 
   createSession: (worktreePath, paneId, ptyId) =>
     set((state) => {
-      const focus = { paneId, ptyId };
-      const newSessions = {
-        ...state.sessions,
-        [worktreePath]: { id: paneId, type: "leaf" as const, ptyId },
+      const tabId = crypto.randomUUID();
+      const session: WorktreeTerminalSession = {
+        tabs: [{ id: tabId, node: { id: paneId, type: "leaf", ptyId } }],
+        activeTabId: tabId,
       };
+      const newSessions = { ...state.sessions, [worktreePath]: session };
       saveLayouts(newSessions);
       return {
         sessions: newSessions,
-        focusedPaneIdByWorktree: setFocusedPaneForWorktree(
-          state.focusedPaneIdByWorktree,
-          worktreePath,
-          focus.paneId,
-        ),
+        focusedPaneIdByTab: setFocusedPaneForTab(state.focusedPaneIdByTab, tabId, paneId),
         focusedPtyId: shouldSyncActiveFocus(state.activeWorktree, worktreePath)
-          ? focus.ptyId
+          ? ptyId
           : state.focusedPtyId,
       };
     }),
 
-  restoreSession: (worktreePath, node) =>
+  restoreSession: (worktreePath, session) =>
     set((state) => {
-      const restored = normalizeSplitTree(node, () => crypto.randomUUID());
-      const focus = resolveWorktreeFocus(restored, state.focusedPaneIdByWorktree[worktreePath]);
+      const restored: WorktreeTerminalSession = {
+        tabs: session.tabs.map((tab) => ({
+          id: tab.id,
+          node: normalizeSplitTree(tab.node, () => crypto.randomUUID()),
+        })),
+        activeTabId: session.activeTabId,
+      };
+      const focus = resolveSessionFocus(restored, state.focusedPaneIdByTab);
       const newSessions = { ...state.sessions, [worktreePath]: restored };
       saveLayouts(newSessions);
+      const activeTab = findActiveTab(restored);
       return {
         sessions: newSessions,
-        focusedPaneIdByWorktree: setFocusedPaneForWorktree(
-          state.focusedPaneIdByWorktree,
-          worktreePath,
-          focus.paneId,
-        ),
+        focusedPaneIdByTab: activeTab
+          ? setFocusedPaneForTab(state.focusedPaneIdByTab, activeTab.id, focus.paneId)
+          : state.focusedPaneIdByTab,
         focusedPtyId: shouldSyncActiveFocus(state.activeWorktree, worktreePath)
           ? focus.ptyId
           : state.focusedPtyId,
@@ -222,28 +323,130 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
   splitTerminal: (worktreePath, ptyId, direction, newPaneId, newPtyId) =>
     set((state) => {
-      const root = state.sessions[worktreePath];
-      if (!root) return state;
-      const focus = { paneId: newPaneId, ptyId: newPtyId };
+      const session = state.sessions[worktreePath];
+      const tab = findTabByPtyId(session, ptyId);
+      if (!session || !tab) return state;
       const newSessions = {
         ...state.sessions,
-        [worktreePath]: splitNode(root, ptyId, direction, {
-          branchId: crypto.randomUUID(),
-          leafId: newPaneId,
-          ptyId: newPtyId,
-        }),
+        [worktreePath]: replaceTabNode(
+          session,
+          tab.id,
+          splitNode(tab.node, ptyId, direction, {
+            branchId: crypto.randomUUID(),
+            leafId: newPaneId,
+            ptyId: newPtyId,
+          }),
+        ),
       };
       saveLayouts(newSessions);
       return {
         sessions: newSessions,
-        focusedPaneIdByWorktree: setFocusedPaneForWorktree(
-          state.focusedPaneIdByWorktree,
-          worktreePath,
-          focus.paneId,
-        ),
+        focusedPaneIdByTab: setFocusedPaneForTab(state.focusedPaneIdByTab, tab.id, newPaneId),
         focusedPtyId: shouldSyncActiveFocus(state.activeWorktree, worktreePath)
-          ? focus.ptyId
+          ? newPtyId
           : state.focusedPtyId,
+      };
+    }),
+
+  addTab: (worktreePath, paneId, ptyId) =>
+    set((state) => {
+      const session = state.sessions[worktreePath];
+      if (!session) return state;
+      const tabId = crypto.randomUUID();
+      const newSession: WorktreeTerminalSession = {
+        tabs: [...session.tabs, { id: tabId, node: { id: paneId, type: "leaf", ptyId } }],
+        activeTabId: tabId,
+      };
+      const newSessions = { ...state.sessions, [worktreePath]: newSession };
+      saveLayouts(newSessions);
+      return {
+        sessions: newSessions,
+        focusedPaneIdByTab: setFocusedPaneForTab(state.focusedPaneIdByTab, tabId, paneId),
+        focusedPtyId: shouldSyncActiveFocus(state.activeWorktree, worktreePath)
+          ? ptyId
+          : state.focusedPtyId,
+      };
+    }),
+
+  setActiveTab: (worktreePath, tabId) =>
+    set((state) => {
+      const session = state.sessions[worktreePath];
+      if (!session || session.activeTabId === tabId) return state;
+      const tab = session.tabs.find((entry) => entry.id === tabId);
+      if (!tab) return state;
+
+      const newSession: WorktreeTerminalSession = { ...session, activeTabId: tabId };
+      const newSessions = { ...state.sessions, [worktreePath]: newSession };
+      saveLayouts(newSessions);
+
+      const focus = resolveTabFocus(tab, state.focusedPaneIdByTab[tabId]);
+      const isActiveWorktree = state.activeWorktree === worktreePath;
+
+      // Clear bell/attention only for panes that just became visible.
+      const nextBellPtyIds = new Set(state.bellPtyIds);
+      let nextAiSessions = state.aiSessions;
+      if (isActiveWorktree) {
+        for (const { ptyId } of collectTerminalPanes(tab.node)) {
+          if (!ptyId) continue;
+          nextBellPtyIds.delete(ptyId);
+          nextAiSessions = clearAttentionForPty(nextAiSessions, ptyId);
+        }
+      }
+
+      return {
+        sessions: newSessions,
+        focusedPaneIdByTab: setFocusedPaneForTab(state.focusedPaneIdByTab, tabId, focus.paneId),
+        focusedPtyId: isActiveWorktree ? focus.ptyId : state.focusedPtyId,
+        bellPtyIds: nextBellPtyIds,
+        aiSessions: nextAiSessions,
+      };
+    }),
+
+  closeTab: (worktreePath, tabId) =>
+    set((state) => {
+      const session = state.sessions[worktreePath];
+      const tabIndex = session?.tabs.findIndex((tab) => tab.id === tabId) ?? -1;
+      if (!session || tabIndex < 0) return state;
+
+      const closedTab = session.tabs[tabIndex];
+      const nextBellPtyIds = new Set(state.bellPtyIds);
+      const nextAiSessions = { ...state.aiSessions };
+      for (const { ptyId } of collectTerminalPanes(closedTab.node)) {
+        if (ptyId) {
+          nextBellPtyIds.delete(ptyId);
+          delete nextAiSessions[ptyId];
+        }
+      }
+
+      const remainingTabs = session.tabs.filter((tab) => tab.id !== tabId);
+      const newSessions = { ...state.sessions };
+      let focus: TabFocus = { paneId: null, ptyId: null };
+      let focusedPaneIdByTab = dropTabFocusEntries(state.focusedPaneIdByTab, [tabId]);
+
+      if (remainingTabs.length > 0) {
+        const nextActiveTab =
+          session.activeTabId === tabId
+            ? (remainingTabs[Math.min(tabIndex, remainingTabs.length - 1)] ?? remainingTabs[0])
+            : (remainingTabs.find((tab) => tab.id === session.activeTabId) ?? remainingTabs[0]);
+        newSessions[worktreePath] = { tabs: remainingTabs, activeTabId: nextActiveTab.id };
+        focus = resolveTabFocus(nextActiveTab, focusedPaneIdByTab[nextActiveTab.id]);
+        focusedPaneIdByTab = setFocusedPaneForTab(
+          focusedPaneIdByTab,
+          nextActiveTab.id,
+          focus.paneId,
+        );
+      } else {
+        delete newSessions[worktreePath];
+        delete layoutCache[worktreePath];
+      }
+      saveLayouts(newSessions);
+
+      return {
+        sessions: newSessions,
+        focusedPaneIdByTab,
+        focusedPtyId: state.activeWorktree === worktreePath ? focus.ptyId : state.focusedPtyId,
+        bellPtyIds: nextBellPtyIds,
+        aiSessions: nextAiSessions,
       };
     }),
 
@@ -253,23 +456,22 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       const nextBellPtyIds = new Set(state.bellPtyIds);
       let nextAiSessions = { ...state.aiSessions };
       const existingSession = state.sessions[worktreePath];
+      let focusedPaneIdByTab = state.focusedPaneIdByTab;
       if (existingSession) {
-        for (const { ptyId } of collectTerminalPanes(existingSession)) {
+        for (const { ptyId } of collectSessionPanes(existingSession)) {
           if (ptyId) {
             nextBellPtyIds.delete(ptyId);
             delete nextAiSessions[ptyId];
           }
         }
+        focusedPaneIdByTab = dropTabFocusEntries(
+          focusedPaneIdByTab,
+          existingSession.tabs.map((tab) => tab.id),
+        );
       }
       delete newSessions[worktreePath];
       delete layoutCache[worktreePath];
       saveLayouts(newSessions);
-
-      let nextFocusedPaneIdByWorktree = setFocusedPaneForWorktree(
-        state.focusedPaneIdByWorktree,
-        worktreePath,
-        null,
-      );
 
       const shouldSwitchActiveWorktree = state.activeWorktree === worktreePath;
       const resolvedActiveWorktree = shouldSwitchActiveWorktree
@@ -278,21 +480,19 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       const activeSession = resolvedActiveWorktree
         ? newSessions[resolvedActiveWorktree]
         : undefined;
-      const nextActiveFocus = resolveWorktreeFocus(
-        activeSession,
-        resolvedActiveWorktree ? nextFocusedPaneIdByWorktree[resolvedActiveWorktree] : null,
-      );
+      const nextActiveFocus = resolveSessionFocus(activeSession, focusedPaneIdByTab);
 
-      if (resolvedActiveWorktree) {
-        nextFocusedPaneIdByWorktree = setFocusedPaneForWorktree(
-          nextFocusedPaneIdByWorktree,
-          resolvedActiveWorktree,
+      const nextActiveTab = findActiveTab(activeSession);
+      if (nextActiveTab) {
+        focusedPaneIdByTab = setFocusedPaneForTab(
+          focusedPaneIdByTab,
+          nextActiveTab.id,
           nextActiveFocus.paneId,
         );
       }
 
-      if (activeSession) {
-        for (const { ptyId } of collectTerminalPanes(activeSession)) {
+      if (nextActiveTab) {
+        for (const { ptyId } of collectTerminalPanes(nextActiveTab.node)) {
           if (!ptyId) {
             continue;
           }
@@ -308,7 +508,7 @@ export const useTerminalStore = create<TerminalState>((set) => ({
         sessions: newSessions,
         bellPtyIds: nextBellPtyIds,
         aiSessions: nextAiSessions,
-        focusedPaneIdByWorktree: nextFocusedPaneIdByWorktree,
+        focusedPaneIdByTab,
         focusedPtyId: shouldSwitchActiveWorktree ? nextActiveFocus.ptyId : state.focusedPtyId,
         activeWorktree: resolvedActiveWorktree,
       };
@@ -316,32 +516,53 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
   closeTerminal: (worktreePath, ptyId) =>
     set((state) => {
-      const root = state.sessions[worktreePath];
-      if (!root) return state;
-      const updated = removeNode(root, ptyId);
-      const newSessions = { ...state.sessions };
-      if (updated) {
-        newSessions[worktreePath] = updated;
-      } else {
-        delete newSessions[worktreePath];
-      }
-      saveLayouts(newSessions);
-      const nextFocus = resolveWorktreeFocus(
-        updated ?? undefined,
-        state.focusedPaneIdByWorktree[worktreePath],
-      );
+      const session = state.sessions[worktreePath];
+      const tab = findTabByPtyId(session, ptyId);
+      if (!session || !tab) return state;
+
+      const updatedNode = removeNode(tab.node, ptyId);
       const nextBellPtyIds = new Set(state.bellPtyIds);
       nextBellPtyIds.delete(ptyId);
       const nextAiSessions = { ...state.aiSessions };
       delete nextAiSessions[ptyId];
+
+      const newSessions = { ...state.sessions };
+      let focusedPaneIdByTab = state.focusedPaneIdByTab;
+      let focus: TabFocus = { paneId: null, ptyId: null };
+
+      if (updatedNode) {
+        newSessions[worktreePath] = replaceTabNode(session, tab.id, updatedNode);
+        focus = resolveTabFocus({ ...tab, node: updatedNode }, state.focusedPaneIdByTab[tab.id]);
+        focusedPaneIdByTab = setFocusedPaneForTab(focusedPaneIdByTab, tab.id, focus.paneId);
+      } else {
+        // Last pane of the tab — drop the tab entirely.
+        const remainingTabs = session.tabs.filter((entry) => entry.id !== tab.id);
+        focusedPaneIdByTab = dropTabFocusEntries(focusedPaneIdByTab, [tab.id]);
+        if (remainingTabs.length > 0) {
+          const tabIndex = session.tabs.findIndex((entry) => entry.id === tab.id);
+          const nextActiveTab =
+            session.activeTabId === tab.id
+              ? (remainingTabs[Math.min(tabIndex, remainingTabs.length - 1)] ?? remainingTabs[0])
+              : (remainingTabs.find((entry) => entry.id === session.activeTabId) ??
+                remainingTabs[0]);
+          newSessions[worktreePath] = { tabs: remainingTabs, activeTabId: nextActiveTab.id };
+          focus = resolveTabFocus(nextActiveTab, focusedPaneIdByTab[nextActiveTab.id]);
+          focusedPaneIdByTab = setFocusedPaneForTab(
+            focusedPaneIdByTab,
+            nextActiveTab.id,
+            focus.paneId,
+          );
+        } else {
+          delete newSessions[worktreePath];
+          delete layoutCache[worktreePath];
+        }
+      }
+      saveLayouts(newSessions);
+
       return {
         sessions: newSessions,
-        focusedPaneIdByWorktree: setFocusedPaneForWorktree(
-          state.focusedPaneIdByWorktree,
-          worktreePath,
-          nextFocus.paneId,
-        ),
-        focusedPtyId: state.activeWorktree === worktreePath ? nextFocus.ptyId : state.focusedPtyId,
+        focusedPaneIdByTab,
+        focusedPtyId: state.activeWorktree === worktreePath ? focus.ptyId : state.focusedPtyId,
         bellPtyIds: nextBellPtyIds,
         aiSessions: nextAiSessions,
       };
@@ -349,24 +570,23 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
   setActiveWorktree: (worktreePath) =>
     set((state) => {
-      const nextFocus = worktreePath
-        ? resolveWorktreeFocus(
-            state.sessions[worktreePath],
-            state.focusedPaneIdByWorktree[worktreePath],
-          )
-        : { paneId: null, ptyId: null };
-      let nextFocusedPaneIdByWorktree = state.focusedPaneIdByWorktree;
-      if (worktreePath) {
-        nextFocusedPaneIdByWorktree = setFocusedPaneForWorktree(
-          state.focusedPaneIdByWorktree,
-          worktreePath,
+      const session = worktreePath ? state.sessions[worktreePath] : undefined;
+      const nextFocus = resolveSessionFocus(session, state.focusedPaneIdByTab);
+      let nextFocusedPaneIdByTab = state.focusedPaneIdByTab;
+      const activeTab = findActiveTab(session);
+      if (activeTab) {
+        nextFocusedPaneIdByTab = setFocusedPaneForTab(
+          state.focusedPaneIdByTab,
+          activeTab.id,
           nextFocus.paneId,
         );
       }
       const nextBellPtyIds = new Set(state.bellPtyIds);
       let nextAiSessions = state.aiSessions;
-      if (worktreePath && state.sessions[worktreePath]) {
-        for (const { ptyId } of collectTerminalPanes(state.sessions[worktreePath])) {
+      // Only the visible tab's panes are actually seen — background tabs keep
+      // their bell/attention markers for the tab-bar indicators.
+      if (activeTab) {
+        for (const { ptyId } of collectTerminalPanes(activeTab.node)) {
           if (ptyId) {
             nextBellPtyIds.delete(ptyId);
             const session = state.aiSessions[ptyId];
@@ -381,7 +601,7 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       }
       return {
         activeWorktree: worktreePath,
-        focusedPaneIdByWorktree: nextFocusedPaneIdByWorktree,
+        focusedPaneIdByTab: nextFocusedPaneIdByTab,
         focusedPtyId: nextFocus.ptyId,
         bellPtyIds: nextBellPtyIds,
         aiSessions: nextAiSessions,
@@ -396,34 +616,28 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
       const nextAiSessions = clearAttentionForPty(state.aiSessions, ptyId);
       const activeSession = state.activeWorktree ? state.sessions[state.activeWorktree] : undefined;
-      const activePane = activeSession ? findTerminalPaneByPtyId(activeSession, ptyId) : null;
-      const worktreePath = activePane
-        ? state.activeWorktree
-        : findWorktreePathForPtyId(state.sessions, ptyId);
+      let tab = findTabByPtyId(activeSession, ptyId);
+      if (!tab) {
+        for (const session of Object.values(state.sessions)) {
+          tab = findTabByPtyId(session, ptyId);
+          if (tab) break;
+        }
+      }
 
-      if (!worktreePath) {
+      if (!tab) {
         if (state.focusedPtyId === ptyId && nextAiSessions === state.aiSessions) {
           return state;
         }
         return { focusedPtyId: ptyId, aiSessions: nextAiSessions };
       }
 
-      const pane = findTerminalPaneByPtyId(state.sessions[worktreePath], ptyId);
-      if (!pane) {
-        if (state.focusedPtyId === ptyId && nextAiSessions === state.aiSessions) {
-          return state;
-        }
-        return { focusedPtyId: ptyId, aiSessions: nextAiSessions };
-      }
-
+      const pane = findTerminalPaneByPtyId(tab.node, ptyId);
       return {
         focusedPtyId: ptyId,
         aiSessions: nextAiSessions,
-        focusedPaneIdByWorktree: setFocusedPaneForWorktree(
-          state.focusedPaneIdByWorktree,
-          worktreePath,
-          pane.paneId,
-        ),
+        focusedPaneIdByTab: pane
+          ? setFocusedPaneForTab(state.focusedPaneIdByTab, tab.id, pane.paneId)
+          : state.focusedPaneIdByTab,
       };
     }),
 
@@ -444,13 +658,7 @@ export const useTerminalStore = create<TerminalState>((set) => ({
         const [tool, nextStatus] = raw.split(":") as [AiTool, AiStatus];
         let status = nextStatus;
         if (!tool || !status) return state;
-        if (
-          status === "attention" &&
-          sessionContainsPty(
-            state.activeWorktree ? state.sessions[state.activeWorktree] : undefined,
-            ptyId,
-          )
-        ) {
+        if (status === "attention" && visibleTabContainsPty(state, ptyId)) {
           status = "idle";
         }
         const prev = state.aiSessions[ptyId];
@@ -463,23 +671,31 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       return { aiSessions: next };
     }),
 
-  updateSizes: (worktreePath, nodePath, ratios) =>
+  updateSizes: (worktreePath, tabId, nodePath, ratios) =>
     set((state) => {
-      const root = state.sessions[worktreePath];
-      if (!root) return state;
-      const updated = setSizesAtPath(root, nodePath, ratios);
-      const newSessions = { ...state.sessions, [worktreePath]: updated };
+      const session = state.sessions[worktreePath];
+      const tab = session?.tabs.find((entry) => entry.id === tabId);
+      if (!session || !tab) return state;
+      const updated = setSizesAtPath(tab.node, nodePath, ratios);
+      const newSessions = {
+        ...state.sessions,
+        [worktreePath]: replaceTabNode(session, tabId, updated),
+      };
       saveLayouts(newSessions);
       return { sessions: newSessions };
     }),
 
   setPaneLabel: (worktreePath, paneId, label) =>
     set((state) => {
-      const root = state.sessions[worktreePath];
-      if (!root) return state;
-      const updated = setLeafLabel(root, paneId, label);
-      if (updated === root) return state;
-      const newSessions = { ...state.sessions, [worktreePath]: updated };
+      const session = state.sessions[worktreePath];
+      const tab = findTabByPaneId(session, paneId);
+      if (!session || !tab) return state;
+      const updated = setLeafLabel(tab.node, paneId, label);
+      if (updated === tab.node) return state;
+      const newSessions = {
+        ...state.sessions,
+        [worktreePath]: replaceTabNode(session, tab.id, updated),
+      };
       saveLayouts(newSessions);
       return { sessions: newSessions };
     }),
@@ -490,13 +706,14 @@ export const useTerminalStore = create<TerminalState>((set) => ({
   initLayouts: async () => {
     try {
       const raw = await loadTerminalLayouts();
-      const parsed = JSON.parse(raw) as Record<string, SplitNode>;
-      layoutCache = Object.fromEntries(
-        Object.entries(parsed).map(([worktreePath, node]) => [
-          worktreePath,
-          normalizeSplitTree(node, () => crypto.randomUUID()),
-        ]),
-      );
+      const parsed = JSON.parse(raw) as Record<string, PersistedWorktreeSession | SplitNode>;
+      layoutCache = {};
+      for (const [worktreePath, value] of Object.entries(parsed)) {
+        const session = normalizeSavedSession(value, () => crypto.randomUUID());
+        if (session) {
+          layoutCache[worktreePath] = session;
+        }
+      }
     } catch {
       layoutCache = {};
     }

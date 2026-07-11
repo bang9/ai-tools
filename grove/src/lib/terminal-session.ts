@@ -1,4 +1,4 @@
-import type { SplitNode } from "../types";
+import type { SplitNode, TerminalTab, WorktreeTerminalSession } from "../types";
 import type {
   SaveTerminalSessionSnapshotRequest,
   TerminalPaneSnapshot,
@@ -65,11 +65,75 @@ export function findTerminalPaneByPtyId(node: SplitNode, ptyId: string): Termina
   return collectTerminalPanes(node).find((pane) => pane.ptyId === ptyId) ?? null;
 }
 
-export function buildTerminalPaneTopologySignature(node: SplitNode | undefined): string {
-  return node
-    ? collectTerminalPanes(node)
-        .map((pane) => pane.paneId)
-        .join("|")
+const sessionPaneCache = new WeakMap<WorktreeTerminalSession, TerminalPaneEntry[]>();
+
+/** All panes of a worktree session, flattened across its terminal tabs. */
+export function collectSessionPanes(
+  session: WorktreeTerminalSession | undefined,
+): TerminalPaneEntry[] {
+  if (!session) {
+    return [];
+  }
+
+  const cached = sessionPaneCache.get(session);
+  if (cached) {
+    return cached;
+  }
+
+  const panes: TerminalPaneEntry[] = [];
+  for (const tab of session.tabs) {
+    panes.push(...collectTerminalPanes(tab.node));
+  }
+  sessionPaneCache.set(session, panes);
+  return panes;
+}
+
+export function findActiveTab(session: WorktreeTerminalSession | undefined): TerminalTab | null {
+  if (!session) {
+    return null;
+  }
+  return session.tabs.find((tab) => tab.id === session.activeTabId) ?? session.tabs[0] ?? null;
+}
+
+export function findTabByPtyId(
+  session: WorktreeTerminalSession | undefined,
+  ptyId: string,
+): TerminalTab | null {
+  if (!session) {
+    return null;
+  }
+  return (
+    session.tabs.find((tab) =>
+      collectTerminalPanes(tab.node).some((pane) => pane.ptyId === ptyId),
+    ) ?? null
+  );
+}
+
+export function findTabByPaneId(
+  session: WorktreeTerminalSession | undefined,
+  paneId: string,
+): TerminalTab | null {
+  if (!session) {
+    return null;
+  }
+  return (
+    session.tabs.find((tab) =>
+      collectTerminalPanes(tab.node).some((pane) => pane.paneId === paneId),
+    ) ?? null
+  );
+}
+
+export function buildTerminalPaneTopologySignature(
+  session: WorktreeTerminalSession | undefined,
+): string {
+  return session
+    ? session.tabs
+        .map((tab) =>
+          collectTerminalPanes(tab.node)
+            .map((pane) => pane.paneId)
+            .join("|"),
+        )
+        .join("||")
     : "";
 }
 
@@ -118,27 +182,25 @@ export function buildTerminalRestorePlan(
 
 export function buildTerminalSnapshotRequest(
   worktreePath: string,
-  node: SplitNode | undefined,
+  session: WorktreeTerminalSession | undefined,
   paneLaunchCwds?: ReadonlyMap<string, string>,
 ): SaveTerminalSessionSnapshotRequest {
   return {
     worktreePath,
-    panes: node
-      ? collectTerminalPanes(node).map(({ paneId, ptyId }) => ({
-          paneId,
-          ptyId,
-          launchCwd: paneLaunchCwds?.get(paneId),
-        }))
-      : [],
+    panes: collectSessionPanes(session).map(({ paneId, ptyId }) => ({
+      paneId,
+      ptyId,
+      launchCwd: paneLaunchCwds?.get(paneId),
+    })),
   };
 }
 
 export function findWorktreePathForPtyId(
-  sessions: Record<string, SplitNode>,
+  sessions: Record<string, WorktreeTerminalSession>,
   ptyId: string,
 ): string | null {
-  for (const [worktreePath, node] of Object.entries(sessions)) {
-    if (collectTerminalPanes(node).some((pane) => pane.ptyId === ptyId)) {
+  for (const [worktreePath, session] of Object.entries(sessions)) {
+    if (collectSessionPanes(session).some((pane) => pane.ptyId === ptyId)) {
       return worktreePath;
     }
   }

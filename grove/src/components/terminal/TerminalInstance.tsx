@@ -29,6 +29,7 @@ interface Props {
   paneId: string;
   ptyId: string;
   worktreePath: string;
+  tabId: string;
   label?: string;
 }
 
@@ -246,13 +247,14 @@ function TerminalPaneActions({
   );
 }
 
-function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
+function TerminalInstance({ paneId, ptyId, worktreePath, tabId, label }: Props) {
   const termRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<ReturnType<typeof acquireTerminalRuntime> | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const theme = useTerminalStore((s) => s.theme);
   const isFocused = useTerminalStore((s) => s.focusedPtyId === ptyId);
   const isActiveWorktree = useTerminalStore((s) => s.activeWorktree === worktreePath);
+  const isActiveTab = useTerminalStore((s) => s.sessions[worktreePath]?.activeTabId === tabId);
   const setFocusedPtyId = useTerminalStore((s) => s.setFocusedPtyId);
   const setPaneLabel = useTerminalStore((s) => s.setPaneLabel);
   const mirrorSession = useBroadcastStore((s) => s.mirrors[ptyId] ?? null);
@@ -263,8 +265,8 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   const isBroadcasting = Boolean(mirrorSession || pipSession);
   const snapshot = mirrorSession?.snapshot ?? pipSession?.snapshot ?? null;
   const paneCount = useTerminalStore((s) => {
-    const node = s.sessions[worktreePath];
-    return node ? countLeaves(node) : 0;
+    const tab = s.sessions[worktreePath]?.tabs.find((entry) => entry.id === tabId);
+    return tab ? countLeaves(tab.node) : 0;
   });
   const markBellPty = useTerminalStore((s) => s.markBellPty);
   const [error, setError] = useState<string | null>(null);
@@ -332,12 +334,13 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
     runtimeRef.current?.setPtyId(ptyId);
   }, [ptyId]);
 
-  // Suspend the hidden worktree's WebGL context (display:none while inactive)
-  // and reload it on reveal. isBroadcasting is a dep so the flag re-pushes after
-  // the runtime is (re)acquired when broadcasting toggles.
+  // Suspend the hidden pane's WebGL context (display:none while its worktree
+  // or terminal tab is inactive) and reload it on reveal. isBroadcasting is a
+  // dep so the flag re-pushes after the runtime is (re)acquired when
+  // broadcasting toggles.
   useEffect(() => {
-    runtimeRef.current?.setVisible(isActiveWorktree);
-  }, [isActiveWorktree, isBroadcasting]);
+    runtimeRef.current?.setVisible(isActiveWorktree && isActiveTab);
+  }, [isActiveTab, isActiveWorktree, isBroadcasting]);
 
   useEffect(() => {
     runtimeRef.current?.setTheme(theme);
@@ -490,5 +493,6 @@ export default memo(
     prev.paneId === next.paneId &&
     prev.ptyId === next.ptyId &&
     prev.worktreePath === next.worktreePath &&
+    prev.tabId === next.tabId &&
     prev.label === next.label,
 );

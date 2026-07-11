@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { shallow } from "zustand/shallow";
-import type { SplitNode } from "../../types";
+import type { SplitNode, WorktreeTerminalSession } from "../../types";
 import type { AiSession } from "../../store/terminal";
 import { selectAiWorktreeSessions, selectWorktreeBell } from "./worktree-status";
 
 interface WorktreeStatusState {
-  sessions: Record<string, SplitNode>;
+  sessions: Record<string, WorktreeTerminalSession>;
   bellPtyIds: Set<string>;
   aiSessions: Record<string, AiSession>;
 }
@@ -16,6 +16,10 @@ function makeLeaf(id: string, ptyId?: string): SplitNode {
     type: "leaf",
     ptyId,
   };
+}
+
+function makeSession(node: SplitNode, tabId = "tab-1"): WorktreeTerminalSession {
+  return { tabs: [{ id: tabId, node }], activeTabId: tabId };
 }
 
 function makeState(overrides: Partial<WorktreeStatusState> = {}): WorktreeStatusState {
@@ -41,12 +45,12 @@ describe("worktree status selectors", () => {
   it("stays shallow-equal for unchanged AI sessions", () => {
     const state = makeState({
       sessions: {
-        "/tmp/source": {
+        "/tmp/source": makeSession({
           id: "root",
           type: "horizontal",
           sizes: [1, 1],
           children: [makeLeaf("pane-a", "pty-a"), makeLeaf("pane-b", "pty-b")],
-        },
+        }),
       },
       aiSessions: {
         "pty-a": { tool: "claude", status: "running" },
@@ -68,7 +72,7 @@ describe("worktree status selectors", () => {
   it("detects terminal bell state for panes in the worktree", () => {
     const state = makeState({
       sessions: {
-        "/tmp/source": makeLeaf("pane-a", "pty-a"),
+        "/tmp/source": makeSession(makeLeaf("pane-a", "pty-a")),
       },
       bellPtyIds: new Set(["pty-a"]),
     });

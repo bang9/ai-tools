@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SplitNode } from "../types";
+import type { SplitNode, WorktreeTerminalSession } from "../types";
 import { normalizeSplitTree, toLayoutTemplate } from "./split-tree";
 import {
   buildTerminalPaneTopologySignature,
@@ -9,6 +9,10 @@ import {
   findWorktreePathForPtyId,
   restoreLayoutWithPtyIds,
 } from "./terminal-session";
+
+function makeSession(node: SplitNode, tabId = "tab-1"): WorktreeTerminalSession {
+  return { tabs: [{ id: tabId, node }], activeTabId: tabId };
+}
 
 const layout: SplitNode = {
   id: "root",
@@ -47,18 +51,32 @@ describe("collectTerminalPanes", () => {
 
 describe("buildTerminalPaneTopologySignature", () => {
   it("tracks stable pane identity without pty ids", () => {
-    expect(buildTerminalPaneTopologySignature(layout)).toBe("pane-a|pane-b|pane-c");
+    expect(buildTerminalPaneTopologySignature(makeSession(layout))).toBe("pane-a|pane-b|pane-c");
     expect(
       buildTerminalPaneTopologySignature(
-        restoreLayoutWithPtyIds(
-          layout,
-          new Map([
-            ["pane-a", "pty-1"],
-            ["pane-b", "pty-2"],
-          ]),
+        makeSession(
+          restoreLayoutWithPtyIds(
+            layout,
+            new Map([
+              ["pane-a", "pty-1"],
+              ["pane-b", "pty-2"],
+            ]),
+          ),
         ),
       ),
     ).toBe("pane-a|pane-b|pane-c");
+  });
+
+  it("joins multiple tabs' pane ids with a double pipe", () => {
+    const session: WorktreeTerminalSession = {
+      tabs: [
+        { id: "tab-1", node: { id: "pane-a", type: "leaf" } },
+        { id: "tab-2", node: { id: "pane-b", type: "leaf" } },
+      ],
+      activeTabId: "tab-1",
+    };
+
+    expect(buildTerminalPaneTopologySignature(session)).toBe("pane-a||pane-b");
   });
 });
 
@@ -218,7 +236,7 @@ describe("buildTerminalSnapshotRequest", () => {
     expect(
       buildTerminalSnapshotRequest(
         "/tmp/project",
-        liveLayout,
+        makeSession(liveLayout),
         new Map([
           ["pane-a", "/tmp/project"],
           ["pane-b", "/tmp/project/src"],
@@ -245,8 +263,12 @@ describe("buildTerminalSnapshotRequest", () => {
 describe("findWorktreePathForPtyId", () => {
   it("returns the owning worktree for a live PTY id", () => {
     const sessions = {
-      "/tmp/project-a": restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]])),
-      "/tmp/project-b": restoreLayoutWithPtyIds(layout, new Map([["pane-b", "pty-b"]])),
+      "/tmp/project-a": makeSession(
+        restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]])),
+      ),
+      "/tmp/project-b": makeSession(
+        restoreLayoutWithPtyIds(layout, new Map([["pane-b", "pty-b"]])),
+      ),
     };
 
     expect(findWorktreePathForPtyId(sessions, "pty-b")).toBe("/tmp/project-b");

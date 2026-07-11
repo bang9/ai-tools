@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mission, MissionProject } from "../types";
+import type { Mission, MissionProject, WorktreeTerminalSession } from "../types";
 
 const runCommandMock = vi.fn();
 const runCommandSafelyMock = vi.fn();
@@ -45,6 +45,13 @@ function makeMission(id: string, projects: MissionProject[] = []): Mission {
     missionDir: `/tmp/missions/${id}`,
     collapsed: false,
   };
+}
+
+function makeSession(
+  node: { id: string; type: "leaf"; ptyId: string },
+  tabId = "tab-1",
+): WorktreeTerminalSession {
+  return { tabs: [{ id: tabId, node }], activeTabId: tabId };
 }
 
 describe("useMissionStore", () => {
@@ -197,14 +204,20 @@ describe("useMissionStore", () => {
       });
       useTerminalStore.setState({
         sessions: {
-          "/tmp/p1": { id: "pane-project", type: "leaf", ptyId: "pty-project" },
-          "/tmp/missions/m1": { id: "pane-mission", type: "leaf", ptyId: "pty-mission" },
+          "/tmp/p1": makeSession(
+            { id: "pane-project", type: "leaf", ptyId: "pty-project" },
+            "tab-p1",
+          ),
+          "/tmp/missions/m1": makeSession(
+            { id: "pane-mission", type: "leaf", ptyId: "pty-mission" },
+            "tab-m1",
+          ),
         },
         activeWorktree: "/tmp/p1",
         focusedPtyId: "pty-project",
-        focusedPaneIdByWorktree: {
-          "/tmp/p1": "pane-project",
-          "/tmp/missions/m1": "pane-mission",
+        focusedPaneIdByTab: {
+          "tab-p1": "pane-project",
+          "tab-m1": "pane-mission",
         },
       });
 

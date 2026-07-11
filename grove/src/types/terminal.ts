@@ -35,3 +35,13 @@ export interface SplitNode {
   children?: SplitNode[];
   sizes?: number[];
 }
+
+export interface TerminalTab {
+  id: string;
+  node: SplitNode;
+}
+
+export interface WorktreeTerminalSession {
+  tabs: TerminalTab[];
+  activeTabId: string;
+}

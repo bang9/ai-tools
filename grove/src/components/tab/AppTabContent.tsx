@@ -12,7 +12,7 @@ import {
   captureRuntimeSnapshot,
 } from "../../lib/terminal-runtime";
 import { buildBroadcastSessionKey, restoreBroadcastSessionSize } from "../../lib/broadcast-session";
-import { collectTerminalPanes } from "../../lib/terminal-session";
+import { collectSessionPanes } from "../../lib/terminal-session";
 import { shouldStartPipBroadcast } from "../../lib/broadcast-policy";
 import { cn } from "../../lib/cn";
 import { DEFAULT_PIP_PRESENTATION, type PipPresentationState } from "../../lib/pip-floating";
@@ -29,8 +29,8 @@ import { ResizablePanelGroup } from "../ui/resizable-panel-group";
 /** Find paneId for a given ptyId in the terminal sessions */
 function findPaneIdForPty(ptyId: string): string | null {
   const sessions = useTerminalStore.getState().sessions;
-  for (const node of Object.values(sessions)) {
-    for (const pane of collectTerminalPanes(node)) {
+  for (const session of Object.values(sessions)) {
+    for (const pane of collectSessionPanes(session)) {
       if (pane.ptyId === ptyId) return pane.paneId;
     }
   }
