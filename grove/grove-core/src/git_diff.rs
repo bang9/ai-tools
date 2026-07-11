@@ -1264,6 +1264,11 @@ mod tests {
             .args(args)
             .current_dir(repo)
             .env("PATH", enriched_path())
+            // CI runners have no global git identity, so commits fail without these.
+            .env("GIT_AUTHOR_NAME", "Grove Test")
+            .env("GIT_AUTHOR_EMAIL", "grove-test@example.com")
+            .env("GIT_COMMITTER_NAME", "Grove Test")
+            .env("GIT_COMMITTER_EMAIL", "grove-test@example.com")
             .output()
             .unwrap();
 

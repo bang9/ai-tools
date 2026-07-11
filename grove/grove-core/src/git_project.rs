@@ -4250,7 +4250,8 @@ set -eu
 {
   printf 'cwd=%s\n' "$PWD"
   printf 'argv='
-  printf '%s\x1f' "$@"
+  # \037 (unit separator, 0x1f): dash's printf has no \xHH escapes, so use octal
+  printf '%s\037' "$@"
   printf '\n'
   printf 'ssh_auth_sock=%s\n' "${SSH_AUTH_SOCK-}"
   printf 'git_ssh_command=%s\n' "${GIT_SSH_COMMAND-}"
@@ -4268,7 +4269,8 @@ set -eu
 {
   printf 'cwd=%s\n' "$PWD"
   printf 'argv='
-  printf '%s\x1f' "$@"
+  # \037 (unit separator, 0x1f): dash's printf has no \xHH escapes, so use octal
+  printf '%s\037' "$@"
   printf '\n'
   printf 'ssh_auth_sock=%s\n' "${SSH_AUTH_SOCK-}"
   printf -- '---\n'
