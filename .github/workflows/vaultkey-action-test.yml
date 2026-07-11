@@ -1,11 +1,13 @@
 name: "vaultkey-action: Test"
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - 'vaultkey-action/**'
       - 'vaultkey/**'
+      - '.github/workflows/vaultkey-action-test.yml'
   pull_request:
     branches: [main]
     paths:
