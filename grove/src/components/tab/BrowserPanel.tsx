@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   ArrowLeft,
   ArrowRight,
+  Crosshair,
   ExternalLink,
   Globe,
   History,
@@ -13,10 +14,18 @@ import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
 import { useBrowserStore, selectNav } from "../../store/browser";
 import { useTabStore } from "../../store/tab";
+import { useTerminalStore } from "../../store/terminal";
+import { useToast } from "../../store/toast";
 import { normalizeBrowserUrl, browserTabTitle } from "../../lib/browser-url";
 import { filterUrlSuggestions, findUrlCompletion } from "../../lib/browser-history";
 import { runCommand } from "../../lib/command";
-import { openExternal } from "../../lib/platform";
+import {
+  browserSetGrabMode,
+  onBrowserGrab,
+  openExternal,
+  writePty,
+  type BrowserGrabEvent,
+} from "../../lib/platform";
 import {
   browserBack,
   browserForward,
@@ -45,6 +54,30 @@ function readHostBounds(el: HTMLDivElement | null) {
   return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
 
+/** Shape of the JSON payload posted by the guest grab picker (browser.rs). */
+interface GrabPayload {
+  tag: string;
+  selector: string;
+  text: string;
+  html: string;
+  pageUrl: string;
+  pageTitle: string;
+}
+
+/** Render a picked element as compact markdown for a coding agent's terminal. */
+function formatGrabMarkdown(p: GrabPayload): string {
+  const text = (p.text ?? "").replace(/\s+/g, " ").trim();
+  const label = p.pageTitle || p.pageUrl;
+  return (
+    `Browser element from [${label}](${p.pageUrl}):\n` +
+    `- selector: \`${p.selector}\`  (tag \`${p.tag}\`)\n` +
+    `- text: ${text}\n\n` +
+    "```html\n" +
+    `${p.html}\n` +
+    "```\n"
+  );
+}
+
 function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const nav = useBrowserStore(selectNav(tabId));
   const navigate = useBrowserStore((s) => s.navigate);
@@ -52,6 +85,8 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const recordRecentUrl = useBrowserStore((s) => s.recordRecentUrl);
   const updateTabTitle = useTabStore((s) => s.updateTabTitle);
   const overlayOpen = useOverlayPresence();
+  const { toast } = useToast();
+  const [grabArmed, setGrabArmed] = useState(false);
 
   // `input` is what the <input> DISPLAYS (may include an inline completion or a
   // dropdown preview). `typed` is what the user actually typed — it drives the
@@ -254,6 +289,53 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     // Rust side re-applies the last synced bounds when the sequence settles.
     browserOpenDevtoolsTab(tabId);
   }, [tabId]);
+
+  // Arm/disarm the guest element picker. Optimistically reflect the new state;
+  // revert if the native call fails. The guest disarms itself after a pick, so
+  // the grab event handler resets `grabArmed` on delivery.
+  const handleToggleGrab = useCallback(() => {
+    const next = !grabArmed;
+    setGrabArmed(next);
+    void runCommand(() => browserSetGrabMode(tabId, next), {
+      errorToast: "Failed to toggle grab mode",
+    }).catch(() => setGrabArmed(!next));
+  }, [grabArmed, tabId]);
+
+  // Deliver a picked element to the focused terminal (where a coding agent
+  // runs). Subscribe once; ignore events for other tabs.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    const deliver = (event: BrowserGrabEvent) => {
+      if (event.tabId !== tabId) return;
+      // The guest disarms itself after a pick — mirror that in the UI.
+      setGrabArmed(false);
+      let payload: GrabPayload;
+      try {
+        payload = JSON.parse(event.data) as GrabPayload;
+      } catch {
+        toast("error", "Failed to read grabbed element");
+        return;
+      }
+      const focusedPtyId = useTerminalStore.getState().focusedPtyId;
+      if (!focusedPtyId) {
+        toast("error", "No focused terminal");
+        return;
+      }
+      const bytes = new TextEncoder().encode(formatGrabMarkdown(payload));
+      void writePty(focusedPtyId, bytes)
+        .then(() => toast("success", "Sent element to terminal"))
+        .catch(() => toast("error", "Failed to send element to terminal"));
+    };
+    void onBrowserGrab(deliver).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [tabId, toast]);
 
   const handleOpenExternal = useCallback(() => {
     if (!url) return;
@@ -485,6 +567,15 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
           )}
         </form>
 
+        <IconButton
+          onClick={handleToggleGrab}
+          disabled={!url}
+          title="Grab an element into the terminal"
+          aria-label="Grab an element into the terminal"
+          className={cn("h-6 w-6", { "text-primary": grabArmed })}
+        >
+          <Crosshair className={cn("size-3.5")} />
+        </IconButton>
         <BrowserCookieImportMenu url={url} onImported={handleReload} />
         <IconButton
           onClick={handleOpenDevtools}

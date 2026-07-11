@@ -63,6 +63,16 @@ struct BrowserNewWindowPayload {
     url: String,
 }
 
+/// Payload for the `browser:grab` event emitted when the user picks an element
+/// while grab mode is armed. `data` is the raw JSON string produced by the guest
+/// picker (`GUEST_GRAB_SCRIPT`); the renderer parses and formats it.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserGrabPayload {
+    tab_id: String,
+    data: String,
+}
+
 /// Schemes a page (or its subframes) may navigate to. `data`/`blob` are common
 /// in embedded content; `file` backs local HTML previews opened from the file
 /// viewer; everything else — notably custom app schemes like `tauri:` — is
@@ -78,6 +88,12 @@ fn scheme_allowed(url: &Url) -> bool {
 /// load. Grove's guest webviews have zero IPC/preload access, so this denied
 /// navigation is the only bridge from guest → main.
 const GUEST_MENU_SCHEME: &str = "grovemenu";
+
+/// Custom scheme the injected grab picker navigates to when the user clicks an
+/// element while grab mode is armed, carrying the extracted element payload in a
+/// `data` query param. Like `grovemenu://`, the navigation is always denied — it
+/// is the guest → main message channel for delivering the picked element.
+const GUEST_GRAB_SCHEME: &str = "grovegrab";
 
 /// Injected into every browser guest before page scripts run. Suppresses
 /// WebKit's native right-click menu and renders Grove's own menu inside a
@@ -174,6 +190,119 @@ const GUEST_CONTEXT_MENU_SCRIPT: &str = r#"
     window.addEventListener('blur', close, true);
     window.addEventListener('resize', close, true);
   }, true);
+})();
+"#;
+
+/// Injected into every browser guest before page scripts run. Implements the
+/// "grab" element picker: while armed, the hovered element is highlighted with a
+/// fixed overlay and a click extracts a compact JSON payload (tag, selector,
+/// text/html slices, rect, page url/title) and posts it back over the
+/// `grovegrab://` channel. All styling is inline so the page cannot restyle or
+/// observe it; the overlay uses `pointer-events:none` so hit-testing sees the
+/// real element underneath. Kept as one idempotent IIFE so re-injection on every
+/// navigation is safe.
+const GUEST_GRAB_SCRIPT: &str = r#"
+(function () {
+  if (window.__groveGrab) return;
+  window.__groveGrab = true;
+  var SCHEME = 'grovegrab://g?';
+  var armed = false;
+  var overlay = null;
+  var lastEl = null;
+  function ensureOverlay() {
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.style.cssText =
+      'all:initial;position:fixed;z-index:2147483647;pointer-events:none;box-sizing:border-box;' +
+      'outline:2px solid #3b82f6;background:rgba(59,130,246,0.18);border-radius:2px';
+    return overlay;
+  }
+  function moveOverlay(el) {
+    var r = el.getBoundingClientRect();
+    var o = ensureOverlay();
+    if (!o.isConnected) (document.documentElement || document.body).appendChild(o);
+    o.style.left = r.left + 'px';
+    o.style.top = r.top + 'px';
+    o.style.width = r.width + 'px';
+    o.style.height = r.height + 'px';
+  }
+  function esc(s) {
+    return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+  // Prefer a stable #id; otherwise a short nth-of-type path (up to 4 ancestors).
+  function selectorFor(el) {
+    if (el.id) return '#' + esc(el.id);
+    var parts = [];
+    var node = el;
+    for (var depth = 0; node && node.nodeType === 1 && depth < 4; depth++) {
+      if (node.id) { parts.unshift('#' + esc(node.id)); break; }
+      var tag = node.tagName.toLowerCase();
+      var nth = 1;
+      var sib = node;
+      while ((sib = sib.previousElementSibling)) {
+        if (sib.tagName === node.tagName) nth++;
+      }
+      parts.unshift(tag + ':nth-of-type(' + nth + ')');
+      node = node.parentElement;
+    }
+    return parts.join('>');
+  }
+  function payloadFor(el) {
+    var r = el.getBoundingClientRect();
+    var cls = typeof el.className === 'string' ? el.className : '';
+    return {
+      tag: el.tagName.toLowerCase(),
+      selector: selectorFor(el),
+      text: (el.innerText || '').slice(0, 500),
+      html: (el.outerHTML || '').slice(0, 2000),
+      id: el.id || '',
+      classes: cls.slice(0, 300),
+      rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+      pageUrl: location.href,
+      pageTitle: document.title
+    };
+  }
+  function onMove(e) {
+    if (!armed) return;
+    var el = e.target;
+    if (!el || el.nodeType !== 1 || el === overlay) return;
+    lastEl = el;
+    moveOverlay(el);
+  }
+  function onClick(e) {
+    if (!armed) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var el = e.target && e.target.nodeType === 1 && e.target !== overlay ? e.target : lastEl;
+    if (!el) { disarm(); return; }
+    var data;
+    try { data = encodeURIComponent(JSON.stringify(payloadFor(el))); }
+    catch (err) { disarm(); return; }
+    disarm();
+    location.href = SCHEME + 'data=' + data;
+  }
+  function onKey(e) {
+    if (armed && e.key === 'Escape') { e.preventDefault(); disarm(); }
+  }
+  function arm() {
+    if (armed) return;
+    armed = true;
+    (document.documentElement || document.body).style.cursor = 'crosshair';
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey, true);
+  }
+  function disarm() {
+    armed = false;
+    (document.documentElement || document.body).style.cursor = '';
+    document.removeEventListener('mousemove', onMove, true);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown', onKey, true);
+    if (overlay && overlay.isConnected) overlay.remove();
+    lastEl = null;
+  }
+  window.__groveGrabArm = arm;
+  window.__groveGrabDisarm = disarm;
 })();
 "#;
 
@@ -285,6 +414,10 @@ pub fn browser_create(
         // the guest (see GUEST_CONTEXT_MENU_SCRIPT). The only guest→main bridge
         // available, since guests have no IPC/preload.
         .initialization_script(GUEST_CONTEXT_MENU_SCRIPT)
+        // Injected before page scripts: the grab element picker (see
+        // GUEST_GRAB_SCRIPT). Armed/disarmed via browser_set_grab_mode; picked
+        // elements post back over the grovegrab:// channel below.
+        .initialization_script(GUEST_GRAB_SCRIPT)
         // NOTE: on_navigation fires for subframe (iframe) navigations too, so
         // it must only filter — never emit nav events, or embedded frames
         // would overwrite the address bar. URL tracking happens in
@@ -294,6 +427,23 @@ pub fn browser_create(
             // always deny the navigation (it is a message, not a real load).
             if url.scheme() == GUEST_MENU_SCHEME {
                 handle_guest_menu_action(&nav_app, &nav_tab, url.as_str());
+                return false;
+            }
+            // Grab picker delivering a picked element: forward the raw JSON to
+            // the renderer and deny the navigation (it is a message, not a load).
+            if url.scheme() == GUEST_GRAB_SCHEME {
+                let data = url
+                    .query_pairs()
+                    .find(|(key, _)| key == "data")
+                    .map(|(_, value)| value.into_owned())
+                    .unwrap_or_default();
+                let _ = nav_app.emit(
+                    "browser:grab",
+                    BrowserGrabPayload {
+                        tab_id: nav_tab.clone(),
+                        data,
+                    },
+                );
                 return false;
             }
             scheme_allowed(url)
@@ -391,6 +541,27 @@ pub fn browser_reload(state: State<'_, BrowserState>, tab_id: String) -> Result<
         Some(entry) => entry.webview.reload().map_err(|e| e.to_string()),
         None => Ok(()),
     }
+}
+
+/// Arm or disarm the guest grab element picker for a tab. Silent no-op for an
+/// unknown tab. The guest disarms itself after a pick, so the frontend only
+/// needs to call this to enter pick mode (or to cancel it).
+#[tauri::command]
+pub fn browser_set_grab_mode(
+    state: State<'_, BrowserState>,
+    tab_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let map = state.0.lock().map_err(|e| e.to_string())?;
+    let Some(entry) = map.get(&tab_id) else {
+        return Ok(());
+    };
+    let script = if enabled {
+        "window.__groveGrabArm&&window.__groveGrabArm()"
+    } else {
+        "window.__groveGrabDisarm&&window.__groveGrabDisarm()"
+    };
+    entry.webview.eval(script).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

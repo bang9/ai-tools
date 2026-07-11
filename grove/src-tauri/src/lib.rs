@@ -738,6 +738,7 @@ pub fn run() {
             browser::browser_go_back,
             browser::browser_go_forward,
             browser::browser_reload,
+            browser::browser_set_grab_mode,
             browser::browser_set_bounds,
             browser::browser_set_visible,
             browser::browser_close,

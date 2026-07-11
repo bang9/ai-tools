@@ -25,6 +25,7 @@ import type {
 } from "../../types";
 import type {
   BrowserBounds,
+  BrowserGrabEvent,
   BrowserNavEvent,
   BrowserNewWindowEvent,
   DetectedBrowser,
@@ -386,6 +387,10 @@ export async function browserOpenDevtools(tabId: string): Promise<void> {
   return platform.invoke("browser_open_devtools", { tabId });
 }
 
+export async function browserSetGrabMode(tabId: string, enabled: boolean): Promise<void> {
+  return platform.invoke("browser_set_grab_mode", { tabId, enabled });
+}
+
 export async function browserDetectBrowsers(): Promise<DetectedBrowser[]> {
   return platform.invoke("detect_installed_browsers");
 }
@@ -409,6 +414,10 @@ export function onBrowserNewWindow(
   handler: (event: BrowserNewWindowEvent) => void,
 ): Promise<UnlistenFn> {
   return platform.listen<BrowserNewWindowEvent>("browser:new-window", handler);
+}
+
+export function onBrowserGrab(handler: (event: BrowserGrabEvent) => void): Promise<UnlistenFn> {
+  return platform.listen<BrowserGrabEvent>("browser:grab", handler);
 }
 
 // === ENV SYNC COMMANDS ===

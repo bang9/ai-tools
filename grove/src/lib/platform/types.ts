@@ -28,6 +28,12 @@ export interface BrowserNewWindowEvent {
   url: string;
 }
 
+/** A picked element delivered by grab mode; `data` is raw JSON the UI parses. */
+export interface BrowserGrabEvent {
+  tabId: string;
+  data: string;
+}
+
 /** A browser Grove can import cookies from (from grove-core detection). */
 export interface DetectedBrowser {
   family: string;
