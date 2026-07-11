@@ -22,6 +22,7 @@ import type {
 } from "../../types";
 import type {
   BrowserBounds,
+  BrowserFindEvent,
   BrowserGrabEvent,
   BrowserNavEvent,
   BrowserNewWindowEvent,
@@ -436,6 +437,35 @@ export function onBrowserNewWindow(
 
 export function onBrowserGrab(handler: (event: BrowserGrabEvent) => void): Promise<UnlistenFn> {
   return platform.listen<BrowserGrabEvent>("browser:grab", handler);
+}
+
+/**
+ * Run find-in-page. Pass `findNext: false` to start/refresh a search for
+ * `query`; pass `findNext: true` (with `forward`) to step between matches of the
+ * same query. Results arrive via `onBrowserFind`.
+ */
+export async function browserFind(
+  tabId: string,
+  query: string,
+  forward: boolean,
+  findNext: boolean,
+): Promise<void> {
+  return platform.invoke("browser_find", { tabId, query, forward, findNext });
+}
+
+export async function browserStopFind(tabId: string): Promise<void> {
+  return platform.invoke("browser_stop_find", { tabId });
+}
+
+export function onBrowserFind(handler: (event: BrowserFindEvent) => void): Promise<UnlistenFn> {
+  return platform.listen<BrowserFindEvent>("browser:find", handler);
+}
+
+/** Fired when the user presses Cmd/Ctrl+F over the page; open the find bar. */
+export function onBrowserFindOpen(
+  handler: (event: { tabId: string }) => void,
+): Promise<UnlistenFn> {
+  return platform.listen<{ tabId: string }>("browser:find-open", handler);
 }
 
 // === ENV SYNC COMMANDS ===

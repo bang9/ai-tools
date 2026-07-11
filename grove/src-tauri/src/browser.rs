@@ -73,6 +73,26 @@ struct BrowserGrabPayload {
     data: String,
 }
 
+/// Payload for the `browser:find` event emitted when the guest find helper
+/// reports a search result. `active` is the 1-based ordinal of the current
+/// match (0 when there are none); `total` is the match count.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserFindPayload {
+    tab_id: String,
+    active: u32,
+    total: u32,
+}
+
+/// Payload for the `browser:find-open` event emitted when the user presses
+/// Cmd/Ctrl+F over the page (the native webview has focus, so the app frame
+/// never sees the keychord). The renderer opens its find bar in response.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserFindOpenPayload {
+    tab_id: String,
+}
+
 /// Schemes a page (or its subframes) may navigate to. `data`/`blob` are common
 /// in embedded content; `file` backs local HTML previews opened from the file
 /// viewer; everything else — notably custom app schemes like `tauri:` — is
@@ -94,6 +114,12 @@ const GUEST_MENU_SCHEME: &str = "grovemenu";
 /// `data` query param. Like `grovemenu://`, the navigation is always denied — it
 /// is the guest → main message channel for delivering the picked element.
 const GUEST_GRAB_SCHEME: &str = "grovegrab";
+
+/// Custom scheme the injected find-in-page helper navigates to when it needs to
+/// report a search result (`active`/`total` match counts) back to the app. Like
+/// the other guest schemes, the navigation is always denied — it is the guest →
+/// main channel carrying the result of `window.__groveFind`.
+const GUEST_FIND_SCHEME: &str = "grovefind";
 
 /// Injected into every browser guest before page scripts run. Suppresses
 /// WebKit's native right-click menu and renders Grove's own menu inside a
@@ -306,6 +332,142 @@ const GUEST_GRAB_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Injected into every browser guest before page scripts run. Implements
+/// find-in-page entirely in the guest, since WKWebView exposes no wry search
+/// API. Matches are highlighted with the CSS Custom Highlight API — which paints
+/// ranges WITHOUT mutating the DOM, so it never disturbs the page's own layout
+/// or a framework's virtual DOM. `window.__groveFind(query, forward, findNext)`
+/// searches (or steps to the next/previous match) and reports `{active,total}`
+/// back over the `grovefind://` channel; `window.__groveFindStop()` clears it.
+/// One self-contained IIFE so re-injection on every navigation is idempotent.
+const GUEST_FIND_SCRIPT: &str = r#"
+(function () {
+  if (window.__groveFind) return;
+  var SCHEME = 'grovefind://f?';
+  var HL = 'grove-find';
+  var HL_ACTIVE = 'grove-find-active';
+  // CSS Custom Highlight API (WKWebView / Safari 17.2+). Absent → find still
+  // counts and scrolls, just without the paint.
+  var supported = !!(window.CSS && CSS.highlights && window.Highlight);
+  var state = { query: '', ranges: [], index: -1 };
+
+  function ensureStyle() {
+    if (document.getElementById('__grove_find_style__')) return;
+    var s = document.createElement('style');
+    s.id = '__grove_find_style__';
+    s.textContent =
+      '::highlight(' + HL + '){background:#ffe27a;color:#111}' +
+      '::highlight(' + HL_ACTIVE + '){background:#ff9632;color:#111}';
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function clearHighlights() {
+    if (!supported) return;
+    CSS.highlights.delete(HL);
+    CSS.highlights.delete(HL_ACTIVE);
+  }
+  // Collect a Range per case-insensitive match. Matches within a single text
+  // node only (no cross-node spanning) — enough for ordinary page search.
+  function collect(query) {
+    var ranges = [];
+    if (!query) return ranges;
+    var needle = query.toLowerCase();
+    var nlen = needle.length;
+    var root = document.body || document.documentElement;
+    if (!root) return ranges;
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        if (!node.nodeValue || node.nodeValue.toLowerCase().indexOf(needle) === -1) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        var p = node.parentNode;
+        while (p) {
+          var t = p.nodeName;
+          if (t === 'SCRIPT' || t === 'STYLE' || t === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+          p = p.parentNode;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var node;
+    while ((node = walker.nextNode())) {
+      var hay = node.nodeValue.toLowerCase();
+      var from = 0;
+      var idx;
+      while ((idx = hay.indexOf(needle, from)) !== -1) {
+        try {
+          var r = document.createRange();
+          r.setStart(node, idx);
+          r.setEnd(node, idx + nlen);
+          ranges.push(r);
+        } catch (e) {}
+        from = idx + nlen;
+      }
+    }
+    return ranges;
+  }
+  function paint() {
+    if (!supported) return;
+    if (state.ranges.length === 0) { clearHighlights(); return; }
+    ensureStyle();
+    var all = new Highlight();
+    for (var i = 0; i < state.ranges.length; i++) all.add(state.ranges[i]);
+    CSS.highlights.set(HL, all);
+    if (state.index >= 0 && state.index < state.ranges.length) {
+      var active = new Highlight();
+      active.add(state.ranges[state.index]);
+      CSS.highlights.set(HL_ACTIVE, active);
+    } else {
+      CSS.highlights.delete(HL_ACTIVE);
+    }
+  }
+  function scrollActive() {
+    var r = state.ranges[state.index];
+    if (!r) return;
+    var rect = r.getBoundingClientRect();
+    var vh = window.innerHeight || 0;
+    var vw = window.innerWidth || 0;
+    if (rect.top < 0 || rect.bottom > vh || rect.left < 0 || rect.right > vw) {
+      var el = r.startContainer.parentElement || r.startContainer.parentNode;
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
+    }
+  }
+  function report() {
+    var total = state.ranges.length;
+    var active = total > 0 && state.index >= 0 ? state.index + 1 : 0;
+    location.href = SCHEME + 'active=' + active + '&total=' + total;
+  }
+  window.__groveFind = function (query, forward, findNext) {
+    query = query || '';
+    if (!query) { state = { query: '', ranges: [], index: -1 }; clearHighlights(); report(); return; }
+    if (findNext && query === state.query && state.ranges.length > 0) {
+      var n = state.ranges.length;
+      state.index = ((state.index + (forward ? 1 : -1)) % n + n) % n;
+    } else {
+      state.query = query;
+      state.ranges = collect(query);
+      state.index = state.ranges.length > 0 ? 0 : -1;
+    }
+    paint();
+    scrollActive();
+    report();
+  };
+  window.__groveFindStop = function () {
+    state = { query: '', ranges: [], index: -1 };
+    clearHighlights();
+  };
+  // The native webview has keyboard focus while browsing, so a Cmd/Ctrl+F
+  // pressed over the page never reaches the app frame. Intercept it here and
+  // ask the app to open its find bar (grovefind://o channel, open=1).
+  document.addEventListener('keydown', function (e) {
+    var mod = e.metaKey || e.ctrlKey;
+    if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+      e.preventDefault();
+      location.href = SCHEME + 'open=1';
+    }
+  }, true);
+})();
+"#;
+
 /// Handle a `grovemenu://` callback from the injected guest menu. Runs on the
 /// Tauri main thread (the wry navigation handler fires there). `raw_url` is the
 /// full denied navigation URL.
@@ -418,6 +580,10 @@ pub fn browser_create(
         // GUEST_GRAB_SCRIPT). Armed/disarmed via browser_set_grab_mode; picked
         // elements post back over the grovegrab:// channel below.
         .initialization_script(GUEST_GRAB_SCRIPT)
+        // Injected before page scripts: find-in-page (see GUEST_FIND_SCRIPT).
+        // Driven by browser_find/browser_stop_find; reports match counts back
+        // over the grovefind:// channel below.
+        .initialization_script(GUEST_FIND_SCRIPT)
         // NOTE: on_navigation fires for subframe (iframe) navigations too, so
         // it must only filter — never emit nav events, or embedded frames
         // would overwrite the address bar. URL tracking happens in
@@ -444,6 +610,39 @@ pub fn browser_create(
                         data,
                     },
                 );
+                return false;
+            }
+            // Find helper reporting a search result: forward the counts to the
+            // renderer and deny the navigation (it is a message, not a load).
+            if url.scheme() == GUEST_FIND_SCHEME {
+                let mut active = 0u32;
+                let mut total = 0u32;
+                let mut open = false;
+                for (key, value) in url.query_pairs() {
+                    match key.as_ref() {
+                        "active" => active = value.parse().unwrap_or(0),
+                        "total" => total = value.parse().unwrap_or(0),
+                        "open" => open = value == "1",
+                        _ => {}
+                    }
+                }
+                if open {
+                    let _ = nav_app.emit(
+                        "browser:find-open",
+                        BrowserFindOpenPayload {
+                            tab_id: nav_tab.clone(),
+                        },
+                    );
+                } else {
+                    let _ = nav_app.emit(
+                        "browser:find",
+                        BrowserFindPayload {
+                            tab_id: nav_tab.clone(),
+                            active,
+                            total,
+                        },
+                    );
+                }
                 return false;
             }
             scheme_allowed(url)
@@ -562,6 +761,44 @@ pub fn browser_set_grab_mode(
         "window.__groveGrabDisarm&&window.__groveGrabDisarm()"
     };
     entry.webview.eval(script).map_err(|e| e.to_string())
+}
+
+/// Run find-in-page in a tab's guest. `find_next` steps to the next/previous
+/// match of the SAME query (honouring `forward`); otherwise it starts a fresh
+/// search. The guest reports `{active,total}` back over the `browser:find`
+/// event. Silent no-op for an unknown tab.
+#[tauri::command]
+pub fn browser_find(
+    state: State<'_, BrowserState>,
+    tab_id: String,
+    query: String,
+    forward: bool,
+    find_next: bool,
+) -> Result<(), String> {
+    let map = state.0.lock().map_err(|e| e.to_string())?;
+    let Some(entry) = map.get(&tab_id) else {
+        return Ok(());
+    };
+    // JSON-encode the query so it is a safe JS string literal (quotes, escapes).
+    let query_lit = serde_json::to_string(&query).map_err(|e| e.to_string())?;
+    let script = format!(
+        "window.__groveFind&&window.__groveFind({query_lit},{forward},{find_next})"
+    );
+    entry.webview.eval(&script).map_err(|e| e.to_string())
+}
+
+/// Clear a tab's find-in-page highlights and reset its search state. Silent
+/// no-op for an unknown tab.
+#[tauri::command]
+pub fn browser_stop_find(state: State<'_, BrowserState>, tab_id: String) -> Result<(), String> {
+    let map = state.0.lock().map_err(|e| e.to_string())?;
+    match map.get(&tab_id) {
+        Some(entry) => entry
+            .webview
+            .eval("window.__groveFindStop&&window.__groveFindStop()")
+            .map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
 }
 
 #[tauri::command]

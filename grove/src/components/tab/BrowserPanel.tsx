@@ -2,13 +2,17 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   ArrowLeft,
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
   Crosshair,
   ExternalLink,
   Globe,
   History,
   Loader2,
   RotateCw,
+  Search,
   SquareCode,
+  X,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
@@ -26,10 +30,15 @@ import {
 } from "../../lib/terminal-bracketed-paste";
 import { runCommand } from "../../lib/command";
 import {
+  browserFind,
   browserSetGrabMode,
+  browserStopFind,
+  onBrowserFind,
+  onBrowserFindOpen,
   onBrowserGrab,
   openExternal,
   writePty,
+  type BrowserFindEvent,
   type BrowserGrabEvent,
 } from "../../lib/platform";
 import {
@@ -96,6 +105,14 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   // grab nav that fires the handler twice): drop an identical payload seen
   // within a short window.
   const lastGrabRef = useRef<{ data: string; at: number } | null>(null);
+
+  // Find-in-page. The native webview owns the highlight/scroll; the app only
+  // drives the query and shows the match ordinal reported back over onBrowserFind.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findResult, setFindResult] = useState<{ active: number; total: number } | null>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const findDebounceRef = useRef<number | null>(null);
 
   // `input` is what the <input> DISPLAYS (may include an inline completion or a
   // dropdown preview). `typed` is what the user actually typed — it drives the
@@ -363,6 +380,139 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     });
   }, [url]);
 
+  // --- Find-in-page ---
+  // The native webview owns the search/highlight (GUEST_FIND_SCRIPT); the app
+  // drives the query and renders the match ordinal. Because the native view sits
+  // ABOVE the DOM, the find bar can't overlay it — it renders as a docked row
+  // that shrinks the webview host (the bounds-sync effect moves the view down).
+
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    // Focus + select on the next frame, once the input is in the DOM.
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindResult(null);
+    if (findDebounceRef.current !== null) {
+      window.clearTimeout(findDebounceRef.current);
+      findDebounceRef.current = null;
+    }
+    void browserStopFind(tabId).catch(() => {});
+  }, [tabId]);
+
+  // Debounce the live query so re-highlighting doesn't flash on every keystroke.
+  const runFind = useCallback(
+    (query: string) => {
+      setFindQuery(query);
+      if (findDebounceRef.current !== null) window.clearTimeout(findDebounceRef.current);
+      if (!query) {
+        setFindResult(null);
+        void browserStopFind(tabId).catch(() => {});
+        return;
+      }
+      findDebounceRef.current = window.setTimeout(() => {
+        findDebounceRef.current = null;
+        void browserFind(tabId, query, true, false).catch(() => {});
+      }, 180);
+    },
+    [tabId],
+  );
+
+  const stepFind = useCallback(
+    (forward: boolean) => {
+      if (!findQuery) return;
+      void browserFind(tabId, findQuery, forward, true).catch(() => {});
+    },
+    [findQuery, tabId],
+  );
+
+  const handleFindKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        stepFind(!e.shiftKey); // Enter = next, Shift+Enter = previous
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeFind();
+      }
+    },
+    [closeFind, stepFind],
+  );
+
+  // Subscribe to match-count reports for this tab.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onBrowserFind((event: BrowserFindEvent) => {
+      if (event.tabId !== tabId) return;
+      setFindResult({ active: event.active, total: event.total });
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [tabId]);
+
+  // Open the find bar when the guest forwards a Cmd/Ctrl+F pressed over the page
+  // (the native webview has focus, so the app frame never sees that keychord).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onBrowserFindOpen((event) => {
+      if (event.tabId !== tabId) return;
+      openFind();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [openFind, tabId]);
+
+  // Cmd/Ctrl+F while focus is in the app chrome (address bar, toolbar). The
+  // guest handler covers the case where the page itself has focus.
+  useEffect(() => {
+    if (!isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === "f" || e.key === "F")
+      ) {
+        e.preventDefault();
+        openFind();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isActive, openFind]);
+
+  // A navigation replaces the document (highlights are gone) — reset the bar.
+  useEffect(() => {
+    setFindOpen(false);
+    setFindResult(null);
+  }, [url]);
+
+  // Match ordinal shown in the find bar: "3/12", "No results", or blank.
+  let findLabel = "";
+  if (findQuery) {
+    findLabel =
+      findResult && findResult.total > 0
+        ? `${findResult.active}/${findResult.total}`
+        : "No results";
+  }
+
   // Keep the native webview positioned over the host area whenever it is the
   // active, visible tab. Also runs on remount (worktree switch) so a persisted
   // native webview snaps back to the right place.
@@ -587,6 +737,15 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
         </form>
 
         <IconButton
+          onClick={() => (findOpen ? closeFind() : openFind())}
+          disabled={!url}
+          title="Find in page (⌘F)"
+          aria-label="Find in page"
+          className={cn("h-6 w-6", { "text-primary": findOpen })}
+        >
+          <Search className={cn("size-3.5")} />
+        </IconButton>
+        <IconButton
           onClick={handleToggleGrab}
           disabled={!url}
           title="Grab an element into the terminal"
@@ -614,6 +773,62 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
           <ExternalLink className={cn("size-3.5")} />
         </IconButton>
       </div>
+
+      {/* Find bar — a docked row (not an overlay: the native webview sits above
+          the DOM). Rendering it shrinks the content host and the bounds-sync
+          effect moves the webview down to make room. */}
+      {findOpen && hasNav && (
+        <div
+          className={cn(
+            "flex h-9 shrink-0 items-center gap-2 border-b border-border bg-sidebar px-2",
+          )}
+        >
+          <Search className={cn("size-3.5 shrink-0 text-muted-foreground")} />
+          <input
+            ref={findInputRef}
+            value={findQuery}
+            onChange={(e) => runFind(e.target.value)}
+            onKeyDown={handleFindKeyDown}
+            placeholder="Find in page"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className={cn(
+              "min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none",
+              "placeholder:text-muted-foreground/60",
+            )}
+          />
+          <span className={cn("shrink-0 text-[11px] tabular-nums text-muted-foreground")}>
+            {findLabel}
+          </span>
+          <IconButton
+            onClick={() => stepFind(false)}
+            disabled={!findResult || findResult.total === 0}
+            title="Previous match (⇧⏎)"
+            aria-label="Previous match"
+            className={cn("h-6 w-6")}
+          >
+            <ChevronUp className={cn("size-3.5")} />
+          </IconButton>
+          <IconButton
+            onClick={() => stepFind(true)}
+            disabled={!findResult || findResult.total === 0}
+            title="Next match (⏎)"
+            aria-label="Next match"
+            className={cn("h-6 w-6")}
+          >
+            <ChevronDown className={cn("size-3.5")} />
+          </IconButton>
+          <IconButton
+            onClick={closeFind}
+            title="Close find (Esc)"
+            aria-label="Close find"
+            className={cn("h-6 w-6")}
+          >
+            <X className={cn("size-3.5")} />
+          </IconButton>
+        </div>
+      )}
 
       {/* Content */}
       <div className={cn("relative min-h-0 flex-1")}>

@@ -34,6 +34,16 @@ export interface BrowserGrabEvent {
   data: string;
 }
 
+/**
+ * A find-in-page result for a browser tab. `active` is the 1-based ordinal of
+ * the current match (0 when there are none); `total` is the match count.
+ */
+export interface BrowserFindEvent {
+  tabId: string;
+  active: number;
+  total: number;
+}
+
 /** A browser Grove can import cookies from (from grove-core detection). */
 export interface DetectedBrowser {
   family: string;
