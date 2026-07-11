@@ -5,6 +5,7 @@ import CategoriesTab from "./CategoriesTab";
 import TerminalTab from "./TerminalTab";
 import BrowserTab from "./BrowserTab";
 import DeveloperTab from "./DeveloperTab";
+import PermissionsTab from "./PermissionsTab";
 import type { PreferencesTabId } from "../../store/preferences-ui";
 
 const TABS: { id: PreferencesTabId; label: string }[] = [
@@ -13,6 +14,7 @@ const TABS: { id: PreferencesTabId; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "browser", label: "Browser" },
   { id: "developer", label: "Developer" },
+  { id: "permissions", label: "Permissions" },
 ];
 
 interface Props {
@@ -63,6 +65,7 @@ export default function PreferencesModal({ open, onClose, activeTab, onTabChange
             {activeTab === "terminal" && <TerminalTab />}
             {activeTab === "browser" && <BrowserTab />}
             {activeTab === "developer" && <DeveloperTab />}
+            {activeTab === "permissions" && <PermissionsTab />}
           </div>
         </div>
       </DialogContent>

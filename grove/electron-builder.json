@@ -8,7 +8,17 @@
   "asarUnpack": [".electron/native/*.node"],
   "mac": {
     "category": "public.app-category.developer-tools",
-    "icon": "resources/icons/icon.icns"
+    "icon": "resources/icons/icon.icns",
+    "extendInfo": {
+      "NSMicrophoneUsageDescription": "Grove allows terminal-launched developer tools to use the microphone when you request it.",
+      "NSCameraUsageDescription": "Grove allows terminal-launched developer tools to use the camera when you request it.",
+      "NSAppleEventsUsageDescription": "Grove allows terminal-launched developer tools to automate local apps when you request it.",
+      "NSLocalNetworkUsageDescription": "Grove allows terminal-launched developer tools to discover and connect to local development servers when you request it.",
+      "NSBonjourServices": ["_http._tcp", "_https._tcp"],
+      "NSDocumentsFolderUsageDescription": "Grove opens terminals and file views inside your Documents folder when a project lives there.",
+      "NSDownloadsFolderUsageDescription": "Grove opens terminals and file views inside your Downloads folder when a project lives there.",
+      "NSDesktopFolderUsageDescription": "Grove opens terminals and file views inside your Desktop folder when a project lives there."
+    }
   },
   "win": {
     "icon": "resources/icons/icon.ico"

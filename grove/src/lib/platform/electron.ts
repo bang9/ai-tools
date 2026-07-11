@@ -19,6 +19,9 @@ import type {
   MissionProject,
   ProjectEnvSyncConfig,
   StartCloneResult,
+  DevPermissionId,
+  DevPermissionState,
+  DevPermissionRequestResult,
 } from "../../types";
 import type {
   BrowserBounds,
@@ -780,4 +783,16 @@ export async function saveNote(key: string, content: string): Promise<void> {
 
 export async function deleteNote(key: string): Promise<void> {
   return platform.invoke("delete_note", { key });
+}
+
+// === DEV PERMISSIONS ===
+
+export async function getDevPermissionsStatus(): Promise<DevPermissionState[]> {
+  return platform.invoke<DevPermissionState[]>("dev_permissions_status");
+}
+
+export async function requestDevPermission(
+  id: DevPermissionId,
+): Promise<DevPermissionRequestResult> {
+  return platform.invoke<DevPermissionRequestResult>("dev_permissions_request", { id });
 }

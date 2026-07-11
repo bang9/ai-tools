@@ -1,6 +1,6 @@
 # Preferences UI
 
-Unified settings modal accessed via gear icon in AppTabBar. Four tabs: General, Categories, Terminal, Developer.
+Unified settings modal accessed via gear icon in AppTabBar. Six tabs: General, Categories, Terminal, Browser, Developer, Permissions.
 
 ## Heading Hierarchy
 
@@ -31,6 +31,8 @@ src/components/preferences/
 ├── ProjectCategoriesPanel.tsx # Category create/edit/delete + optional project assignment
 ├── TerminalTab.tsx           # Terminal tab: Link Open Mode + Appearance
 ├── DeveloperTab.tsx          # Developer tab: runtime window actions + terminal GC diagnostics
+├── PermissionsTab.tsx        # Permissions tab: live macOS TCC statuses + request/open-settings actions
+├── dev-permission-rows.ts    # Permissions tab: pure row definitions + status label/badge helpers
 └── TerminalAppearance.tsx    # Appearance section: theme presets, font, colors, preview
 ```
 
@@ -68,3 +70,10 @@ User interaction → Zustand store setter → Platform layer → Tauri/Electron 
 - Assign-only mode is reused by the project category dialog opened from a project row.
 - Deleting a custom category also remaps any assigned projects back to the default category.
 - Category colors are random 24-bit hex values, with best-effort avoidance of currently used colors.
+
+## Permissions Tab Notes
+
+- Statuses are read live from macOS TCC via the `dev_permissions_status` platform command on mount, on window focus, and via the manual Refresh button. Nothing is persisted in `config.json`.
+- Each row's action (`dev_permissions_request`) either triggers the OS prompt, nudges the relevant subsystem, or opens the matching System Settings Privacy pane, then re-reads status.
+- Full Disk Access is the fix for repeated per-folder prompts when terminals or file views touch macOS-protected folders (Desktop, Documents, Downloads).
+- The whole surface is macOS-only; on other platforms every row reports `unsupported` and its action button is disabled.

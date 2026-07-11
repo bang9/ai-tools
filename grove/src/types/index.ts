@@ -29,6 +29,12 @@ export type {
 } from "./diff";
 export type { AppTab, AppTabType } from "./tab";
 export type {
+  DevPermissionId,
+  DevPermissionStatus,
+  DevPermissionState,
+  DevPermissionRequestResult,
+} from "./dev-permissions";
+export type {
   EnvValueSource,
   PathDiagnostics,
   ProcessEnvDiagnostics,

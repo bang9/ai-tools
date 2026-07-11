@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Grove allows terminal-launched developer tools to use the microphone when you request it.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Grove allows terminal-launched developer tools to use the camera when you request it.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Grove allows terminal-launched developer tools to automate local apps when you request it.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Grove allows terminal-launched developer tools to discover and connect to local development servers when you request it.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp</string>
+		<string>_https._tcp</string>
+	</array>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Grove opens terminals and file views inside your Documents folder when a project lives there.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Grove opens terminals and file views inside your Downloads folder when a project lives there.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Grove opens terminals and file views inside your Desktop folder when a project lives there.</string>
+</dict>
+</plist>

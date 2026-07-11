@@ -1,5 +1,6 @@
 mod browser;
 mod browser_cookie_inject;
+mod dev_permissions;
 mod eventbus;
 use grove_core::{
     AppConfig, AppliedPtySize, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest,
@@ -755,6 +756,9 @@ pub fn run() {
             browser::browser_open_devtools,
             browser::detect_installed_browsers,
             browser::browser_import_cookies,
+            // Dev Permissions
+            dev_permissions::dev_permissions_status,
+            dev_permissions::dev_permissions_request,
         ])
         .manage(browser::BrowserState::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
