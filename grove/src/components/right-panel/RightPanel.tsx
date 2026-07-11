@@ -81,7 +81,7 @@ export default function RightPanel() {
       if (!fileBrowserRootPath) {
         return (
           <div className={cn("flex h-full items-center justify-center bg-sidebar")}>
-            <span className={cn("text-sm text-muted-foreground")}>
+            <span className={cn("px-4 text-center text-sm text-muted-foreground")}>
               Select a mission or worktree
             </span>
           </div>
@@ -94,7 +94,9 @@ export default function RightPanel() {
     if (!worktreePath) {
       return (
         <div className={cn("flex h-full items-center justify-center bg-sidebar")}>
-          <span className={cn("text-sm text-muted-foreground")}>Select a worktree</span>
+          <span className={cn("px-4 text-center text-sm text-muted-foreground")}>
+            Select a worktree
+          </span>
         </div>
       );
     }
