@@ -48,8 +48,10 @@ pub struct DetectedBrowser {
 struct ChromiumDef {
     family: &'static str,
     label: &'static str,
-    /// Path to the cookie store relative to `~/Library/Application Support`.
-    subpath: &'static str,
+    /// The browser's user-data directory relative to `~/Library/Application
+    /// Support`. Profiles (and the cookie DB within each) are discovered under
+    /// it at runtime.
+    root: &'static str,
     keychain_service: &'static str,
     keychain_account: &'static str,
 }
@@ -58,35 +60,35 @@ const CHROMIUM_DEFS: [ChromiumDef; 5] = [
     ChromiumDef {
         family: "chrome",
         label: "Google Chrome",
-        subpath: "Google/Chrome/Default/Cookies",
+        root: "Google/Chrome",
         keychain_service: "Chrome Safe Storage",
         keychain_account: "Chrome",
     },
     ChromiumDef {
         family: "arc",
         label: "Arc",
-        subpath: "Arc/User Data/Default/Cookies",
+        root: "Arc/User Data",
         keychain_service: "Arc Safe Storage",
         keychain_account: "Arc",
     },
     ChromiumDef {
         family: "brave",
         label: "Brave",
-        subpath: "BraveSoftware/Brave-Browser/Default/Cookies",
+        root: "BraveSoftware/Brave-Browser",
         keychain_service: "Brave Safe Storage",
         keychain_account: "Brave",
     },
     ChromiumDef {
         family: "edge",
         label: "Microsoft Edge",
-        subpath: "Microsoft Edge/Default/Cookies",
+        root: "Microsoft Edge",
         keychain_service: "Microsoft Edge Safe Storage",
         keychain_account: "Microsoft Edge",
     },
     ChromiumDef {
         family: "chromium",
         label: "Chromium",
-        subpath: "Chromium/Default/Cookies",
+        root: "Chromium",
         keychain_service: "Chromium Safe Storage",
         keychain_account: "Chromium",
     },
@@ -96,8 +98,39 @@ fn app_support_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join("Library").join("Application Support"))
 }
 
+/// Locate a Chromium-family browser's active cookie DB. The store may live under
+/// any profile — `Default`, `Profile 1`, … (not just `Default`) — and either at
+/// `<profile>/Cookies` or, on newer Chromium, `<profile>/Network/Cookies`. We
+/// scan every profile dir and pick the most-recently-modified cookie DB, which
+/// tracks the user's active profile. Returns `None` if the browser or its
+/// cookie store is absent.
 fn chromium_cookie_path(def: &ChromiumDef) -> Option<PathBuf> {
-    app_support_dir().map(|base| base.join(def.subpath))
+    let root = app_support_dir()?.join(def.root);
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(&root).ok()?.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Guest/System profiles are not the user's browsing session.
+        if name == "Guest Profile" || name == "System Profile" {
+            continue;
+        }
+        let dir = entry.path();
+        // Prefer Network/Cookies (newer layout) over the legacy Cookies path.
+        for db in [dir.join("Network").join("Cookies"), dir.join("Cookies")] {
+            let Ok(meta) = fs::metadata(&db) else {
+                continue;
+            };
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                best = Some((mtime, db));
+            }
+            break;
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
 fn safari_cookie_path() -> Option<PathBuf> {
@@ -142,7 +175,7 @@ fn firefox_cookie_path() -> Option<PathBuf> {
 pub fn detect_installed_browsers_impl() -> Vec<DetectedBrowser> {
     let mut detected = Vec::new();
     for def in &CHROMIUM_DEFS {
-        let available = chromium_cookie_path(def).map(|p| p.exists()).unwrap_or(false);
+        let available = chromium_cookie_path(def).is_some();
         detected.push(DetectedBrowser {
             family: def.family.to_string(),
             label: def.label.to_string(),
