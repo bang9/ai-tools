@@ -18,9 +18,12 @@ trap cleanup EXIT
 
 resolve_latest_tag() {
   local tag
-  tag="$(git tag --sort=-creatordate | head -n 1 || true)"
+  # Only full semver tags (vX.Y.Z) drive the app version — the release CI also
+  # publishes a floating major tag (`v2`) that would otherwise win by creatordate
+  # and produce a non-semver version Tauri's config parser rejects.
+  tag="$(git tag --sort=-creatordate | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
   if [ -z "$tag" ]; then
-    tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+    tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)"
   fi
   if [ -z "$tag" ]; then
     tag="$(node -p "require('./package.json').version" 2>/dev/null || printf '0.1.0')"
