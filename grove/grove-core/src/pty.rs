@@ -4191,10 +4191,20 @@ grove-c 1 notapid
             new_mock_master(),
         );
 
-        let reaped = reap_dead_registry_entries(&[RegistryReapCandidate {
-            pty_id: id.clone(),
-            session_name,
-        }]);
+        // Why: a concurrent test process churning the shared tmux server can
+        // make the has-session probe transiently error, which the reap path
+        // (correctly) treats as skip. Retry a few times before judging.
+        let mut reaped = Vec::new();
+        for _ in 0..3 {
+            reaped = reap_dead_registry_entries(&[RegistryReapCandidate {
+                pty_id: id.clone(),
+                session_name: session_name.clone(),
+            }]);
+            if !reaped.is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(100));
+        }
 
         assert_eq!(reaped, vec![id.clone()]);
         assert!(!registry().lock().unwrap().contains_key(&id));
