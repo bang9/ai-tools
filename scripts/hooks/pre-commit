@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# pre-commit — quiet, staged-only quality gate.
+#
+#   Checks (in order):  secretlint (secret scan) -> oxlint -> oxfmt --check
+#   Contract:           success = ZERO output, exit 0.
+#                       On failure, emit ONLY the failing tool's captured
+#                       output to stderr and exit 1 (no log/context waste).
+#   Scope:              staged files only (--diff-filter=ACMR).
+#                       secretlint scans all staged files; oxlint/oxfmt run on
+#                       staged JS/TS files only and silently pass when none
+#                       are staged.
+#   Binaries:           resolved from ./node_modules/.bin first (installed via
+#                       pnpm install), falling back to PATH if not present
+#                       locally.
+#   Missing tool:       one visible one-line warning to stderr, then pass.
+#                       A missing tool never blocks a commit.
+#
+# macOS /bin/bash 3.2 compatible: no arrays, no mapfile. Staged files are
+# gathered via an IFS=newline loop into positional params ($@), so empty
+# expansion under `set -u` is safe.
+
+set -u
+
+# All JS/TS in this monorepo lives under grove/, which owns the only
+# package.json; tools are installed there, not at the repo root.
+BIN_DIR="./grove/node_modules/.bin"
+
+# Nothing staged (git usually blocks this, but be safe) -> nothing to do.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+have() {
+  [ -x "$BIN_DIR/$1" ] || command -v "$1" >/dev/null 2>&1
+}
+
+# Run a local node_modules/.bin binary if present, else fall back to PATH.
+run() {
+  local name="$1"; shift
+  if [ -x "$BIN_DIR/$name" ]; then
+    "$BIN_DIR/$name" "$@"
+  else
+    "$name" "$@"
+  fi
+}
+
+# Capture-and-suppress: run a tool, discard its output on success, and on
+# failure emit only that tool's output (stdout+stderr) before aborting.
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+# 1. secretlint — secret scan over all staged files.
+set --
+OLDIFS=$IFS
+IFS='
+'
+for f in $staged; do
+  set -- "$@" "$f"
+done
+IFS=$OLDIFS
+
+if have secretlint; then
+  out=$(run secretlint --no-glob "$@" 2>&1) || fail "$out"
+else
+  printf 'pre-commit: secretlint not installed — skipping secret scan\n' >&2
+fi
+
+# Gather staged JS/TS files into $@ (bash 3.2 safe; splits on newline only so
+# paths with spaces survive).
+set --
+OLDIFS=$IFS
+IFS='
+'
+for f in $staged; do
+  case "$f" in
+    *.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs|*.mts|*.cts) set -- "$@" "$f" ;;
+  esac
+done
+IFS=$OLDIFS
+
+# 2 & 3. oxlint then oxfmt --check over staged JS/TS files.
+if [ "$#" -gt 0 ]; then
+  if have oxlint; then
+    out=$(run oxlint "$@" 2>&1) || fail "$out"
+  else
+    printf 'pre-commit: oxlint not installed — skipping lint\n' >&2
+  fi
+
+  if have oxfmt; then
+    out=$(run oxfmt --check "$@" 2>&1) || fail "$out"
+  else
+    printf 'pre-commit: oxfmt not installed — skipping format check\n' >&2
+  fi
+fi
+
+exit 0

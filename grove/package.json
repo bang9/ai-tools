@@ -20,7 +20,8 @@
     "test:core": "cargo test -p grove-core -- --test-threads=1",
     "preview": "vite preview",
     "tauri": "tauri",
-    "install-local": "./install-local.sh"
+    "install-local": "./install-local.sh",
+    "prepare": "git config core.hooksPath ./scripts/hooks"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
