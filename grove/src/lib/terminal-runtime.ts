@@ -29,6 +29,10 @@ import {
   WebglRenderLatch,
 } from "./terminal-webgl-lifecycle";
 import { recoverTerminalForWake } from "./terminal-display-wake";
+import {
+  installTerminalImeCompositionTracker,
+  type TerminalImeCompositionTracker,
+} from "./terminal-ime-composition";
 
 export type TerminalInitialContentSource = "snapshotFallback" | "tmuxCapture";
 
@@ -412,6 +416,7 @@ class TerminalPaneRuntime {
   private onFocusIn: (() => void) | null = null;
   private searchHandler: (() => void) | null = null;
   private ownerDocument: Document | null = null;
+  private imeCompositionTracker: TerminalImeCompositionTracker | null = null;
   private readonly unlistenLayoutSync: () => void;
   private readonly dataDisposable: { dispose(): void };
   private readonly bellDisposable: { dispose(): void };
@@ -604,6 +609,12 @@ class TerminalPaneRuntime {
 
   getPtyId() {
     return this.ptyId;
+  }
+
+  // Why: authoritative "is an IME composition live?" for this pane's host,
+  // for IME-sensitive paths that run outside a keydown. Observation only.
+  isComposing(): boolean {
+    return this.imeCompositionTracker?.isActive() ?? false;
   }
 
   handlePtyOutput(data: Uint8Array) {
@@ -909,6 +920,10 @@ class TerminalPaneRuntime {
 
     if (!this.term.element) {
       this.term.open(this.container);
+      // Why: track live IME composition on the xterm host so IME-sensitive
+      // paths (later: capture-phase paste sanitizer) can consult isComposing()
+      // without corrupting an in-progress Hangul/CJK composition.
+      this.imeCompositionTracker = installTerminalImeCompositionTracker(this.term.element);
       this.startHydration();
       return;
     }
@@ -1236,6 +1251,8 @@ class TerminalPaneRuntime {
       this.suspendTimer = null;
     }
     this.detach();
+    this.imeCompositionTracker?.dispose();
+    this.imeCompositionTracker = null;
     // Free the GPU context deterministically before term.dispose() tears the
     // addon down, so a suspend/park/close path releases WebGL immediately.
     releaseXtermWebglContext(this.webglAddon);
