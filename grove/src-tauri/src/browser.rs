@@ -144,6 +144,14 @@ const GUEST_FIND_SCHEME: &str = "grovefind";
 /// URL and the page URL back to the app.
 const GUEST_FAVICON_SCHEME: &str = "grovefavicon";
 
+/// Custom scheme the injected SPA navigation observer navigates to when a
+/// single-page app changes its route via `history.pushState`/`replaceState` or a
+/// `popstate` (back/forward) without a real page load — wry's `on_navigation`
+/// never fires for these, so the address bar and per-tab history stack would go
+/// stale. Like the other guest schemes the navigation is always denied — it
+/// carries the nav `kind`, the new URL, and the document title back to the app.
+const GUEST_SPA_SCHEME: &str = "grovespa";
+
 /// Injected into every browser guest before page scripts run. Suppresses
 /// WebKit's native right-click menu and renders Grove's own menu inside a
 /// closed shadow root (invisible to and un-restyleable by the page). Actions a
@@ -553,6 +561,61 @@ const GUEST_FAVICON_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Injected into every browser guest before page scripts run. Single-page apps
+/// change routes via `history.pushState`/`replaceState` or `popstate`
+/// (back/forward) without a real page load, so wry's `on_navigation` never fires
+/// and the address bar + per-tab history stack would go stale (Electron gets this
+/// for free via `did-navigate-in-page`). This monkey-patches the History API and
+/// listens for `popstate`, then posts the new URL + title back over the
+/// `grovespa://` channel. Consecutive identical push/replace reports are deduped
+/// (some frameworks spam `replaceState`). One self-contained IIFE so re-injection
+/// on every navigation is idempotent.
+const GUEST_SPA_SCRIPT: &str = r#"
+(function () {
+  if (window.__groveSpa) return;
+  window.__groveSpa = true;
+  var SCHEME = 'grovespa://s?';
+  var lastHref = '';
+  function report(kind) {
+    setTimeout(function () {
+      try {
+        var href = location.href;
+        var title = (document && document.title) || '';
+        // Dedupe consecutive identical push/replace reports (frameworks that
+        // spam replaceState). popstate always reports (index may have moved).
+        if (kind !== 'pop' && href === lastHref) return;
+        lastHref = href;
+        location.href = SCHEME + 'kind=' + kind +
+          '&url=' + encodeURIComponent(href) +
+          '&title=' + encodeURIComponent(title);
+      } catch (e) {}
+    }, 0);
+  }
+  try {
+    var h = window.history;
+    if (h) {
+      var origPush = h.pushState;
+      var origReplace = h.replaceState;
+      if (typeof origPush === 'function') {
+        h.pushState = function () {
+          var r = origPush.apply(this, arguments);
+          report('push');
+          return r;
+        };
+      }
+      if (typeof origReplace === 'function') {
+        h.replaceState = function () {
+          var r = origReplace.apply(this, arguments);
+          report('replace');
+          return r;
+        };
+      }
+    }
+    window.addEventListener('popstate', function () { report('pop'); });
+  } catch (e) {}
+})();
+"#;
+
 /// Handle a `grovemenu://` callback from the injected guest menu. Runs on the
 /// Tauri main thread (the wry navigation handler fires there). `raw_url` is the
 /// full denied navigation URL.
@@ -675,6 +738,10 @@ pub fn browser_create(
         // GUEST_FAVICON_SCRIPT). Reports the page favicon over the
         // grovefavicon:// channel below.
         .initialization_script(GUEST_FAVICON_SCRIPT)
+        // Injected before page scripts: SPA navigation observer (see
+        // GUEST_SPA_SCRIPT). Reports pushState/replaceState/popstate route
+        // changes over the grovespa:// channel below.
+        .initialization_script(GUEST_SPA_SCRIPT)
         // NOTE: on_navigation fires for subframe (iframe) navigations too, so
         // it must only filter — never emit nav events, or embedded frames
         // would overwrite the address bar. URL tracking happens in
@@ -757,6 +824,41 @@ pub fn browser_create(
                             favicon_url,
                         },
                     );
+                }
+                return false;
+            }
+            // SPA route change (pushState/replaceState/popstate): translate it
+            // into browser:nav events so the store's history stack tracks it,
+            // then deny the navigation (it is a message, not a load). A `push`
+            // needs two events — loading=true pushes the new entry, loading=false
+            // settles it in place; `replace`/`pop` need one settled event (the
+            // store's redirect-replace / adjacent-slot branches do the right
+            // thing). See applyNavEvent in src/store/browser.ts.
+            if url.scheme() == GUEST_SPA_SCHEME {
+                let mut kind = String::new();
+                let mut nav_url = String::new();
+                let mut title = String::new();
+                for (key, value) in url.query_pairs() {
+                    match key.as_ref() {
+                        "kind" => kind = value.into_owned(),
+                        "url" => nav_url = value.into_owned(),
+                        "title" => title = value.into_owned(),
+                        _ => {}
+                    }
+                }
+                if !nav_url.is_empty() {
+                    // Never clobber a known title with an empty string.
+                    let title = if title.is_empty() { None } else { Some(title) };
+                    match kind.as_str() {
+                        "push" => {
+                            emit_nav(&nav_app, &nav_tab, nav_url.clone(), title.clone(), true, false);
+                            emit_nav(&nav_app, &nav_tab, nav_url, title, false, false);
+                        }
+                        "replace" | "pop" => {
+                            emit_nav(&nav_app, &nav_tab, nav_url, title, false, false);
+                        }
+                        _ => {}
+                    }
                 }
                 return false;
             }

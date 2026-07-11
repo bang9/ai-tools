@@ -1193,21 +1193,25 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
           // an opaque backing (see install_opaque_window_backing in lib.rs).
           <div ref={hostRef} className={cn("h-full w-full bg-transparent")} />
         ) : (
+          // Start page (no URL yet). Painted an explicit WHITE with neutral
+          // text — like a browser's blank page — regardless of the app theme,
+          // both so it matches the white of a loaded page and so it never
+          // reveals the transparent window's dark punchout backing.
           <div
             className={cn(
-              "flex h-full flex-col items-center justify-center gap-4 text-muted-foreground",
+              "flex h-full flex-col items-center justify-center gap-4 bg-white text-neutral-500",
             )}
           >
             <div
               className={cn(
-                "flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-white/5 shadow-sm",
+                "flex h-12 w-12 items-center justify-center rounded-xl border border-neutral-200 bg-neutral-50 text-neutral-400 shadow-sm",
               )}
             >
               <Globe className={cn("h-5 w-5")} />
             </div>
             <div className={cn("text-center")}>
-              <p className={cn("text-sm font-medium text-foreground")}>Browser</p>
-              <p className={cn("mt-1 text-xs")}>
+              <p className={cn("text-sm font-medium text-neutral-900")}>Browser</p>
+              <p className={cn("mt-1 text-xs text-neutral-500")}>
                 {topSites.length > 0
                   ? "Enter a URL above, or pick up where you left off"
                   : "Enter a URL above, or jump to a local dev server"}
@@ -1221,15 +1225,15 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
                   onClick={() => commit(quickUrl)}
                   title={quickUrl}
                   className={cn(
-                    "h-6 max-w-56 cursor-pointer truncate rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium",
-                    "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+                    "h-6 max-w-56 cursor-pointer truncate rounded-full border border-neutral-200 bg-neutral-50 px-2.5 text-[11px] font-medium",
+                    "text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900",
                   )}
                 >
                   {quickUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}
                 </button>
               ))}
             </div>
-            <p className={cn("text-[10px] text-muted-foreground/60")}>
+            <p className={cn("text-[10px] text-neutral-400")}>
               Some external sites may refuse to load in an embedded view
             </p>
           </div>
