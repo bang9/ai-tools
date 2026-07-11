@@ -68,7 +68,7 @@ describe("useTabStore", () => {
     expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(4);
   });
 
-  it("closes browser tab and falls back to previous", () => {
+  it("closes browser tab and falls back to terminal", () => {
     initWorktree();
     vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(
       "b-1" as `${string}-${string}-${string}-${string}-${string}`,
@@ -77,7 +77,7 @@ describe("useTabStore", () => {
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("b-1");
     useTabStore.getState().closeTab("b-1");
     expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
-    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("changes");
+    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
   });
 
   it("cannot close Terminal tab", () => {
@@ -109,6 +109,16 @@ describe("useTabStore", () => {
     useTabStore.getState().addTab("browser", "B2");
     useTabStore.getState().closeTab("p-2");
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("p-1");
+  });
+
+  it("closing the last closable tab lands on terminal, not a pinned neighbor", () => {
+    initWorktree();
+    vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(
+      "p-1" as `${string}-${string}-${string}-${string}-${string}`,
+    );
+    useTabStore.getState().addTab("browser", "B1");
+    useTabStore.getState().closeTab("p-1");
+    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
   });
 
   it("setActiveTab with non-existent id does nothing", () => {

@@ -109,9 +109,16 @@ export const useTabStore = create<TabState>((set, get) => ({
     const tabIndex = session.tabs.findIndex((t) => t.id === tabId);
     const newTabs = session.tabs.filter((t) => t.id !== tabId);
     const wasActive = session.activeTabId === tabId;
-    const newActiveTabId = wasActive
-      ? newTabs[Math.min(tabIndex, newTabs.length - 1)].id
-      : session.activeTabId;
+    // Prefer the closable neighbor that slid into the closed slot (or the last
+    // closable before it); when none remain, land on Terminal — never on a
+    // pinned tab the user didn't pick.
+    const newActiveTabId = (() => {
+      if (!wasActive) return session.activeTabId;
+      const slotTab = newTabs[Math.min(tabIndex, newTabs.length - 1)];
+      if (slotTab?.closable) return slotTab.id;
+      const closable = newTabs.filter((t) => t.closable);
+      return closable.length > 0 ? closable[closable.length - 1].id : "terminal";
+    })();
     set(
       updateSession(state, () => ({
         tabs: newTabs,

@@ -233,17 +233,23 @@ export default function FileBrowserPanel({ rootPath }: Props) {
           {visibleEntries.length}
         </span>
         <div className={cn("ml-auto flex items-center gap-0.5")}>
-          <IconButton title="Collapse all" aria-label="Collapse all" onClick={() => collapseAll()}>
-            <FoldVertical className={cn("size-3.5")} />
+          <IconButton
+            iconSize="sm"
+            title="Collapse all"
+            aria-label="Collapse all"
+            onClick={() => collapseAll()}
+          >
+            <FoldVertical />
           </IconButton>
           <IconButton
+            iconSize="sm"
             title="Refresh"
             aria-label="Refresh"
             disabled={refreshing}
             onClick={() => void refresh()}
           >
             <RotateCw
-              className={cn("size-3.5", {
+              className={cn({
                 "animate-spin": refreshing,
               })}
             />

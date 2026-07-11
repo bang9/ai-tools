@@ -54,13 +54,25 @@ function Button({
   );
 }
 
-function IconButton({ className, ...props }: React.ComponentProps<"button">) {
+const ICON_BUTTON_ICON_SIZE = {
+  // Normalized icon sizing — child svgs without an explicit size-* class
+  // inherit these, so call sites don't hand-size every icon.
+  sm: "[&_svg:not([class*='size-'])]:size-3",
+  md: "[&_svg:not([class*='size-'])]:size-3.5",
+} as const;
+
+function IconButton({
+  className,
+  iconSize = "md",
+  ...props
+}: React.ComponentProps<"button"> & { iconSize?: keyof typeof ICON_BUTTON_ICON_SIZE }) {
   return (
     <button
       className={cn(
         "inline-flex items-center justify-center rounded-md transition-colors",
         "h-7 w-7 cursor-pointer text-muted-foreground hover:bg-accent/10 hover:text-foreground",
         "disabled:pointer-events-none disabled:opacity-50",
+        ICON_BUTTON_ICON_SIZE[iconSize],
         className,
       )}
       {...props}

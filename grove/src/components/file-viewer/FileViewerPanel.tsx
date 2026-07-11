@@ -88,32 +88,45 @@ function FileViewerPanel({ tabId }: FileViewerPanelProps) {
         </span>
         {isHtmlFile(entry.name) && (
           <IconButton
+            iconSize="sm"
             onClick={handleOpenInBrowser}
             title="Open in browser"
             aria-label="Open in browser"
           >
-            <Globe className={cn("size-3")} />
+            <Globe />
           </IconButton>
         )}
         {isText && (
           <IconButton
+            iconSize="sm"
             onClick={() => setWrap((value) => !value)}
             title="Toggle word wrap"
             aria-label="Toggle word wrap"
             aria-pressed={wrap}
             className={cn({ "bg-accent/10 text-foreground": wrap })}
           >
-            <WrapText className={cn("size-3")} />
+            <WrapText />
           </IconButton>
         )}
-        <IconButton onClick={handleReload} disabled={loading} title="Reload" aria-label="Reload">
-          <RotateCw className={cn("size-3", { "animate-spin": loading })} />
+        <IconButton
+          iconSize="sm"
+          onClick={handleReload}
+          disabled={loading}
+          title="Reload"
+          aria-label="Reload"
+        >
+          <RotateCw className={cn({ "animate-spin": loading })} />
         </IconButton>
-        <IconButton onClick={handleCopyPath} title="Copy path" aria-label="Copy path">
-          <Copy className={cn("size-3")} />
+        <IconButton iconSize="sm" onClick={handleCopyPath} title="Copy path" aria-label="Copy path">
+          <Copy />
         </IconButton>
-        <IconButton onClick={handleReveal} title="Reveal in Finder" aria-label="Reveal in Finder">
-          <FolderOpen className={cn("size-3")} />
+        <IconButton
+          iconSize="sm"
+          onClick={handleReveal}
+          title="Reveal in Finder"
+          aria-label="Reveal in Finder"
+        >
+          <FolderOpen />
         </IconButton>
       </div>
 

@@ -121,11 +121,21 @@ function ImageViewer({ data, name }: ImageViewerProps) {
           "flex h-8 shrink-0 items-center gap-1 border-b border-border bg-sidebar px-2",
         )}
       >
-        <IconButton onClick={() => zoomBy(1 / ZOOM_STEP)} title="Zoom out" aria-label="Zoom out">
-          <ZoomOut className={cn("size-3")} />
+        <IconButton
+          iconSize="sm"
+          onClick={() => zoomBy(1 / ZOOM_STEP)}
+          title="Zoom out"
+          aria-label="Zoom out"
+        >
+          <ZoomOut />
         </IconButton>
-        <IconButton onClick={() => zoomBy(ZOOM_STEP)} title="Zoom in" aria-label="Zoom in">
-          <ZoomIn className={cn("size-3")} />
+        <IconButton
+          iconSize="sm"
+          onClick={() => zoomBy(ZOOM_STEP)}
+          title="Zoom in"
+          aria-label="Zoom in"
+        >
+          <ZoomIn />
         </IconButton>
         <button
           type="button"
