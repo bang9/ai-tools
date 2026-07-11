@@ -50,6 +50,62 @@ impl grove_core::UrlOpenSink for TauriUrlOpenSink {
 pub fn init(app: &AppHandle) {
     grove_core::logger::set_log_sink(Arc::new(TauriLogSink(app.clone())));
     grove_core::url_open::start(Arc::new(TauriUrlOpenSink(app.clone())));
+    #[cfg(target_os = "macos")]
+    start_display_wake_broadcast(app);
+}
+
+/// Broadcast a `grove:display-wake` event to the frontend on real display
+/// sleep/wake or OS resume. A renderer cannot observe OS sleep/wake directly, so
+/// the frontend uses this signal to heal stale WebGL glyph atlases. Registers an
+/// NSWorkspace `didWake` observer whose block emits through the AppHandle.
+#[cfg(target_os = "macos")]
+fn start_display_wake_broadcast(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    // AppKit exports the wake notification name as an NSString constant; link it
+    // directly instead of hardcoding its string value.
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {
+        static NSWorkspaceDidWakeNotification: *const AnyObject;
+    }
+
+    let app = app.clone();
+    // NSNotificationCenter copies and retains this block via the returned
+    // observer, so it outlives this call; it captures the AppHandle and emits.
+    let block = RcBlock::new(move |_notification: *mut AnyObject| {
+        let _ = app.emit("grove:display-wake", ());
+    });
+
+    // SAFETY: standard AppKit messaging. Tauri's setup hook runs on the main
+    // thread, where NSWorkspace/NSNotificationCenter must be accessed.
+    unsafe {
+        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
+            return;
+        }
+        // Workspace notifications post on the workspace's own center, not the
+        // default NSNotificationCenter.
+        let center: *mut AnyObject = msg_send![workspace, notificationCenter];
+        if center.is_null() {
+            return;
+        }
+        let name: *const AnyObject = NSWorkspaceDidWakeNotification;
+        let observer: *mut AnyObject = msg_send![
+            center,
+            addObserverForName: name,
+            object: std::ptr::null::<AnyObject>(),
+            queue: std::ptr::null::<AnyObject>(),
+            usingBlock: &*block,
+        ];
+        // The observer is never removed: retain the token so the registration
+        // lives for the whole app session, and keep the block alive with it.
+        if !observer.is_null() {
+            let _: *mut AnyObject = msg_send![observer, retain];
+        }
+        std::mem::forget(block);
+    }
 }
 
 pub fn pty_sink(on_output: Channel) -> Arc<dyn grove_core::PtyEventSink> {
