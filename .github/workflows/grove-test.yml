@@ -49,3 +49,30 @@ jobs:
 
       - name: Run tests
         run: pnpm test
+
+  test-core:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: grove
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # tmux-backed pty tests skip themselves when tmux is absent; install it
+      # so CI exercises the real session paths.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: grove
+
+      - name: Run grove-core tests
+        run: cargo test -p grove-core -- --test-threads=1
