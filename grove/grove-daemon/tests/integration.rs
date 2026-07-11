@@ -681,3 +681,121 @@ async fn check_pty_spawn_health_probe_succeeds() {
     .await;
     assert_eq!(reply.result.expect("result")["ok"], json!(true));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn warm_reattach_returns_vt_snapshot_with_screen_and_dims() {
+    // Design P5/P9/S15: after output has landed, a second createOrAttach for the
+    // same id returns isNew=false with a warm VT snapshot carrying the current
+    // screen, the applied dims, and isReattach=true — the DaemonSnapshot payload.
+    let (_daemon, sock) = setup("tok-warm").await;
+    let (mut sreader, _swriter) = connect_hello(&sock, VERSION, "tok-warm", ClientKind::Stream)
+        .await
+        .expect("stream hello ok");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (mut creader, mut cwriter) = connect_hello(&sock, VERSION, "tok-warm", ClientKind::Control)
+        .await
+        .expect("control hello ok");
+
+    let reply = rpc(
+        &mut creader,
+        &mut cwriter,
+        1,
+        "createOrAttach",
+        json!({ "sessionId": "w1", "cwd": "/tmp", "cols": 90, "rows": 30 }),
+    )
+    .await;
+    assert_eq!(reply.result.expect("result")["isNew"], json!(true));
+
+    write_pty(&mut cwriter, "w1", b"echo WARM_SNAP_5521\n").await;
+    let mut dec = StreamDecoder::new();
+    let mut frames = Vec::new();
+    let ok = pump_frames(&mut sreader, &mut dec, &mut frames, Duration::from_secs(5), |fs| {
+        data_string_for(fs, "w1").contains("WARM_SNAP_5521")
+    })
+    .await;
+    assert!(ok, "did not observe echoed marker before deadline");
+    // Let the shell settle so the marker is on the emulator's screen.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Re-attach: warm snapshot path.
+    let reply = rpc(
+        &mut creader,
+        &mut cwriter,
+        2,
+        "createOrAttach",
+        json!({ "sessionId": "w1", "cwd": "/tmp", "cols": 90, "rows": 30 }),
+    )
+    .await;
+    let result = reply.result.expect("attach result");
+    assert_eq!(result["isNew"], json!(false), "second attach must be warm");
+    assert_eq!(result["isReattach"], json!(true));
+    assert_eq!(result["cols"], json!(90));
+    assert_eq!(result["rows"], json!(30));
+    let snapshot = result["snapshot"].as_str().expect("snapshot string");
+    assert!(
+        snapshot.contains("WARM_SNAP_5521"),
+        "warm snapshot missing the on-screen marker: {snapshot:?}"
+    );
+
+    // getSnapshot RPC returns the same shape.
+    let snap_rpc = rpc(&mut creader, &mut cwriter, 3, "getSnapshot", json!({ "sessionId": "w1" })).await;
+    let snap_res = snap_rpc.result.expect("getSnapshot result");
+    assert_eq!(snap_res["cols"], json!(90));
+    assert!(snap_res["snapshot"].as_str().unwrap().contains("WARM_SNAP_5521"));
+
+    // getAppliedSize reflects the emulator dims (design G8).
+    let size = rpc(&mut creader, &mut cwriter, 4, "getAppliedSize", json!({ "sessionId": "w1" })).await;
+    let size_res = size.result.expect("size result");
+    assert_eq!(size_res["cols"], json!(90));
+    assert_eq!(size_res["rows"], json!(30));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_cwd_and_title_read_from_mode_state() {
+    // Design S11/P15: the daemon reports cwd (OSC 7) + title (OSC 0/2) parsed by
+    // the emulator's ModeState — no tmux shell-out. Drive OSC bytes through the
+    // PTY via `printf` so the emulator scans real cwd/title escapes.
+    let (_daemon, sock) = setup("tok-osc").await;
+    let (mut sreader, _swriter) = connect_hello(&sock, VERSION, "tok-osc", ClientKind::Stream)
+        .await
+        .expect("stream hello ok");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (mut creader, mut cwriter) = connect_hello(&sock, VERSION, "tok-osc", ClientKind::Control)
+        .await
+        .expect("control hello ok");
+    rpc(
+        &mut creader,
+        &mut cwriter,
+        1,
+        "createOrAttach",
+        json!({ "sessionId": "o1", "cwd": "/tmp", "cols": 80, "rows": 24 }),
+    )
+    .await;
+
+    // printf emits the OSC 7 cwd + OSC 2 title escapes to the PTY.
+    write_pty(
+        &mut cwriter,
+        "o1",
+        b"printf '\\033]7;file://host/tmp/grovecwd\\007\\033]2;grove-title\\007'\n",
+    )
+    .await;
+
+    let mut dec = StreamDecoder::new();
+    let mut frames = Vec::new();
+    // Wait for the shell to have echoed/executed; then poll the RPC.
+    let mut got_cwd = String::new();
+    let mut got_title = String::new();
+    for attempt in 0..40 {
+        let _ = pump_frames(&mut sreader, &mut dec, &mut frames, Duration::from_millis(100), |_| false).await;
+        let cwd = rpc(&mut creader, &mut cwriter, 10 + attempt, "getCwd", json!({ "sessionId": "o1" })).await;
+        got_cwd = cwd.result.expect("cwd result")["cwd"].as_str().unwrap_or("").to_string();
+        let title = rpc(&mut creader, &mut cwriter, 100 + attempt, "getTitle", json!({ "sessionId": "o1" })).await;
+        got_title = title.result.expect("title result")["title"].as_str().unwrap_or("").to_string();
+        if got_cwd == "/tmp/grovecwd" && got_title == "grove-title" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got_cwd, "/tmp/grovecwd", "OSC 7 cwd not tracked");
+    assert_eq!(got_title, "grove-title", "OSC 2 title not tracked");
+}

@@ -25,6 +25,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Notify as TokioNotify};
 
+use crate::emulator::SnapshotOptions;
 use crate::lock;
 use crate::session::Session;
 
@@ -99,6 +100,15 @@ pub struct SessionReaper {
 }
 
 impl SessionReaper {
+    /// A reaper whose map has already been dropped — reaping is a no-op. Used by
+    /// `Session`-level unit tests that spawn a session without a full `Daemon`.
+    #[cfg(test)]
+    pub fn dangling() -> Self {
+        Self {
+            sessions: Weak::new(),
+        }
+    }
+
     /// Remove `id` from the map only if it still points at `me` (Arc identity).
     /// Fix #3: a session created in the exit→reap race window reuses the id, and
     /// this identity check ensures the dying session never reaps its successor.
@@ -331,6 +341,26 @@ impl Daemon {
                 let (cols, rows) = session.applied_size();
                 Ok(json!({ "cols": cols, "rows": rows }))
             }
+            // cwd/title come from the emulator's ModeState OSC scanner (design
+            // S11/P15) — no tmux shell-out. Absent → null (session may be pre-OSC).
+            "getCwd" => {
+                let id = str_param(&params, "sessionId")?;
+                let session = self.get(&id).ok_or_else(session_not_found)?;
+                Ok(json!({ "cwd": session.cwd() }))
+            }
+            "getTitle" => {
+                let id = str_param(&params, "sessionId")?;
+                let session = self.get(&id).ok_or_else(session_not_found)?;
+                Ok(json!({ "title": session.title() }))
+            }
+            "getSnapshot" => {
+                let id = str_param(&params, "sessionId")?;
+                let session = self.get(&id).ok_or_else(session_not_found)?;
+                // Off the reactor (design FIX 6): serializing a warm snapshot is
+                // CPU work under the emulator mutex; run it on a blocking thread so
+                // it never stalls the async control loop.
+                warm_snapshot_json_blocking(session).await
+            }
             "checkPtySpawnHealth" => {
                 let ok = tokio::task::spawn_blocking(Session::probe_spawn_health)
                     .await
@@ -419,7 +449,18 @@ impl Daemon {
             };
 
             match action {
-                Action::Attach => return Ok(json!({ "isNew": false })),
+                Action::Attach => {
+                    // Warm reattach (design P9/S15): return the live VT snapshot so
+                    // the renderer rehydrates the current screen + modes. The
+                    // atomic live-vs-cold decision (D12) has already resolved to
+                    // "live" under the map lock above.
+                    let session = self.get(&session_id).ok_or_else(session_not_found)?;
+                    // Off the reactor (design FIX 6): same blocking snapshot path
+                    // as getSnapshot.
+                    let mut reply = warm_snapshot_json_blocking(session).await?;
+                    reply["isNew"] = json!(false);
+                    return Ok(reply);
+                }
                 Action::WaitPending => {
                     // The winner is mid-spawn; yield briefly, then re-resolve.
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -521,6 +562,67 @@ impl Daemon {
             _ => {}
         }
     }
+}
+
+/// Build the `createOrAttach`/`getSnapshot` reply payload from a session's warm
+/// VT snapshot (design S15). The concatenated `scrollback ++ rehydrate ++ alt`
+/// body is the `snapshot` string; siblings (dims, alt flag, kitty flags, pending
+/// escape tail, cwd/title, outputSequence) ride BESIDE it. On a poisoned emulator
+/// (snapshot == None) it degrades to the byte-exact ring tail (design G4/L11).
+fn warm_snapshot_json(session: &Arc<Session>) -> Value {
+    match session.snapshot(SnapshotOptions::default()) {
+        Some(snap) => {
+            let payload = String::from_utf8_lossy(&snap.warm_payload()).into_owned();
+            let mut obj = json!({
+                "snapshot": payload,
+                "cols": snap.cols,
+                "rows": snap.rows,
+                "isAlternateScreen": snap.is_alternate_screen,
+                "outputSequence": snap.output_sequence,
+                "isReattach": true,
+            });
+            if !snap.pending_escape_tail.is_empty() {
+                obj["pendingEscapeTailAnsi"] =
+                    json!(String::from_utf8_lossy(&snap.pending_escape_tail).into_owned());
+            }
+            if snap.kitty_keyboard_flags != 0 {
+                obj["snapshotKittyKeyboardFlags"] = json!(snap.kitty_keyboard_flags);
+            }
+            if let Some(cwd) = snap.cwd {
+                obj["cwd"] = json!(cwd);
+            }
+            if let Some(title) = snap.title {
+                obj["lastTitle"] = json!(title);
+            }
+            obj
+        }
+        None => {
+            // Degraded: the emulator is poisoned; hand back the raw ring bytes so
+            // the pane still restores its scrollback tail (byte-exact, no modes).
+            let tail = session.ring_tail();
+            let (cols, rows) = session.applied_size();
+            json!({
+                "snapshot": String::from_utf8_lossy(&tail).into_owned(),
+                "cols": cols,
+                "rows": rows,
+                "isAlternateScreen": false,
+                "outputSequence": session.output_sequence(),
+                "isReattach": true,
+                "emulatorDegraded": true,
+            })
+        }
+    }
+}
+
+/// Serialize a warm snapshot off the reactor (design FIX 6). `warm_snapshot_json`
+/// does CPU-bound VT serialization while holding the emulator mutex; running it on
+/// a blocking thread keeps the async control loop responsive. `Session::snapshot`
+/// already contains any vt100 panic (catch_unwind), so the join here fails only on
+/// runtime shutdown, which surfaces as an internal error.
+async fn warm_snapshot_json_blocking(session: Arc<Session>) -> Result<Value, RpcError> {
+    tokio::task::spawn_blocking(move || warm_snapshot_json(&session))
+        .await
+        .map_err(|e| internal(format!("snapshot join: {e}")))
 }
 
 async fn write_line<W, T>(writer: &mut W, msg: &T) -> std::io::Result<()>

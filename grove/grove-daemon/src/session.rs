@@ -26,6 +26,7 @@ use grove_core::pty::{append_scrollback_capped, OutputCoalescer, PtyWriter};
 use grove_core::PtyEventSink;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
+use crate::emulator::{DaemonEmulator, DaemonSnapshot, SnapshotOptions, DEFAULT_SCROLLBACK_LINES};
 use crate::lock;
 use crate::server::{SessionReaper, StreamHub};
 
@@ -79,9 +80,28 @@ pub struct Session {
     /// blocking `PtyWriter::write` off any tokio worker, preserving write order.
     write_tx: mpsc::Sender<Vec<u8>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
-    #[allow(dead_code)] // Why: authoritative cold-restore source (G4); consumed in a later phase.
+    /// Byte-exact raw ring (design G4): authoritative for cold restore AND the
+    /// degraded fallback source when the emulator is poisoned.
     ring: Mutex<Ring>,
+    /// The daemon-side VT emulator (design P5). `Option` so a vt100 panic can
+    /// `take()` it — poisoning the emulator MUST NOT kill the session; the ring
+    /// keeps working and the snapshot degrades to the raw ring tail.
+    emulator: Mutex<Option<DaemonEmulator>>,
+    /// Set once the emulator has been dropped after a panic in its write/serialize
+    /// path (design L11/G5). A fast pre-check so the hot read loop skips the lock.
+    emulator_poisoned: AtomicBool,
+    /// DELIVERED byte counter shared with `StreamSink`: advanced at coalescer
+    /// flush time, so each `Data` frame's seq is its cumulative delivered byte
+    /// offset. The `Exit` frame repeats the final value (design S3/P13).
     seq: Arc<AtomicU64>,
+    /// INGESTION byte counter (design FIX 2 / S3): advanced in the reader-thread
+    /// tee, on the SAME thread and chunk as `feed_emulator`, so a snapshot taken
+    /// right after ingestion stamps an `output_sequence` that is exactly
+    /// consistent with the emulator content it just serialized — no coalescer lag.
+    /// It counts the identical byte stream as `seq`; a `Data` frame's delivered
+    /// seq therefore equals the ingestion value at the moment those bytes were
+    /// ingested, so a client reconciles snapshot⇄stream on one byte axis.
+    ingest_seq: Arc<AtomicU64>,
     alive: Arc<AtomicBool>,
     /// Guards against emitting two `Exit` frames (reader EOF racing a kill).
     exit_emitted: Arc<AtomicBool>,
@@ -173,7 +193,10 @@ impl Session {
                 buf: VecDeque::new(),
                 truncated: false,
             }),
+            emulator: Mutex::new(Some(DaemonEmulator::new(rows, cols, DEFAULT_SCROLLBACK_LINES))),
+            emulator_poisoned: AtomicBool::new(false),
             seq,
+            ingest_seq: Arc::new(AtomicU64::new(0)),
             alive: Arc::new(AtomicBool::new(true)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
             applied: Mutex::new((cols, rows)),
@@ -195,6 +218,118 @@ impl Session {
         append_scrollback_capped(buf, truncated, chunk, RING_CAP_BYTES);
     }
 
+    /// The raw ring contents (design G4) — the degraded snapshot source used when
+    /// the emulator is poisoned, and the byte-exact cold-restore source.
+    pub fn ring_tail(&self) -> Vec<u8> {
+        let ring = lock(&self.ring);
+        ring.buf.iter().copied().collect()
+    }
+
+    /// The reader-thread byte tee (design P5 item 2 / FIX 2): the SAME bytes feed
+    /// the byte-exact raw ring (cold source) and the emulator (warm VT snapshot),
+    /// then advance the ingestion counter — all on this thread, for one chunk. A
+    /// snapshot taken immediately after therefore reflects exactly these bytes in
+    /// BOTH its content and its `output_sequence` (no coalescer lag). The
+    /// coalescer→stream push stays in the reader loop after this returns.
+    fn tee(&self, chunk: &[u8]) {
+        self.append_ring(chunk);
+        self.feed_emulator(chunk);
+        // Advance AFTER feed_emulator so the counter never leads the emulator
+        // content a concurrent snapshot would serialize.
+        self.ingest_seq
+            .fetch_add(chunk.len() as u64, Ordering::SeqCst);
+    }
+
+    /// Feed the emulator under per-write panic isolation (design P5 item 2 /
+    /// L11 / G5). A vt100 panic drops the emulator and marks it poisoned; the
+    /// ring already captured the same bytes, so the session streams on and the
+    /// next snapshot falls back to the ring tail.
+    fn feed_emulator(&self, chunk: &[u8]) {
+        if self.emulator_poisoned.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut guard = lock(&self.emulator);
+        let Some(emu) = guard.as_mut() else {
+            return;
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| emu.process(chunk)));
+        if outcome.is_err() {
+            *guard = None;
+            self.emulator_poisoned.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Serialize a warm-reattach snapshot (design S6/S9/S15). Returns `None` when
+    /// the emulator is poisoned/absent — the caller then falls back to the ring
+    /// tail. `output_sequence` is stamped from the session's own byte counter so
+    /// the snapshot and stream `Data` frames share one seq origin (design S3).
+    pub fn snapshot(&self, opts: SnapshotOptions) -> Option<DaemonSnapshot> {
+        // Stamp from the INGESTION counter (design FIX 2): it reflects the bytes
+        // the emulator has actually processed, so the snapshot content and its
+        // output_sequence are consistent — unlike the delivered `seq`, which lags
+        // behind by whatever the coalescer has yet to flush.
+        let seq = self.ingest_seq.load(Ordering::SeqCst);
+        let mut guard = lock(&self.emulator);
+        let emu = guard.as_ref()?;
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| emu.snapshot(opts, seq)));
+        match outcome {
+            Ok(snap) => Some(snap),
+            Err(_) => {
+                // A panic while serializing poisons the emulator just like a bad
+                // write does; degrade to the ring tail on the next snapshot.
+                *guard = None;
+                self.emulator_poisoned.store(true, Ordering::SeqCst);
+                None
+            }
+        }
+    }
+
+    pub fn cwd(&self) -> Option<String> {
+        lock(&self.emulator).as_ref().and_then(DaemonEmulator::cwd)
+    }
+
+    pub fn title(&self) -> Option<String> {
+        lock(&self.emulator).as_ref().and_then(DaemonEmulator::title)
+    }
+
+    /// The absolute ingestion sequence (design FIX 2): total bytes teed into the
+    /// ring + emulator. The degraded (poisoned-emulator) snapshot path stamps its
+    /// `outputSequence` from this, staying consistent with the ring tail it serves
+    /// (the ring is fed on the same tee).
+    pub fn output_sequence(&self) -> u64 {
+        self.ingest_seq.load(Ordering::SeqCst)
+    }
+
+    /// Simulate a post-panic poisoned emulator (design L11/G5). A real vt100
+    /// panic is not deterministically triggerable from bytes, so tests use this
+    /// to drive the degradation path: drop the emulator + set the poison flag,
+    /// exactly as `feed_emulator`/`snapshot` do on a caught unwind.
+    #[cfg(test)]
+    pub fn test_poison_emulator(&self) {
+        *lock(&self.emulator) = None;
+        self.emulator_poisoned.store(true, Ordering::SeqCst);
+    }
+
+    /// Simulate reader-thread teardown (design FIX 5 test hook): mark the session
+    /// dead and drop the master fd, exactly as `run_reader` does on EOF. A real
+    /// child exit is not deterministically timed from a unit test, so this drives
+    /// the "resize on a dead session is skipped" path.
+    #[cfg(test)]
+    pub fn test_mark_dead(&self) {
+        self.alive.store(false, Ordering::SeqCst);
+        let _ = lock(&self.master).take();
+    }
+
+    /// Drive the reader-thread tee directly (design FIX 2 test hook): the same
+    /// ring + emulator + ingestion-seq advance `run_reader` performs, minus the
+    /// coalescer push. A snapshot taken right after is a synchronous barrier —
+    /// no PTY/coalescer timing to wait on.
+    #[cfg(test)]
+    pub fn test_tee(&self, chunk: &[u8]) {
+        self.tee(chunk);
+    }
+
     /// Enqueue input in strict FIFO order (design G3, fix #1). Returns
     /// immediately: the bytes are handed to the per-session forwarder thread,
     /// which performs the blocking `PtyWriter::write` off the tokio runtime. The
@@ -205,26 +340,45 @@ impl Session {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        // Ordering (design G8 / FIX 5): apply the size to the SUBPROCESS first and
+        // advance the emulator/`applied` dims ONLY after that succeeds on a LIVE
+        // session. A dead session, a taken master, or a failed `master.resize`
+        // therefore leaves `applied_size` at its prior value — a readback never
+        // reports a size the child never actually took.
+        if !self.is_alive() {
+            return Ok(());
+        }
         {
             let guard = lock(&self.master);
-            if let Some(master) = guard.as_ref() {
-                master
-                    .resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    })
-                    .map_err(|e| e.to_string())?;
-            }
+            let Some(master) = guard.as_ref() else {
+                // Master already taken (teardown) — skip; dims stay unchanged.
+                return Ok(());
+            };
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        // The kernel accepted the new PTY size: now advance the daemon-side dims.
+        if let Some(emu) = lock(&self.emulator).as_mut() {
+            emu.resize(cols, rows);
         }
         *lock(&self.applied) = (cols, rows);
         Ok(())
     }
 
     /// The size last applied to the PTY (design G8 — daemon-owned, no tmux
-    /// shell-out). A real emulator's readback lands with the vt100 wrapper (P5).
+    /// shell-out). Read from the emulator dims (advanced atomically in `resize`
+    /// before the subprocess); falls back to the mirrored `applied` tuple when
+    /// the emulator is poisoned.
     pub fn applied_size(&self) -> (u16, u16) {
+        if let Some(emu) = lock(&self.emulator).as_ref() {
+            return emu.applied_size();
+        }
         *lock(&self.applied)
     }
 
@@ -323,7 +477,13 @@ fn run_reader(
             match reader.read(&mut buf) {
                 Ok(0) => ReadStep::Stop,
                 Ok(n) => {
-                    session.append_ring(&buf[..n]);
+                    // Byte tee (design P5 item 2 / FIX 2): the SAME bytes feed the
+                    // byte-exact raw ring (cold source), the emulator (warm VT
+                    // snapshot), and advance the ingestion seq — all in `tee`, on
+                    // this thread and chunk — then the coalescer→stream. The
+                    // emulator write is isolated so a vt100 panic degrades, never
+                    // kills.
+                    session.tee(&buf[..n]);
                     coalescer.push(&buf[..n]);
                     ReadStep::Continue
                 }
@@ -348,4 +508,136 @@ fn run_reader(
     // window is never clobbered.
     let _ = lock(&session.master).take();
     session.reaper.reap(&session.id, &session);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emulator::SnapshotOptions;
+    use crate::server::{SessionReaper, StreamHub};
+
+    fn spawn_test_session() -> Arc<Session> {
+        Session::spawn(
+            "test-sess".to_string(),
+            ".",
+            80,
+            24,
+            &[],
+            StreamHub::default(),
+            SessionReaper::dangling(),
+        )
+        .expect("spawn test session")
+    }
+
+    #[test]
+    fn byte_tee_feeds_both_ring_and_emulator() {
+        let session = spawn_test_session();
+        // Drive the tee directly (deterministic; no dependency on shell timing).
+        session.append_ring(b"HELLO-RING");
+        session.feed_emulator(b"HELLO-RING");
+
+        let snap = session
+            .snapshot(SnapshotOptions::default())
+            .expect("emulator snapshot");
+        assert!(
+            String::from_utf8_lossy(&snap.scrollback_ansi).contains("HELLO-RING"),
+            "emulator did not capture teed bytes"
+        );
+        assert!(
+            session.ring_tail().windows(10).any(|w| w == b"HELLO-RING"),
+            "ring did not capture teed bytes"
+        );
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn emulator_poisoned_degrades_to_ring_tail() {
+        let session = spawn_test_session();
+        session.append_ring(b"COLD-SOURCE-BYTES");
+        session.feed_emulator(b"COLD-SOURCE-BYTES");
+
+        // Healthy: snapshot serves from the emulator.
+        assert!(session.snapshot(SnapshotOptions::default()).is_some());
+
+        // Poison the emulator (simulated caught panic). The session must NOT die.
+        session.test_poison_emulator();
+        assert!(session.is_alive(), "poisoning the emulator killed the session");
+
+        // Snapshot now degrades to None → callers fall back to the ring tail,
+        // which still holds the byte-exact bytes.
+        assert!(session.snapshot(SnapshotOptions::default()).is_none());
+        assert!(
+            session
+                .ring_tail()
+                .windows(17)
+                .any(|w| w == b"COLD-SOURCE-BYTES"),
+            "ring tail lost the cold-restore bytes after poisoning"
+        );
+
+        // A further feed on a poisoned emulator is a no-op (no panic, no revive).
+        session.feed_emulator(b"MORE");
+        assert!(session.snapshot(SnapshotOptions::default()).is_none());
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn resize_advances_emulator_dims_before_readback() {
+        let session = spawn_test_session();
+        assert_eq!(session.applied_size(), (80, 24));
+        session.resize(120, 40).expect("resize");
+        // getAppliedSize reads the emulator dims advanced inside resize (design G8).
+        assert_eq!(session.applied_size(), (120, 40));
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn resize_on_dead_session_leaves_applied_size_unchanged() {
+        // Design FIX 5: a skipped resize (dead session / taken master) must NOT
+        // advance applied_size — a readback never reports a size the child never
+        // took.
+        let session = spawn_test_session();
+        session.resize(120, 40).expect("live resize");
+        assert_eq!(session.applied_size(), (120, 40));
+
+        // Tear the session down, then attempt a resize: it is skipped.
+        session.test_mark_dead();
+        session.resize(200, 50).expect("skipped resize is not an error");
+        assert_eq!(
+            session.applied_size(),
+            (120, 40),
+            "skipped resize must leave applied_size at the prior value"
+        );
+    }
+
+    #[test]
+    fn snapshot_output_sequence_equals_bytes_ingested() {
+        // Design FIX 2: the snapshot's output_sequence is stamped from the
+        // ingestion counter advanced in the tee, so a snapshot taken immediately
+        // after ingesting a marker reports exactly the bytes ingested — with no
+        // coalescer lag. `test_tee` is the synchronous barrier.
+        let session = spawn_test_session();
+        assert_eq!(session.output_sequence(), 0);
+
+        let marker = b"MARKER-BYTES-1234";
+        session.test_tee(marker);
+        assert_eq!(session.output_sequence(), marker.len() as u64);
+
+        let snap = session
+            .snapshot(SnapshotOptions::default())
+            .expect("emulator snapshot");
+        assert_eq!(
+            snap.output_sequence,
+            marker.len() as u64,
+            "snapshot output_sequence must equal total bytes ingested"
+        );
+
+        // A second tee advances it cumulatively, still in lockstep.
+        let more = b"MORE";
+        session.test_tee(more);
+        assert_eq!(
+            session.output_sequence(),
+            (marker.len() + more.len()) as u64
+        );
+        Session::kill(&session);
+    }
 }
