@@ -3,6 +3,7 @@ import { cn } from "../../lib/cn";
 import GeneralTab from "./GeneralTab";
 import CategoriesTab from "./CategoriesTab";
 import TerminalTab from "./TerminalTab";
+import BrowserTab from "./BrowserTab";
 import DeveloperTab from "./DeveloperTab";
 import type { PreferencesTabId } from "../../store/preferences-ui";
 
@@ -10,6 +11,7 @@ const TABS: { id: PreferencesTabId; label: string }[] = [
   { id: "general", label: "General" },
   { id: "categories", label: "Categories" },
   { id: "terminal", label: "Terminal" },
+  { id: "browser", label: "Browser" },
   { id: "developer", label: "Developer" },
 ];
 
@@ -59,6 +61,7 @@ export default function PreferencesModal({ open, onClose, activeTab, onTabChange
             {activeTab === "general" && <GeneralTab />}
             {activeTab === "categories" && <CategoriesTab />}
             {activeTab === "terminal" && <TerminalTab />}
+            {activeTab === "browser" && <BrowserTab />}
             {activeTab === "developer" && <DeveloperTab />}
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type PreferencesTabId = "general" | "categories" | "terminal" | "developer";
+export type PreferencesTabId = "general" | "categories" | "terminal" | "browser" | "developer";
 
 interface PreferencesUiState {
   open: boolean;
