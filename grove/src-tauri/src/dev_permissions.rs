@@ -119,17 +119,17 @@ mod imp {
             .status();
     }
 
-    /// Build an autoreleased NSString from a C string literal for an AVMediaType.
-    unsafe fn media_nsstring(media: &[u8]) -> *mut AnyObject {
+    /// Build an autoreleased NSString from a NUL-terminated C string literal.
+    unsafe fn nsstring(utf8: &[u8]) -> *mut AnyObject {
         let cls = class!(NSString);
-        msg_send![cls, stringWithUTF8String: media.as_ptr()]
+        msg_send![cls, stringWithUTF8String: utf8.as_ptr()]
     }
 
     /// Map AVAuthorizationStatus (0..=3) to the shared status vocabulary.
     fn media_status(media: &[u8]) -> String {
         let raw: isize = unsafe {
             let cls = class!(AVCaptureDevice);
-            let media = media_nsstring(media);
+            let media = nsstring(media);
             msg_send![cls, authorizationStatusForMediaType: media]
         };
         match raw {
@@ -140,6 +140,31 @@ mod imp {
             _ => "unknown",
         }
         .to_string()
+    }
+
+    /// Whether the running image's main bundle carries the given Info.plist
+    /// usage-description key. TCC SIGKILLs the process when requestAccess is
+    /// called without it (e.g. a `tauri dev` binary built before Info.plist
+    /// embedding, or a stale image after an on-disk rebuild), so this checks
+    /// the exact source TCC consults before ever triggering the prompt.
+    fn has_usage_description(key: &[u8]) -> bool {
+        unsafe {
+            let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
+            if bundle.is_null() {
+                return false;
+            }
+            let key = nsstring(key);
+            let value: *mut AnyObject = msg_send![bundle, objectForInfoDictionaryKey: key];
+            !value.is_null()
+        }
+    }
+
+    fn usage_description_key(media: &'static [u8]) -> &'static [u8] {
+        if media == MEDIA_AUDIO {
+            b"NSMicrophoneUsageDescription\0"
+        } else {
+            b"NSCameraUsageDescription\0"
+        }
     }
 
     /// Trigger the OS media-access prompt and await its result. Delivers the
@@ -163,7 +188,7 @@ mod imp {
             });
             unsafe {
                 let cls = class!(AVCaptureDevice);
-                let media = media_nsstring(media);
+                let media = nsstring(media);
                 let _: () =
                     msg_send![cls, requestAccessForMediaType: media, completionHandler: &*handler];
             }
@@ -218,6 +243,14 @@ mod imp {
     }
 
     async fn request_media(id: &str, media: &'static [u8]) -> DevPermissionRequestResult {
+        if !has_usage_description(usage_description_key(media)) {
+            open_privacy_pane(id);
+            return DevPermissionRequestResult {
+                id: id.to_string(),
+                status: media_status(media),
+                opened_system_settings: true,
+            };
+        }
         // askForMediaAccess only surfaces the TCC prompt when status is
         // not-determined; after a prior denial it resolves false with no prompt,
         // so fall through to the Privacy pane where the user can toggle it.
