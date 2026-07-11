@@ -52,17 +52,14 @@ export default function RightPanel() {
   const loadFileBrowserChildren = useFileBrowserStore((s) => s.loadChildren);
   const addTab = useTabStore((s) => s.addTab);
   const capabilities = useSelectionCapabilities();
-  const mode = useRightPanelStore((s) => s.mode);
+  const storedMode = useRightPanelStore((s) => s.mode);
   const setMode = useRightPanelStore((s) => s.setMode);
   const fileBrowserRootPath = worktreePath ?? terminalPath;
 
-  // Plain directories (e.g. mission roots) have no git history — commits view
-  // is unavailable there, so fall over to the file browser.
-  useEffect(() => {
-    if (!capabilities.commits && mode === "commits") {
-      setMode("file-browser");
-    }
-  }, [capabilities.commits, mode]);
+  // Plain directories (e.g. mission roots) have no git history — show the
+  // file browser there without touching the persisted preference, so a
+  // "commits" choice survives visits to non-git selections.
+  const mode = capabilities.commits ? storedMode : "file-browser";
 
   const handleSelectView = useCallback(
     (view: "changes" | CommitInfo) => {

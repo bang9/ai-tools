@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTabStore, selectActiveTabIdForWorktree, selectTabsForWorktree } from "../../store/tab";
+import {
+  useTabStore,
+  selectActiveTabIdForWorktree,
+  selectTabsForWorktree,
+  CHANGES_TAB_ID,
+  TERMINAL_CONTENT_TAB_ID,
+} from "../../store/tab";
 import { useTerminalStore } from "../../store/terminal";
 import { usePanelLayoutStore } from "../../store/panel-layout";
 import { useBroadcastStore } from "../../store/broadcast";
@@ -61,8 +67,8 @@ function AppTabContent() {
   const tabs = useTabStore((state) => selectTabsForWorktree(state, tabScopePath));
   const browserTabs = tabs.filter((tab) => tab.type === "browser");
   const fileTabs = tabs.filter((tab) => tab.type === "file");
-  const isTerminal = activeTabId === "terminal";
-  const isChanges = activeTabId === "changes";
+  const isTerminal = activeTabId === TERMINAL_CONTENT_TAB_ID;
+  const isChanges = activeTabId === CHANGES_TAB_ID;
 
   const theme = useTerminalStore((s) => s.theme);
   const focusedPtyId = useTerminalStore((s) => s.focusedPtyId);
@@ -298,7 +304,7 @@ function AppTabContent() {
       containerRef={pipContainerRef}
       presentation={pipPresentation}
       onPresentationChange={updatePipPresentation}
-      onOpenTerminal={() => setActiveTab("terminal")}
+      onOpenTerminal={() => setActiveTab(TERMINAL_CONTENT_TAB_ID)}
     />
   );
 

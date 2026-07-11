@@ -1,7 +1,7 @@
 import { createPty, closePty } from "./platform";
 import { runCommandSafely } from "./command";
 import { useTerminalStore } from "../store/terminal";
-import { useTabStore } from "../store/tab";
+import { useTabStore, resolveSuccessorTab, TERMINAL_CONTENT_TAB_ID } from "../store/tab";
 import { collectTerminalPanes } from "./terminal-session";
 
 export async function addTerminalTab(worktreePath: string): Promise<void> {
@@ -49,18 +49,22 @@ export async function closeTerminalTab(worktreePath: string, tabId: string): Pro
   // the terminal store's own (creation) order must not pick the successor.
   const tabSession = useTabStore.getState().sessions[worktreePath];
   const closedIndex = tabSession?.tabs.findIndex((entry) => entry.id === tabId) ?? -1;
-  const wasVisible = tabSession?.activeTabId === "terminal" && session.activeTabId === tabId;
+  const wasVisible =
+    tabSession?.activeTabId === TERMINAL_CONTENT_TAB_ID && session.activeTabId === tabId;
 
   useTerminalStore.getState().closeTab(worktreePath, tabId);
 
   if (wasVisible && closedIndex >= 0) {
     const tabState = useTabStore.getState();
     const remaining = tabState.sessions[worktreePath]?.tabs ?? [];
-    const neighbor = remaining[Math.min(closedIndex, remaining.length - 1)];
-    if (neighbor?.type === "terminal") {
-      useTerminalStore.getState().setActiveTab(worktreePath, neighbor.id);
-    } else if (neighbor && tabState.activeWorktree === worktreePath) {
-      tabState.setActiveTab(neighbor.id);
+    const successor = resolveSuccessorTab(remaining, closedIndex);
+    if (successor.terminalTabId) {
+      useTerminalStore.getState().setActiveTab(worktreePath, successor.terminalTabId);
+    } else if (
+      successor.activeTabId !== TERMINAL_CONTENT_TAB_ID &&
+      tabState.activeWorktree === worktreePath
+    ) {
+      tabState.setActiveTab(successor.activeTabId);
     }
   }
   await Promise.all(

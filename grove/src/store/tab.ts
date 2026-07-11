@@ -27,16 +27,41 @@ interface TabState {
  * Terminal tabs appear in the list as `type: "terminal"` entries whose ids are
  * the terminal store's tab ids — the tab store owns only their position; their
  * content lives in the terminal store and is reconciled via syncTerminalTabs.
- * "terminal" stays valid as an activeTabId sentinel meaning "the terminal
- * content is shown"; which terminal tab that is comes from the terminal store.
+ * TERMINAL_CONTENT_TAB_ID stays valid as an activeTabId sentinel meaning "the
+ * terminal content is shown"; which terminal tab that is comes from the
+ * terminal store.
  */
+export const TERMINAL_CONTENT_TAB_ID = "terminal";
+/** The Changes tab is a per-worktree singleton with a fixed id. */
+export const CHANGES_TAB_ID = "changes";
+/** Entry title meaning "no custom name" — chips derive "Terminal N" instead. */
+export const DEFAULT_TERMINAL_TAB_TITLE = "Terminal";
+
 const DEFAULT_SESSION: TabSession = {
   tabs: [],
-  activeTabId: "terminal",
+  activeTabId: TERMINAL_CONTENT_TAB_ID,
 };
 
 function makeTerminalTabEntry(tabId: string): AppTab {
-  return { id: tabId, type: "terminal", title: "Terminal", closable: true };
+  return { id: tabId, type: "terminal", title: DEFAULT_TERMINAL_TAB_TITLE, closable: true };
+}
+
+/**
+ * The tab that takes over when the entry at closedIndex leaves the list: the
+ * neighbor that slid into its slot, or the last remaining tab. A terminal
+ * entry is addressed via the sentinel plus the terminal tab to activate — its
+ * uuid must never become activeTabId (nothing renders for it).
+ */
+export function resolveSuccessorTab(
+  tabs: AppTab[],
+  closedIndex: number,
+): { activeTabId: string; terminalTabId?: string } {
+  const slot = tabs[Math.min(closedIndex, tabs.length - 1)];
+  if (!slot) return { activeTabId: TERMINAL_CONTENT_TAB_ID };
+  if (slot.type === "terminal") {
+    return { activeTabId: TERMINAL_CONTENT_TAB_ID, terminalTabId: slot.id };
+  }
+  return { activeTabId: slot.id };
 }
 
 /** Rebuild a session from persisted closable tabs. */
@@ -46,7 +71,9 @@ export function createSessionWithClosableTabs(
 ): TabSession {
   return {
     tabs: closableTabs,
-    activeTabId: closableTabs.some((tab) => tab.id === activeTabId) ? activeTabId : "terminal",
+    activeTabId: closableTabs.some((tab) => tab.id === activeTabId)
+      ? activeTabId
+      : TERMINAL_CONTENT_TAB_ID,
   };
 }
 
@@ -97,12 +124,12 @@ export const useTabStore = create<TabState>((set, get) => ({
     const session = getSession(state);
 
     // Changes is a per-worktree singleton — re-activate an existing tab
-    if (type === "changes" && session.tabs.some((t) => t.id === "changes")) {
-      set(updateSession(state, () => ({ ...session, activeTabId: "changes" })));
-      return "changes";
+    if (type === "changes" && session.tabs.some((t) => t.id === CHANGES_TAB_ID)) {
+      set(updateSession(state, () => ({ ...session, activeTabId: CHANGES_TAB_ID })));
+      return CHANGES_TAB_ID;
     }
 
-    const id = type === "changes" ? "changes" : crypto.randomUUID();
+    const id = type === "changes" ? CHANGES_TAB_ID : crypto.randomUUID();
     const tab: AppTab = { id, type, title, closable: true };
     set(
       updateSession(state, () => ({
@@ -117,29 +144,22 @@ export const useTabStore = create<TabState>((set, get) => ({
     const state = get();
     const session = getSession(state);
     const tab = session.tabs.find((t) => t.id === tabId);
-    if (!tab || !tab.closable) return;
+    if (!tab) return;
     // Terminal tabs close through closeTerminalTab (ptys must die with them);
     // their entries leave this list via syncTerminalTabs.
     if (tab.type === "terminal") return;
     const tabIndex = session.tabs.findIndex((t) => t.id === tabId);
     const newTabs = session.tabs.filter((t) => t.id !== tabId);
     const wasActive = session.activeTabId === tabId;
-    // The neighbor that slid into the closed slot (or the last tab before it)
-    // becomes active. Terminal entries are addressed via the "terminal"
-    // sentinel — their uuid never appears as activeTabId.
-    const slotTab = wasActive ? newTabs[Math.min(tabIndex, newTabs.length - 1)] : undefined;
-    let newActiveTabId = session.activeTabId;
-    if (wasActive) {
-      newActiveTabId = slotTab && slotTab.type !== "terminal" ? slotTab.id : "terminal";
-    }
+    const successor = wasActive ? resolveSuccessorTab(newTabs, tabIndex) : null;
     set(
       updateSession(state, () => ({
         tabs: newTabs,
-        activeTabId: newActiveTabId,
+        activeTabId: successor ? successor.activeTabId : session.activeTabId,
       })),
     );
-    if (slotTab?.type === "terminal" && state.activeWorktree) {
-      useTerminalStore.getState().setActiveTab(state.activeWorktree, slotTab.id);
+    if (successor?.terminalTabId && state.activeWorktree) {
+      useTerminalStore.getState().setActiveTab(state.activeWorktree, successor.terminalTabId);
     }
     if (tab.type === "browser") {
       useBrowserStore.getState().removeTab(tabId);
@@ -151,8 +171,10 @@ export const useTabStore = create<TabState>((set, get) => ({
   setActiveTab: (tabId) =>
     set((state) => {
       const session = getSession(state);
-      // "terminal" has no tab entry — it addresses the terminal content.
-      if (tabId !== "terminal" && !session.tabs.some((t) => t.id === tabId)) return {};
+      // The sentinel has no tab entry — it addresses the terminal content.
+      if (tabId !== TERMINAL_CONTENT_TAB_ID && !session.tabs.some((t) => t.id === tabId)) {
+        return {};
+      }
       return updateSession(state, () => ({
         ...session,
         activeTabId: tabId,
@@ -190,7 +212,7 @@ export const useTabStore = create<TabState>((set, get) => ({
       // The terminal went away entirely while its content was showing — move
       // to the first remaining tab so the user doesn't land on an empty pane.
       let activeTabId = session.activeTabId;
-      if (terminalTabIds === null && activeTabId === "terminal" && tabs.length > 0) {
+      if (terminalTabIds === null && activeTabId === TERMINAL_CONTENT_TAB_ID && tabs.length > 0) {
         activeTabId = tabs[0].id;
       }
 
@@ -203,7 +225,7 @@ export const useTabStore = create<TabState>((set, get) => ({
     set((state) => {
       const session = getSession(state);
       const tab = session.tabs.find((t) => t.id === tabId);
-      if (!tab || !tab.closable || tab.title === title) return {};
+      if (!tab || tab.title === title) return {};
       return updateSession(state, () => ({
         ...session,
         tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),

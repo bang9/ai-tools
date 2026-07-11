@@ -1,17 +1,10 @@
 import type { CSSProperties } from "react";
 import { useState } from "react";
 import { X } from "lucide-react";
-import {
-  DndContext,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, horizontalListSortingStrategy } from "@dnd-kit/sortable";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import { CSS } from "@dnd-kit/utilities";
+import { SortableItem, usePointerDragSensors } from "../ui/sortable";
 import type { Project, ProjectCategory } from "../../types";
 import { cn } from "../../lib/cn";
 import {
@@ -86,27 +79,6 @@ function CategoryBadge({ category, projectCount, isActive, onToggle }: CategoryB
   );
 }
 
-interface SortableCategoryBadgeProps extends CategoryBadgeProps {
-  id: string;
-}
-
-function SortableCategoryBadge({ id, ...badgeProps }: SortableCategoryBadgeProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id,
-  });
-  const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-    touchAction: "none",
-  };
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <CategoryBadge {...badgeProps} />
-    </div>
-  );
-}
-
 export default function ProjectCategoryFilterBar({
   projects,
   activeCategoryIds,
@@ -119,7 +91,7 @@ export default function ProjectCategoryFilterBar({
   const setProjectCategories = usePreferencesStore((state) => state.setProjectCategories);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const sensors = usePointerDragSensors();
 
   if (projectCategories.length === 0 && !hasFocusedProjects(projects)) {
     return null;
@@ -180,14 +152,16 @@ export default function ProjectCategoryFilterBar({
               strategy={horizontalListSortingStrategy}
             >
               {projectCategories.map((category) => (
-                <SortableCategoryBadge
-                  key={category.id}
-                  id={category.id}
-                  category={category}
-                  projectCount={countFor(category.id)}
-                  isActive={activeDragId !== category.id && activeCategoryIds.includes(category.id)}
-                  onToggle={() => onToggleCategory(category.id)}
-                />
+                <SortableItem key={category.id} id={category.id}>
+                  <CategoryBadge
+                    category={category}
+                    projectCount={countFor(category.id)}
+                    isActive={
+                      activeDragId !== category.id && activeCategoryIds.includes(category.id)
+                    }
+                    onToggle={() => onToggleCategory(category.id)}
+                  />
+                </SortableItem>
               ))}
             </SortableContext>
           </DndContext>

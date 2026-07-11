@@ -1,5 +1,10 @@
 import type { AppTab } from "../types";
-import { createSessionWithClosableTabs, useTabStore, type TabSession } from "../store/tab";
+import {
+  createSessionWithClosableTabs,
+  useTabStore,
+  TERMINAL_CONTENT_TAB_ID,
+  type TabSession,
+} from "../store/tab";
 import { useBrowserStore, type BrowserNavState } from "../store/browser";
 import { useFileViewerStore, type FileViewerTabState } from "../store/file-viewer";
 import { useRightPanelStore, type RightPanelMode } from "../store/right-panel";
@@ -68,7 +73,7 @@ function rehydrateSessions(): {
     }
     sessions[worktreePath] = createSessionWithClosableTabs(
       closable,
-      typeof persisted.activeTabId === "string" ? persisted.activeTabId : "terminal",
+      typeof persisted.activeTabId === "string" ? persisted.activeTabId : TERMINAL_CONTENT_TAB_ID,
     );
   }
   return { sessions, tabIdsByType };

@@ -13,6 +13,7 @@ import { useBroadcastStore } from "../../store/broadcast";
 import { usePanelLayoutStore } from "../../store/panel-layout";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../../lib/cn";
+import { useInlineRename } from "../../hooks/useInlineRename";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
 import { acquireTerminalRuntime } from "../../lib/terminal-runtime";
 import { countLeaves, TERMINAL_PANE_LABEL_MAX_LENGTH } from "../../lib/split-tree";
@@ -56,40 +57,14 @@ function TerminalPaneHeader({
   onLabelChange: (label: string | undefined) => void;
   onFocusTerminal: () => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const skipBlurSaveRef = useRef(false);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(label ?? "");
-
-  useEffect(() => {
-    if (!editing) {
-      setDraft(label ?? "");
-    }
-  }, [editing, label]);
-
-  useEffect(() => {
-    if (!editing) return;
-    skipBlurSaveRef.current = false;
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    });
-  }, [editing]);
-
-  const saveDraft = useCallback(() => {
-    const next = draft.trim().slice(0, TERMINAL_PANE_LABEL_MAX_LENGTH);
-    onLabelChange(next || undefined);
-    setDraft(next);
-    setEditing(false);
-    onFocusTerminal();
-  }, [draft, onLabelChange, onFocusTerminal]);
-
-  const cancelEdit = useCallback(() => {
-    skipBlurSaveRef.current = true;
-    setDraft(label ?? "");
-    setEditing(false);
-    onFocusTerminal();
-  }, [label, onFocusTerminal]);
+  const rename = useInlineRename({
+    maxLength: TERMINAL_PANE_LABEL_MAX_LENGTH,
+    onCommit: (value) => {
+      onLabelChange(value || undefined);
+      onFocusTerminal();
+    },
+    onCancel: onFocusTerminal,
+  });
 
   const stopTerminalFocus = (event: SyntheticEvent) => {
     event.stopPropagation();
@@ -104,37 +79,15 @@ function TerminalPaneHeader({
         "absolute right-2 top-2 z-20 flex h-6 max-w-[calc(100%-1rem)] items-center rounded-md border border-white/15 bg-white/10 px-0.5 text-white/75 backdrop-blur-sm transition-opacity duration-150",
         {
           "opacity-0 focus-within:opacity-100 group-hover/terminal-pane:opacity-100":
-            !label && !editing,
+            !label && !rename.editing,
         },
       )}
       onClick={stopTerminalFocus}
       onMouseDown={stopTerminalFocus}
     >
-      {editing ? (
+      {rename.editing ? (
         <input
-          ref={inputRef}
-          type="text"
-          value={draft}
-          maxLength={TERMINAL_PANE_LABEL_MAX_LENGTH}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={() => {
-            if (skipBlurSaveRef.current) {
-              skipBlurSaveRef.current = false;
-              return;
-            }
-            saveDraft();
-          }}
-          onKeyDown={(event) => {
-            // An Enter that only confirms an IME candidate must not commit.
-            if (event.nativeEvent.isComposing) return;
-            if (event.key === "Enter") {
-              event.preventDefault();
-              saveDraft();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              cancelEdit();
-            }
-          }}
+          {...rename.inputProps}
           aria-label="Terminal pane label"
           placeholder="Label"
           className={cn(
@@ -148,7 +101,7 @@ function TerminalPaneHeader({
             className={cn(
               "min-w-0 cursor-pointer truncate px-1.5 text-left text-xs font-medium leading-5",
             )}
-            onClick={() => setEditing(true)}
+            onClick={() => rename.begin(label)}
             title={label}
           >
             {label}
@@ -158,15 +111,15 @@ function TerminalPaneHeader({
       <div
         className={cn("flex items-center gap-0.5 overflow-hidden transition-all duration-150", {
           "max-w-0 opacity-0 focus-within:max-w-44 focus-within:opacity-100 group-hover/terminal-pane:max-w-44 group-hover/terminal-pane:opacity-100":
-            Boolean(label) && !editing,
-          "max-w-44 opacity-100": !label || editing,
+            Boolean(label) && !rename.editing,
+          "max-w-44 opacity-100": !label || rename.editing,
         })}
       >
-        {!label && !editing && (
+        {!label && !rename.editing && (
           <button
             type="button"
             className={cn(actionButtonClass)}
-            onClick={() => setEditing(true)}
+            onClick={() => rename.begin("")}
             title="Add label"
           >
             <Tag className={cn("h-3 w-3")} />

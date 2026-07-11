@@ -4,14 +4,12 @@ import {
   DndContext,
   closestCenter,
   DragOverlay,
-  PointerSensor,
-  useSensor,
-  useSensors,
   type DragStartEvent,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
+import { usePointerDragSensors } from "../ui/sortable";
 import type { Project, CloningProject } from "../../types";
 import { useProjectStore } from "../../store/project";
 import { usePreferencesStore } from "../../store/preferences";
@@ -109,11 +107,7 @@ function SortableProjectList({
 }: SortableProjectListProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 5 },
-    }),
-  );
+  const sensors = usePointerDragSensors();
 
   const activeProject = useMemo(
     () => (activeId ? (projects.find((project) => project.id === activeId) ?? null) : null),
