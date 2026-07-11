@@ -18,6 +18,12 @@ import { useTerminalStore } from "../../store/terminal";
 import { useToast } from "../../store/toast";
 import { normalizeBrowserUrl, browserTabTitle } from "../../lib/browser-url";
 import { filterUrlSuggestions, findUrlCompletion } from "../../lib/browser-history";
+import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  normalizePasteNewlines,
+  sanitizeBracketedPasteText,
+} from "../../lib/terminal-bracketed-paste";
 import { runCommand } from "../../lib/command";
 import {
   browserSetGrabMode,
@@ -86,6 +92,10 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const overlayOpen = useOverlayPresence();
   const { toast } = useToast();
   const [grabArmed, setGrabArmed] = useState(false);
+  // Guards against a picked element being delivered more than once (e.g. a
+  // grab nav that fires the handler twice): drop an identical payload seen
+  // within a short window.
+  const lastGrabRef = useRef<{ data: string; at: number } | null>(null);
 
   // `input` is what the <input> DISPLAYS (may include an inline completion or a
   // dropdown preview). `typed` is what the user actually typed — it drives the
@@ -307,6 +317,11 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     let cancelled = false;
     const deliver = (event: BrowserGrabEvent) => {
       if (event.tabId !== tabId) return;
+      // Drop a duplicate delivery of the same element within a short window.
+      const now = Date.now();
+      const last = lastGrabRef.current;
+      if (last && last.data === event.data && now - last.at < 1500) return;
+      lastGrabRef.current = { data: event.data, at: now };
       // The guest disarms itself after a pick — mirror that in the UI.
       setGrabArmed(false);
       let payload: GrabPayload;
@@ -321,7 +336,12 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
         toast("error", "No focused terminal");
         return;
       }
-      const bytes = new TextEncoder().encode(formatGrabMarkdown(payload));
+      // Wrap as a single bracketed paste so the multi-line payload lands as ONE
+      // block in the agent's input instead of each newline submitting a line.
+      const markdown = normalizePasteNewlines(formatGrabMarkdown(payload));
+      const wrapped =
+        BRACKETED_PASTE_START + sanitizeBracketedPasteText(markdown) + BRACKETED_PASTE_END;
+      const bytes = new TextEncoder().encode(wrapped);
       void writePty(focusedPtyId, bytes)
         .then(() => toast("success", "Sent element to terminal"))
         .catch(() => toast("error", "Failed to send element to terminal"));
