@@ -763,12 +763,15 @@ async fn get_cwd_and_title_read_from_mode_state() {
     let (mut creader, mut cwriter) = connect_hello(&sock, VERSION, "tok-osc", ClientKind::Control)
         .await
         .expect("control hello ok");
+    // TERM=dumb keeps shell rc files from repainting the title at every prompt
+    // (Ubuntu's default bashrc PS1 emits OSC 0 under TERM=xterm*, which would
+    // overwrite the printf'd title before the poll below observes it).
     rpc(
         &mut creader,
         &mut cwriter,
         1,
         "createOrAttach",
-        json!({ "sessionId": "o1", "cwd": "/tmp", "cols": 80, "rows": 24 }),
+        json!({ "sessionId": "o1", "cwd": "/tmp", "cols": 80, "rows": 24, "env": { "TERM": "dumb" } }),
     )
     .await;
 
