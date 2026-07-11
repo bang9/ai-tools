@@ -6,10 +6,13 @@ import {
   ChevronUp,
   Crosshair,
   ExternalLink,
+  File,
   Globe,
   Loader2,
+  Lock,
   RotateCw,
   Search,
+  ShieldAlert,
   SquareCode,
   X,
 } from "lucide-react";
@@ -19,7 +22,14 @@ import { useBrowserStore, selectNav } from "../../store/browser";
 import { useTabStore } from "../../store/tab";
 import { useTerminalStore } from "../../store/terminal";
 import { useToast } from "../../store/toast";
-import { normalizeBrowserUrl, browserTabTitle } from "../../lib/browser-url";
+import {
+  browserTabTitle,
+  buildSearchUrl,
+  looksLikeSearchQuery,
+  resolveAddressInput,
+  urlSecurity,
+  type UrlSecurity,
+} from "../../lib/browser-url";
 import {
   buildSuggestions,
   findInlineCompletion,
@@ -95,9 +105,33 @@ function formatGrabMarkdown(p: GrabPayload): string {
   );
 }
 
+/** A row in the address-bar dropdown: a web-search action or a history hit. */
+type AddressRow =
+  | { kind: "history"; entry: BrowserHistoryEntry }
+  | { kind: "search"; query: string; url: string };
+
+/** The URL a row navigates to when chosen. */
+function rowUrl(row: AddressRow): string {
+  return row.kind === "search" ? row.url : row.entry.url;
+}
+
 /** Browser-style display URL: drop the scheme and a trailing slash. */
 function prettyUrl(url: string): string {
   return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+/** Address-bar leading icon reflecting the loaded page's transport security. */
+function SecurityIcon({ security }: { security: UrlSecurity }) {
+  const base = "size-3 shrink-0";
+  if (security === "secure") return <Lock className={cn(base, "text-muted-foreground")} />;
+  if (security === "insecure")
+    return (
+      <span title="Not secure (HTTP)" className={cn("flex")}>
+        <ShieldAlert className={cn(base, "text-amber-500/80")} />
+      </span>
+    );
+  if (security === "file") return <File className={cn(base, "text-muted-foreground")} />;
+  return <Globe className={cn(base, "text-muted-foreground")} />;
 }
 
 /** A page favicon, falling back to a globe glyph when absent or broken. */
@@ -191,6 +225,20 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     [history],
   );
 
+  // Address-bar dropdown rows: a leading "search the web" action (when the typed
+  // text reads as a query) followed by frecency-ranked history. `url` is what
+  // Enter/click navigates to for either kind.
+  const rows = useMemo<AddressRow[]>(() => {
+    const historyRows: AddressRow[] = suggestions.map((entry) => ({ kind: "history", entry }));
+    const q = typed.trim();
+    if (q && looksLikeSearchQuery(q)) {
+      return [{ kind: "search", query: q, url: buildSearchUrl(q) }, ...historyRows];
+    }
+    return historyRows;
+  }, [suggestions, typed]);
+
+  const security = urlSecurity(nav?.url ?? null);
+
   const url = nav?.url ?? null;
   const hasNav = !!nav;
   const loading = nav?.loading ?? false;
@@ -215,7 +263,8 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
 
   const commit = useCallback(
     (raw: string) => {
-      const normalized = normalizeBrowserUrl(raw);
+      // Resolve to a URL — a non-URL query becomes a web search.
+      const normalized = resolveAddressInput(raw);
       if (!normalized) return;
       if (!isBrowserWebviewCreated(tabId)) {
         // If the host div isn't mounted yet (start page still showing), this
@@ -241,14 +290,14 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   // Enter (navigate) or Tab (complete), never by merely browsing the list.
   const moveHighlight = useCallback(
     (delta: 1 | -1) => {
-      const len = suggestions.length;
+      const len = rows.length;
       if (len === 0) return;
       let next = highlightIndex + delta;
       if (next < -1) next = len - 1;
       else if (next >= len) next = -1;
       setHighlightIndex(next);
     },
-    [highlightIndex, suggestions.length],
+    [highlightIndex, rows.length],
   );
 
   const handleInputKeyDown = useCallback(
@@ -257,20 +306,23 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       // belong to the candidate window, and touching the value corrupts input.
       if (e.nativeEvent.isComposing) return;
 
-      const highlighted =
-        suggestOpen && highlightIndex >= 0 && highlightIndex < suggestions.length
-          ? suggestions[highlightIndex].url
+      const highlightedRow =
+        suggestOpen && highlightIndex >= 0 && highlightIndex < rows.length
+          ? rows[highlightIndex]
           : null;
+      const highlighted = highlightedRow ? rowUrl(highlightedRow) : null;
       const showingCompletion = completion !== null && input === completion.display;
 
       if (e.key === "Tab") {
-        // Accept, never navigate, never move focus away.
+        // Accept into the input, never navigate. Only history rows fill the bar
+        // (accepting a full search URL into the bar would be odd).
         e.preventDefault();
-        if (highlighted !== null) {
-          setCompletion({ url: highlighted, display: highlighted });
-          setTyped(highlighted);
+        if (highlightedRow?.kind === "history") {
+          const value = highlightedRow.entry.url;
+          setCompletion({ url: value, display: value });
+          setTyped(value);
           setHighlightIndex(-1);
-          applyDisplay(highlighted, highlighted.length, highlighted.length);
+          applyDisplay(value, value.length, value.length);
         } else if (showingCompletion) {
           // Keep `completion` set so a following Enter loads the real URL.
           setTyped(completion.display);
@@ -293,14 +345,14 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       }
 
       if (e.key === "ArrowDown") {
-        if (!suggestOpen || suggestions.length === 0) return;
+        if (!suggestOpen || rows.length === 0) return;
         e.preventDefault();
         moveHighlight(1);
         return;
       }
 
       if (e.key === "ArrowUp") {
-        if (!suggestOpen || suggestions.length === 0) return;
+        if (!suggestOpen || rows.length === 0) return;
         e.preventDefault();
         moveHighlight(-1);
         return;
@@ -328,7 +380,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       input,
       moveHighlight,
       suggestOpen,
-      suggestions,
+      rows,
       typed,
     ],
   );
@@ -592,7 +644,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   // visible again — and this effect is the one place that already watches all
   // of them. It never fights commit(), which flips isBrowserWebviewCreated
   // synchronously before the store update lands.
-  const suggestionsShowing = suggestOpen && suggestions.length > 0;
+  const suggestionsShowing = suggestOpen && rows.length > 0;
   useEffect(() => {
     const apply = () => {
       const visible =
@@ -677,7 +729,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
               "transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30",
             )}
           >
-            <Globe className={cn("size-3 shrink-0 text-muted-foreground")} />
+            <SecurityIcon security={security} />
             <input
               ref={inputRef}
               value={input}
@@ -741,19 +793,19 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
             />
           </div>
 
-          {suggestOpen && suggestions.length > 0 && (
+          {suggestOpen && rows.length > 0 && (
             <div
               className={cn(
                 "absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-md",
               )}
             >
-              {suggestions.map((entry, index) => (
+              {rows.map((row, index) => (
                 <button
-                  key={entry.normalizedUrl}
+                  key={row.kind === "search" ? "__search__" : row.entry.normalizedUrl}
                   type="button"
                   // Keep input focus so onBlur doesn't swallow the click
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => commit(entry.url)}
+                  onClick={() => commit(rowUrl(row))}
                   onMouseEnter={() => setHighlightIndex(index)}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs transition-colors",
@@ -763,19 +815,31 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
                     },
                   )}
                 >
-                  <Favicon src={entry.faviconUrl} />
-                  <span className={cn("min-w-0 flex-1 truncate")}>
-                    {entry.title ? (
-                      <>
-                        <span>{entry.title}</span>
-                        <span className={cn("ml-2 text-muted-foreground/70")}>
-                          {prettyUrl(entry.url)}
-                        </span>
-                      </>
-                    ) : (
-                      prettyUrl(entry.url)
-                    )}
-                  </span>
+                  {row.kind === "search" ? (
+                    <>
+                      <Search className={cn("size-3.5 shrink-0 text-muted-foreground")} />
+                      <span className={cn("min-w-0 flex-1 truncate")}>
+                        <span>{row.query}</span>
+                        <span className={cn("ml-2 text-muted-foreground/70")}>— Search</span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Favicon src={row.entry.faviconUrl} />
+                      <span className={cn("min-w-0 flex-1 truncate")}>
+                        {row.entry.title ? (
+                          <>
+                            <span>{row.entry.title}</span>
+                            <span className={cn("ml-2 text-muted-foreground/70")}>
+                              {prettyUrl(row.entry.url)}
+                            </span>
+                          </>
+                        ) : (
+                          prettyUrl(row.entry.url)
+                        )}
+                      </span>
+                    </>
+                  )}
                 </button>
               ))}
             </div>
