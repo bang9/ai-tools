@@ -50,7 +50,9 @@ const JSON_RESPONSE_COMMANDS = new Set([
 
 interface PtyOutputPayload {
   id: string;
-  data: string;
+  // Raw PTY bytes as a Node Buffer from the native addon; forwarded unchanged
+  // to the renderer, where structured clone delivers a Uint8Array.
+  data: Uint8Array;
 }
 
 interface GroveLogPayload {
@@ -161,8 +163,11 @@ function serializeArgs(
     serialized.snapshot = JSON.stringify(serialized.snapshot);
   }
 
-  if (command === "write_pty" && Array.isArray(serialized.data)) {
-    serialized.data = Buffer.from(serialized.data);
+  if (command === "write_pty" && ArrayBuffer.isView(serialized.data)) {
+    // The renderer now sends a Uint8Array (structured-cloned across IPC), which
+    // is not Array.isArray. napi's Buffer binding rejects a bare TypedArray, so
+    // wrap it as a Node Buffer (Buffer.from over a Uint8Array copies the bytes).
+    serialized.data = Buffer.from(serialized.data as Uint8Array);
   }
 
   return serialized;

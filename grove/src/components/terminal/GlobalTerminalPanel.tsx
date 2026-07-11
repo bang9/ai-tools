@@ -71,6 +71,19 @@ const TerminalTabContent = memo(function TerminalTabContent({
     requestTerminalLayoutSync({ paneId: runtimePaneId, source: "globalTerminal" });
   }, [isActive, runtimePaneId]);
 
+  // Inactive tabs stay mounted and full-size (translated offscreen for the
+  // slide animation), so gate them against paneless layout-sync broadcasts to
+  // skip the per-frame fit while hidden. The on-activate refit above (targeted
+  // by paneId) still re-fits them when shown. Keyed on the resolved paneId so
+  // mirror tabs gate on their source pane's runtime.
+  // Inactive tabs are translated offscreen but keep full dimensions, so drive
+  // WebGL suspension from the explicit isActive flag (a rect check would still
+  // see them as visible). Suspend on hide frees the GPU context; reveal reloads.
+  useEffect(() => {
+    runtimeRef.current?.setLayoutSyncSuppressed(!isActive);
+    runtimeRef.current?.setVisible(isActive);
+  }, [isActive, runtimePaneId, mirrorSession?.paneId, ptyId, tab.mirrorPtyId, tab.paneId]);
+
   // Update theme
   useEffect(() => {
     runtimeRef.current?.setTheme(theme);

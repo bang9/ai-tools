@@ -175,6 +175,9 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const theme = useTerminalStore((s) => s.theme);
   const isFocused = useTerminalStore((s) => s.focusedPtyId === ptyId);
+  const isActiveWorktree = useTerminalStore(
+    (s) => s.activeWorktree === worktreePath,
+  );
   const setFocusedPtyId = useTerminalStore((s) => s.setFocusedPtyId);
   const setPaneLabel = useTerminalStore((s) => s.setPaneLabel);
   const mirrorSession = useBroadcastStore((s) => s.mirrors[ptyId] ?? null);
@@ -246,6 +249,13 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   useEffect(() => {
     runtimeRef.current?.setPtyId(ptyId);
   }, [ptyId]);
+
+  // Suspend the hidden worktree's WebGL context (display:none while inactive)
+  // and reload it on reveal. isBroadcasting is a dep so the flag re-pushes after
+  // the runtime is (re)acquired when broadcasting toggles.
+  useEffect(() => {
+    runtimeRef.current?.setVisible(isActiveWorktree);
+  }, [isActiveWorktree, isBroadcasting]);
 
   useEffect(() => {
     runtimeRef.current?.setTheme(theme);

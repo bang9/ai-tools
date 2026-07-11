@@ -1,4 +1,3 @@
-use base64::Engine as _;
 use napi::{
     bindgen_prelude::{Buffer, Error, Result},
     threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -11,7 +10,10 @@ use std::{fmt::Display, sync::Arc};
 #[derive(Clone)]
 pub struct PtyOutputPayload {
     pub id: String,
-    pub data: String,
+    /// Raw PTY bytes as a Node Buffer — no base64. The ThreadsafeFunction
+    /// marshals the Buffer by moving its bytes (no String copy), and Electron's
+    /// structured clone delivers a Uint8Array to the renderer.
+    pub data: Buffer,
 }
 
 struct NapiEventSink {
@@ -22,7 +24,7 @@ impl grove_core::PtyEventSink for NapiEventSink {
     fn on_output(&self, pty_id: &str, data: &[u8]) {
         let payload = PtyOutputPayload {
             id: pty_id.to_string(),
-            data: base64::engine::general_purpose::STANDARD.encode(data),
+            data: Buffer::from(data.to_vec()),
         };
         let _ = self
             .callback

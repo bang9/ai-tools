@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SplitNode } from "../types";
 import {
   assignPtyIds,
+  collectLeafPaneIds,
   countLeaves,
   findFirstLeaf,
   normalizeSplitTree,
@@ -544,5 +545,31 @@ describe("setSizesAtPath", () => {
     expect(result.children![0].sizes).toEqual([0.2, 0.8]);
     expect(result.children![1]).toBe(tree.children![1]);
     expect(result.children![1].sizes).toEqual([0.5, 0.5]);
+  });
+});
+
+describe("collectLeafPaneIds", () => {
+  it("returns the node id for a single leaf", () => {
+    expect(collectLeafPaneIds(leaf("a", "leaf-a"))).toEqual(["leaf-a"]);
+  });
+
+  it("collects every leaf id under a nested split, ignoring branch ids", () => {
+    const tree = hSplit(
+      [
+        vSplit([leaf("a", "leaf-a"), leaf("b", "leaf-b")], [0.5, 0.5], "branch-left"),
+        leaf("c", "leaf-c"),
+      ],
+      undefined,
+      "root",
+    );
+
+    expect(collectLeafPaneIds(tree)).toEqual(["leaf-a", "leaf-b", "leaf-c"]);
+  });
+
+  it("scopes to the subtree it is given, not the whole tree", () => {
+    const left = vSplit([leaf("a", "leaf-a"), leaf("b", "leaf-b")], [0.5, 0.5], "branch-left");
+    const tree = hSplit([left, leaf("c", "leaf-c")], undefined, "root");
+
+    expect(collectLeafPaneIds(tree.children![0])).toEqual(["leaf-a", "leaf-b"]);
   });
 });

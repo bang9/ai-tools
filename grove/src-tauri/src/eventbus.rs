@@ -1,23 +1,21 @@
-use base64::Engine;
 use serde::Serialize;
 use std::sync::Arc;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter};
 
-#[derive(Serialize, Clone)]
-struct PtyOutputPayload {
-    id: String,
-    data: String,
-}
-
-pub struct TauriEventSink(pub AppHandle);
+/// Per-PTY output sink over a `tauri::ipc::Channel`. The global emit path
+/// JSON-serializes, which would turn raw bytes into a number array; a channel
+/// carrying an [`InvokeResponseBody::Raw`] delivers an ArrayBuffer to JS with no
+/// base64 and no JSON blowup. The channel is created per `create_pty` call, so
+/// each PTY owns its own channel and teardown follows the PTY reader lifecycle
+/// (the channel drops when this sink drops on reader EOF).
+pub struct TauriEventSink(pub Channel);
 
 impl grove_core::PtyEventSink for TauriEventSink {
-    fn on_output(&self, pty_id: &str, data: &[u8]) {
-        let payload = PtyOutputPayload {
-            id: pty_id.to_string(),
-            data: base64::engine::general_purpose::STANDARD.encode(data),
-        };
-        let _ = self.0.emit("pty-output", payload);
+    fn on_output(&self, _pty_id: &str, data: &[u8]) {
+        // The channel is per-PTY, so routing needs no id; JS routes by the ptyId
+        // captured when it created the channel.
+        let _ = self.0.send(InvokeResponseBody::Raw(data.to_vec()));
     }
 }
 
@@ -54,8 +52,8 @@ pub fn init(app: &AppHandle) {
     grove_core::url_open::start(Arc::new(TauriUrlOpenSink(app.clone())));
 }
 
-pub fn pty_sink(app: AppHandle) -> Arc<dyn grove_core::PtyEventSink> {
-    Arc::new(TauriEventSink(app))
+pub fn pty_sink(on_output: Channel) -> Arc<dyn grove_core::PtyEventSink> {
+    Arc::new(TauriEventSink(on_output))
 }
 
 #[derive(Serialize, Clone)]

@@ -7,7 +7,6 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-base64 = "0.22"
 grove-core = { path = "../../grove-core" }
 napi = { version = "2", features = ["async", "napi4", "tokio_rt"] }
 napi-derive = "2"

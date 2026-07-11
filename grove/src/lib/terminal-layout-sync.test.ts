@@ -15,6 +15,17 @@ describe("terminal layout sync", () => {
     unsubscribe();
   });
 
+  it("delivers scoped paneIds verbatim to subscribers", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeTerminalLayoutSync(listener);
+
+    const request = { source: "panelResize" as const, paneIds: ["pane-1", "pane-2"] };
+    requestTerminalLayoutSync(request);
+
+    expect(listener).toHaveBeenCalledWith(request);
+    unsubscribe();
+  });
+
   it("stops notifying listeners after unsubscribe", () => {
     const listener = vi.fn();
     const unsubscribe = subscribeTerminalLayoutSync(listener);

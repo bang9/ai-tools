@@ -11,17 +11,24 @@ use crate::{
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 const MAX_SCROLLBACK_BYTES: usize = 256 * 1024;
+/// Coalesce PTY reads into a time/size-windowed batch before emitting to the
+/// sink, mirroring Orca's 8ms output batching. A flooding process produces
+/// thousands of ~4KB reads/sec; without batching each pays the full
+/// encode→IPC→decode→xterm.write cost. Flushing on an 8ms window or a 64KB
+/// buffer collapses that into ~120Hz emits while adding ≤8ms latency.
+const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
+const OUTPUT_FLUSH_SIZE: usize = 64 * 1024;
 const TMUX_NOT_FOUND_ERROR: &str = "tmux is required but was not found in PATH";
 const TMUX_GROVE_MANAGED_OPTION: &str = "@grove_managed";
 const TMUX_GROVE_WORKTREE_OPTION: &str = "@grove_worktree";
@@ -51,7 +58,7 @@ struct PtyRuntimeState {
     process_id: Option<u32>,
     session_name: String,
     last_known_cwd: Option<String>,
-    scrollback: Vec<u8>,
+    scrollback: VecDeque<u8>,
     scrollback_truncated: bool,
     last_bell_flag: bool,
     last_ai_status: Option<String>,
@@ -73,7 +80,7 @@ impl PtyRuntimeState {
             process_id,
             session_name,
             last_known_cwd: None,
-            scrollback: Vec::new(),
+            scrollback: VecDeque::new(),
             scrollback_truncated: false,
             last_bell_flag: false,
             last_ai_status: None,
@@ -161,10 +168,134 @@ struct TmuxCapturedContent {
 struct PtyInstance {
     session_name: String,
     worktree_path: String,
-    writer: Box<dyn Write + Send>,
+    /// Behind its own per-instance lock so a stalled `write_all` (tmux input
+    /// buffer full) only blocks writes to THIS pty, not every unrelated pty
+    /// serializing on the global registry lock.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     tracked: Arc<Mutex<PtyRuntimeState>>,
+}
+
+struct CoalescerInner {
+    pending: Vec<u8>,
+    first_byte_at: Option<Instant>,
+    closed: bool,
+}
+
+struct CoalescerShared {
+    state: Mutex<CoalescerInner>,
+    cvar: Condvar,
+    sink: Arc<dyn PtyEventSink>,
+    id: String,
+}
+
+/// Time/size-windowed coalescing buffer sitting between the PTY read loop and
+/// `sink.on_output`. The reader thread only appends bytes (`push`); a single
+/// dedicated flusher thread is the SOLE emitter, so bytes always reach the sink
+/// in read order with no cross-thread interleaving. Emits happen off the lock.
+struct OutputCoalescer {
+    shared: Arc<CoalescerShared>,
+}
+
+impl OutputCoalescer {
+    fn new(sink: Arc<dyn PtyEventSink>, id: String) -> Self {
+        let shared = Arc::new(CoalescerShared {
+            state: Mutex::new(CoalescerInner {
+                pending: Vec::new(),
+                first_byte_at: None,
+                closed: false,
+            }),
+            cvar: Condvar::new(),
+            sink,
+            id,
+        });
+        let flusher_shared = Arc::clone(&shared);
+        std::thread::spawn(move || run_output_flusher(flusher_shared));
+        Self { shared }
+    }
+
+    fn push(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        if state.closed {
+            return;
+        }
+        state.pending.extend_from_slice(data);
+        if state.first_byte_at.is_none() {
+            state.first_byte_at = Some(Instant::now());
+        }
+        self.shared.cvar.notify_one();
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.closed = true;
+            self.shared.cvar.notify_all();
+        }
+    }
+}
+
+impl Drop for OutputCoalescer {
+    fn drop(&mut self) {
+        // Guarantee the flusher thread terminates even if `close` was never
+        // called explicitly (e.g. panic on the reader thread).
+        self.close();
+    }
+}
+
+/// Sole emitter for a PTY's coalesced output. Wakes on new bytes or the 8ms
+/// window, drains the pending buffer under the lock, then calls `on_output`
+/// OUTSIDE the lock so IPC never blocks the reader thread's appends. Exits once
+/// `closed` is set and any final tail has been flushed.
+fn run_output_flusher(shared: Arc<CoalescerShared>) {
+    let mut guard = match shared.state.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    loop {
+        while !guard.closed && guard.pending.is_empty() {
+            guard = match shared.cvar.wait(guard) {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+        }
+
+        if guard.closed {
+            // Flush any final tail on teardown before exiting.
+            let drained = std::mem::take(&mut guard.pending);
+            guard.first_byte_at = None;
+            drop(guard);
+            if !drained.is_empty() {
+                shared.sink.on_output(&shared.id, &drained);
+            }
+            return;
+        }
+
+        let first = guard.first_byte_at.unwrap_or_else(Instant::now);
+        let elapsed = first.elapsed();
+        if guard.pending.len() >= OUTPUT_FLUSH_SIZE || elapsed >= OUTPUT_FLUSH_INTERVAL {
+            let drained = std::mem::take(&mut guard.pending);
+            guard.first_byte_at = None;
+            drop(guard);
+            shared.sink.on_output(&shared.id, &drained);
+            guard = match shared.state.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+        } else {
+            let remaining = OUTPUT_FLUSH_INTERVAL - elapsed;
+            guard = match shared.cvar.wait_timeout(guard, remaining) {
+                Ok((guard, _)) => guard,
+                Err(_) => return,
+            };
+        }
+    }
 }
 
 fn registry() -> &'static Mutex<HashMap<String, PtyInstance>> {
@@ -276,14 +407,15 @@ pub fn create(
 
     let reader_id = pty_id.clone();
     let tracked_for_reader = Arc::clone(&tracked);
+    let coalescer = OutputCoalescer::new(sink, reader_id);
     std::thread::spawn(move || {
-        read_pty_output(reader, sink, reader_id, tracked_for_reader);
+        read_pty_output(reader, coalescer, tracked_for_reader);
     });
 
     let instance = PtyInstance {
         session_name,
         worktree_path,
-        writer,
+        writer: Arc::new(Mutex::new(writer)),
         master: pair.master,
         child,
         tracked,
@@ -302,8 +434,7 @@ pub fn create(
 
 fn read_pty_output(
     mut reader: Box<dyn Read + Send>,
-    sink: Arc<dyn PtyEventSink>,
-    id: String,
+    coalescer: OutputCoalescer,
     tracked: Arc<Mutex<PtyRuntimeState>>,
 ) {
     let mut buf = [0u8; 4096];
@@ -311,45 +442,58 @@ fn read_pty_output(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                // Raw-path bookkeeping stays per-read: append_scrollback and
+                // last_output_at must reflect every read (the hookless idle
+                // state machine in poll_bell_events depends on per-read
+                // freshness), independent of when output is coalesced/emitted.
                 if let Ok(mut state) = tracked.lock() {
                     state.append_scrollback(&buf[..n]);
                     state.last_output_at = Some(Instant::now());
                 }
-                sink.on_output(&id, &buf[..n]);
+                coalescer.push(&buf[..n]);
             }
             Err(_) => break,
         }
     }
+    // Flush any pending tail and terminate the flusher thread on EOF/Err.
+    coalescer.close();
 }
 
 pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
-    let transition_session = {
-        let mut reg = registry().lock().map_err(|e| e.to_string())?;
-        let instance = reg
-            .get_mut(id)
-            .ok_or_else(|| format!("PTY not found: {}", id))?;
-        instance.writer.write_all(data).map_err(|e| e.to_string())?;
+    // Clone the per-instance handles under a short registry lock, then release
+    // it before write_all so a stalled write only blocks this pty, not every
+    // unrelated write/create/close serializing on the global registry lock.
+    let (writer, tracked) = {
+        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let instance = reg.get(id).ok_or_else(|| format!("PTY not found: {}", id))?;
+        (Arc::clone(&instance.writer), Arc::clone(&instance.tracked))
+    };
 
-        // Detect Enter for hookless-tool idle→running transition.
-        // Also reset last_output_at so the idle timeout starts from Enter,
-        // not from the previous output (which could be minutes ago).
-        if data.contains(&b'\r') {
-            instance.tracked.lock().ok().and_then(|mut state| {
-                let status = state.last_ai_status.clone();
-                let s = status.as_deref();
-                if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
-                    state.last_output_at = Some(Instant::now());
-                    Some((
-                        state.session_name.clone(),
-                        tool_hooks::to_running(s.unwrap()),
-                    ))
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        }
+    writer
+        .lock()
+        .map_err(|e| e.to_string())?
+        .write_all(data)
+        .map_err(|e| e.to_string())?;
+
+    // Detect Enter for hookless-tool idle→running transition.
+    // Also reset last_output_at so the idle timeout starts from Enter,
+    // not from the previous output (which could be minutes ago).
+    let transition_session = if data.contains(&b'\r') {
+        tracked.lock().ok().and_then(|mut state| {
+            let status = state.last_ai_status.clone();
+            let s = status.as_deref();
+            if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
+                state.last_output_at = Some(Instant::now());
+                Some((
+                    state.session_name.clone(),
+                    tool_hooks::to_running(s.unwrap()),
+                ))
+            } else {
+                None
+            }
+        })
+    } else {
+        None
     };
 
     // Set tmux option outside of registry lock to avoid holding locks during shell-out.
@@ -941,11 +1085,10 @@ fn recover_hookless_ai_status(
 }
 
 fn detect_live_hookless_tool_in_session_from_processes(
-    session_name: &str,
+    pane_pid: Option<u32>,
     processes: &[ProcessSnapshot],
 ) -> Option<&'static str> {
-    let pane_pid = tmux_pane_pid(session_name).ok().flatten()?;
-    detect_hookless_tool_from_process_tree(pane_pid, processes)
+    detect_hookless_tool_from_process_tree(pane_pid?, processes)
 }
 
 fn tmux_pane_pid(session_name: &str) -> Result<Option<u32>, String> {
@@ -1037,6 +1180,120 @@ fn process_line_mentions_tool(command_line: &str, tool: &str) -> bool {
     })
 }
 
+/// `tmux list-windows -a -F '#{session_name} #{window_active} #{window_bell_flag}'`
+/// collapsed to one fork. Keyed to each session's ACTIVE window to match the
+/// previous per-session `display-message #{window_bell_flag}` semantics (the
+/// active window's flag, not an OR across every window). tmux-not-found and
+/// no-server degrade to an empty map so every tracked session reads bell=false,
+/// mirroring the old per-session `tmux_session_missing` fallback; any other hard
+/// failure aborts the poll exactly as the per-session read did.
+fn collect_active_window_bell_flags() -> Result<HashMap<String, bool>, String> {
+    let output = match tmux_output([
+        "list-windows",
+        "-a",
+        "-F",
+        "#{session_name} #{window_active} #{window_bell_flag}",
+    ]) {
+        Ok(output) => output,
+        Err(error) if error == TMUX_NOT_FOUND_ERROR => return Ok(HashMap::new()),
+        Err(error) => return Err(error),
+    };
+    if !output.status.success() {
+        let message = tmux_output_message(&output);
+        if tmux_session_missing(&message) {
+            return Ok(HashMap::new());
+        }
+        return Err(format!("failed to poll tmux bell state: {message}"));
+    }
+
+    Ok(parse_active_window_bell_flags(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_active_window_bell_flags(output: &str) -> HashMap<String, bool> {
+    let mut flags = HashMap::new();
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(session_name), Some(window_active), Some(bell_flag)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if window_active != "1" {
+            continue;
+        }
+        flags.insert(session_name.to_string(), bell_flag == "1");
+    }
+    flags
+}
+
+/// `tmux list-sessions -F '#{session_name} #{@grove_ai_status}'` collapsed to one
+/// fork. The user option renders empty when unset (mapped to None), and any tmux
+/// failure degrades to an empty map so every session reads None — matching the
+/// old per-session `tmux_session_option(..)` where errors were swallowed to None.
+fn collect_session_ai_statuses() -> HashMap<String, Option<String>> {
+    let output = match tmux_output(["list-sessions", "-F", "#{session_name} #{@grove_ai_status}"]) {
+        Ok(output) if output.status.success() => output,
+        _ => return HashMap::new(),
+    };
+
+    parse_session_ai_statuses(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_session_ai_statuses(output: &str) -> HashMap<String, Option<String>> {
+    let mut statuses = HashMap::new();
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(session_name) = parts.next() else {
+            continue;
+        };
+        // @grove_ai_status has no spaces; an unset option renders empty and is
+        // dropped by split_whitespace, yielding None.
+        let status = parts.next().map(str::to_string);
+        statuses.insert(session_name.to_string(), status);
+    }
+    statuses
+}
+
+/// `tmux list-panes -a -F '#{session_name} #{pane_active} #{pane_pid}'` collapsed
+/// to one fork. Keyed to each session's ACTIVE pane to match the previous
+/// per-session `display-message #{pane_pid}`. Only consulted for sessions that
+/// need live hookless-tool probing; any tmux failure degrades to an empty map
+/// (no pid → no live-tool detection), mirroring `tmux_pane_pid(..).ok().flatten()`.
+fn collect_active_pane_pids() -> HashMap<String, u32> {
+    let output = match tmux_output([
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name} #{pane_active} #{pane_pid}",
+    ]) {
+        Ok(output) if output.status.success() => output,
+        _ => return HashMap::new(),
+    };
+
+    parse_active_pane_pids(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_active_pane_pids(output: &str) -> HashMap<String, u32> {
+    let mut pids = HashMap::new();
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(session_name), Some(pane_active), Some(pane_pid)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if pane_active != "1" {
+            continue;
+        }
+        if let Ok(pane_pid) = pane_pid.parse::<u32>() {
+            pids.insert(session_name.to_string(), pane_pid);
+        }
+    }
+    pids
+}
+
 pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
     let tracked_sessions = {
         let reg = registry().lock().map_err(|e| e.to_string())?;
@@ -1051,25 +1308,26 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
             .collect::<Vec<_>>()
     };
 
+    if tracked_sessions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Batch the per-session tmux reads into single aggregate forks per tick,
+    // keyed by session_name and intersected with the tracked registry below.
+    let bell_flags = collect_active_window_bell_flags()?;
+    let ai_statuses = collect_session_ai_statuses();
+
     let mut events = Vec::new();
     let mut cached_process_snapshots: Option<Vec<ProcessSnapshot>> = None;
+    let mut cached_pane_pids: Option<HashMap<String, u32>> = None;
     let mut process_snapshots_loaded = false;
 
     for (pty_id, session_name, tracked) in tracked_sessions {
-        let bell_flag = match tmux_window_bell_flag(&session_name) {
-            Ok(value) => value,
-            Err(error) if error == TMUX_NOT_FOUND_ERROR || tmux_session_missing(&error) => false,
-            Err(error) => {
-                return Err(format!(
-                    "failed to poll tmux bell state for {session_name}: {error}"
-                ));
-            }
-        };
+        // Sessions absent from the aggregate (killed/missing) read as false,
+        // matching the previous per-session tmux_session_missing fallback.
+        let bell_flag = bell_flags.get(&session_name).copied().unwrap_or(false);
 
-        let ai_status = match tmux_session_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION) {
-            Ok(value) => value,
-            Err(_) => None,
-        };
+        let ai_status = ai_statuses.get(&session_name).cloned().flatten();
         let current_tool = ai_status
             .as_deref()
             .and_then(|status| status.split(':').next());
@@ -1079,11 +1337,15 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
         let ai_status = if should_probe_live_hookless_tool {
             if !process_snapshots_loaded {
                 cached_process_snapshots = list_process_snapshots().ok();
+                cached_pane_pids = Some(collect_active_pane_pids());
                 process_snapshots_loaded = true;
             }
 
+            let pane_pid = cached_pane_pids
+                .as_ref()
+                .and_then(|pids| pids.get(&session_name).copied());
             let live_tool = cached_process_snapshots.as_deref().and_then(|processes| {
-                detect_live_hookless_tool_in_session_from_processes(&session_name, processes)
+                detect_live_hookless_tool_in_session_from_processes(pane_pid, processes)
             });
             let (last_ai_status, last_output_at) = tracked
                 .lock()
@@ -1323,7 +1585,7 @@ fn runtime_snapshot_for_pty(pty_id: &str) -> Result<Option<PtyRuntimeSnapshot>, 
         process_id: state.process_id,
         session_name: state.session_name.clone(),
         last_known_cwd: state.last_known_cwd.clone(),
-        scrollback: state.scrollback.clone(),
+        scrollback: Vec::from(state.scrollback.clone()),
         scrollback_truncated: state.scrollback_truncated,
     }))
 }
@@ -1345,7 +1607,7 @@ fn cache_last_known_cwd(pty_id: &str, cwd: &str) -> Result<(), String> {
 }
 
 fn append_scrollback_capped(
-    scrollback: &mut Vec<u8>,
+    scrollback: &mut VecDeque<u8>,
     scrollback_truncated: &mut bool,
     chunk: &[u8],
     limit: usize,
@@ -1354,8 +1616,10 @@ fn append_scrollback_capped(
         return;
     }
 
-    scrollback.extend_from_slice(chunk);
+    scrollback.extend(chunk.iter().copied());
     if scrollback.len() > limit {
+        // VecDeque front-prefix drain is O(overflow), not the O(cap) memmove a
+        // Vec::drain(..overflow) would pay per chunk under sustained flood.
         let overflow = scrollback.len() - limit;
         scrollback.drain(..overflow);
         *scrollback_truncated = true;
@@ -1432,7 +1696,7 @@ fn capture_tmux_content(
         ));
     }
 
-    let mut bytes = Vec::new();
+    let mut bytes: VecDeque<u8> = VecDeque::new();
     let mut truncated = false;
     append_scrollback_capped(
         &mut bytes,
@@ -1441,7 +1705,10 @@ fn capture_tmux_content(
         MAX_SCROLLBACK_BYTES,
     );
 
-    Ok(TmuxCapturedContent { bytes, truncated })
+    Ok(TmuxCapturedContent {
+        bytes: Vec::from(bytes),
+        truncated,
+    })
 }
 
 fn required_arg(name: &str, value: &str) -> Result<String, String> {
@@ -1919,10 +2186,6 @@ fn tmux_pane_alternate_on(session_name: &str) -> Result<bool, String> {
     Ok(tmux_display_message_value(session_name, "#{alternate_on}")?.as_deref() == Some("1"))
 }
 
-fn tmux_window_bell_flag(session_name: &str) -> Result<bool, String> {
-    Ok(tmux_display_message_value(session_name, "#{window_bell_flag}")?.as_deref() == Some("1"))
-}
-
 fn tmux_display_message_value(session_name: &str, format: &str) -> Result<Option<String>, String> {
     let output = tmux_output(["display-message", "-p", "-t", session_name, format])?;
     if !output.status.success() {
@@ -2211,6 +2474,175 @@ mod tests {
         fn on_output(&self, _pty_id: &str, _data: &[u8]) {}
     }
 
+    #[derive(Default)]
+    struct CollectingSink {
+        calls: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl PtyEventSink for CollectingSink {
+        fn on_output(&self, _pty_id: &str, data: &[u8]) {
+            self.calls.lock().unwrap().push(data.to_vec());
+        }
+    }
+
+    /// Read implementation that yields a fixed script of chunks then EOF.
+    struct ScriptedReader {
+        chunks: Vec<Vec<u8>>,
+        idx: usize,
+    }
+
+    impl io::Read for ScriptedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.idx >= self.chunks.len() {
+                return Ok(0);
+            }
+            let chunk = &self.chunks[self.idx];
+            self.idx += 1;
+            let n = chunk.len().min(buf.len());
+            buf[..n].copy_from_slice(&chunk[..n]);
+            Ok(n)
+        }
+    }
+
+    /// Write implementation whose `write` blocks until a gate is released,
+    /// used to simulate a stalled `write_all` (tmux input buffer full).
+    struct BlockingWriter {
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl Write for BlockingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let (lock, cvar) = &*self.gate;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cvar.wait(released).unwrap();
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn new_mock_master() -> Box<dyn MasterPty + Send> {
+        native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap()
+            .master
+    }
+
+    #[test]
+    fn coalesces_burst_within_window_into_single_output() {
+        let sink = Arc::new(CollectingSink::default());
+        let coalescer =
+            OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, "pty-burst".into());
+
+        // Several sub-threshold reads back-to-back, well within the 8ms window.
+        coalescer.push(b"aa");
+        coalescer.push(b"bb");
+        coalescer.push(b"cc");
+
+        // Wait past the flush interval for the single coalesced emit.
+        sleep(Duration::from_millis(40));
+
+        let calls = sink.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "burst should coalesce into one on_output");
+        assert_eq!(calls[0], b"aabbcc");
+    }
+
+    #[test]
+    fn flushes_small_tail_within_window_and_on_eof() {
+        let sink = Arc::new(CollectingSink::default());
+        let coalescer =
+            OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, "pty-eof".into());
+        let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
+            "/tmp/grove/worktree".into(),
+            None,
+            "grove-test".into(),
+            None,
+            None,
+        )));
+        let reader = Box::new(ScriptedReader {
+            chunks: vec![b"tail".to_vec()],
+            idx: 0,
+        });
+
+        // Drives push then EOF → close(); the flusher emits the pending tail.
+        read_pty_output(reader, coalescer, Arc::clone(&tracked));
+
+        // Give the flusher thread a moment to emit the final tail.
+        sleep(Duration::from_millis(20));
+
+        let calls = sink.calls.lock().unwrap();
+        assert_eq!(calls.concat(), b"tail");
+        // Raw-path bookkeeping stayed per-read despite coalescing.
+        let state = tracked.lock().unwrap();
+        assert_eq!(Vec::from(state.scrollback.clone()), b"tail");
+        assert!(state.last_output_at.is_some());
+    }
+
+    #[test]
+    fn write_to_one_pty_does_not_block_writes_to_another() {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let blocking = Box::new(BlockingWriter {
+            gate: Arc::clone(&gate),
+        });
+        let a = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-write-a-{}", Uuid::new_v4().simple()),
+            blocking,
+            new_mock_master(),
+        );
+        let b = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-write-b-{}", Uuid::new_v4().simple()),
+            Box::new(io::sink()),
+            new_mock_master(),
+        );
+
+        // Stall a write to A inside write_all (holding only A's writer lock).
+        let a_id = a.clone();
+        let a_handle = std::thread::spawn(move || write(&a_id, b"blocked"));
+        // Let A's write reach write_all and block on the gate.
+        sleep(Duration::from_millis(50));
+
+        // B's write must complete even though A is stuck: with the old code
+        // (write_all under the global registry lock) B would block here.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let b_id = b.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(write(&b_id, b"ok"));
+        });
+        let received = rx.recv_timeout(Duration::from_secs(2));
+        assert!(
+            received.is_ok(),
+            "write to B blocked while A's write_all was stalled"
+        );
+        assert!(received.unwrap().is_ok());
+
+        // Release A and clean up registry entries.
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+        let _ = a_handle.join();
+        registry().lock().unwrap().remove(&a);
+        registry().lock().unwrap().remove(&b);
+    }
+
     #[derive(Clone, Copy)]
     enum MockChildMode {
         Running,
@@ -2269,7 +2701,6 @@ mod tests {
     }
 
     fn register_mock_pty(child: MockChild, session_name: String) -> String {
-        let pty_id = format!("pty-{}", Uuid::new_v4().simple());
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -2279,7 +2710,16 @@ mod tests {
             })
             .unwrap();
         let writer = pair.master.take_writer().unwrap();
-        drop(pair.slave);
+        register_mock_pty_with_writer(child, session_name, writer, pair.master)
+    }
+
+    fn register_mock_pty_with_writer(
+        child: MockChild,
+        session_name: String,
+        writer: Box<dyn Write + Send>,
+        master: Box<dyn MasterPty + Send>,
+    ) -> String {
+        let pty_id = format!("pty-{}", Uuid::new_v4().simple());
         let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
             "/tmp/grove/worktree".into(),
             Some(42),
@@ -2293,8 +2733,8 @@ mod tests {
             PtyInstance {
                 session_name,
                 worktree_path: "/tmp/grove/worktree".into(),
-                writer,
-                master: pair.master,
+                writer: Arc::new(Mutex::new(writer)),
+                master,
                 child: Box::new(child),
                 tracked,
             },
@@ -2522,12 +2962,12 @@ mod tests {
 
     #[test]
     fn scrollback_cap_discards_oldest_bytes() {
-        let mut scrollback = b"abc".to_vec();
+        let mut scrollback: VecDeque<u8> = b"abc".iter().copied().collect();
         let mut truncated = false;
 
         append_scrollback_capped(&mut scrollback, &mut truncated, b"def", 4);
 
-        assert_eq!(scrollback, b"cdef");
+        assert_eq!(Vec::from(scrollback), b"cdef");
         assert!(truncated);
     }
 
@@ -2569,7 +3009,7 @@ mod tests {
 
         state.append_scrollback(b"def");
 
-        assert_eq!(state.scrollback, b"abcdef");
+        assert_eq!(Vec::from(state.scrollback.clone()), b"abcdef");
         assert!(!state.scrollback_truncated);
     }
 
@@ -2588,7 +3028,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(state.scrollback, b"abc");
+        assert_eq!(Vec::from(state.scrollback.clone()), b"abc");
         assert!(state.scrollback_truncated);
     }
 
@@ -2600,6 +3040,83 @@ mod tests {
         assert!(!consume_bell_edge(&mut previous, true));
         assert!(!consume_bell_edge(&mut previous, false));
         assert!(consume_bell_edge(&mut previous, true));
+    }
+
+    #[test]
+    fn parse_active_window_bell_flags_keeps_only_active_windows() {
+        let output = "\
+grove-a 1 1
+grove-a 0 0
+grove-b 0 1
+grove-b 1 0
+grove-c 1 0
+";
+        let flags = parse_active_window_bell_flags(output);
+
+        // grove-a: active window has the bell set.
+        assert_eq!(flags.get("grove-a"), Some(&true));
+        // grove-b: the ringing window is inactive, so the active window wins (no OR).
+        assert_eq!(flags.get("grove-b"), Some(&false));
+        assert_eq!(flags.get("grove-c"), Some(&false));
+        assert_eq!(flags.len(), 3);
+    }
+
+    #[test]
+    fn parse_active_window_bell_flags_ignores_malformed_lines() {
+        let output = "\n   \ngrove-a 1\ngrove-b 1 1\n";
+        let flags = parse_active_window_bell_flags(output);
+
+        assert_eq!(flags.get("grove-b"), Some(&true));
+        assert_eq!(flags.len(), 1);
+    }
+
+    #[test]
+    fn parse_session_ai_statuses_maps_unset_option_to_none() {
+        let output = "\
+grove-a codex:running
+grove-b
+grove-c
+";
+        let statuses = parse_session_ai_statuses(output);
+
+        assert_eq!(statuses.get("grove-a"), Some(&Some("codex:running".into())));
+        assert_eq!(statuses.get("grove-b"), Some(&None));
+        assert_eq!(statuses.get("grove-c"), Some(&None));
+        assert_eq!(statuses.len(), 3);
+    }
+
+    #[test]
+    fn parse_active_pane_pids_keeps_only_active_panes() {
+        let output = "\
+grove-a 1 4242
+grove-a 0 111
+grove-b 0 222
+grove-c 1 notapid
+";
+        let pids = parse_active_pane_pids(output);
+
+        assert_eq!(pids.get("grove-a"), Some(&4242));
+        assert_eq!(pids.get("grove-b"), None);
+        assert_eq!(pids.get("grove-c"), None);
+        assert_eq!(pids.len(), 1);
+    }
+
+    #[test]
+    fn detect_live_hookless_tool_returns_none_without_pane_pid() {
+        let processes = vec![ProcessSnapshot {
+            pid: 100,
+            ppid: 1,
+            command_line: "codex --yolo".into(),
+        }];
+
+        assert_eq!(
+            detect_live_hookless_tool_in_session_from_processes(None, &processes),
+            None
+        );
+        assert_eq!(
+            detect_live_hookless_tool_in_session_from_processes(Some(100), &processes),
+            Some("codex")
+        );
     }
 
     #[test]
@@ -2619,7 +3136,8 @@ mod tests {
 
         state.append_scrollback(b"bcde");
 
-        let scrollback = String::from_utf8_lossy(&state.scrollback);
+        let scrollback_bytes = Vec::from(state.scrollback.clone());
+        let scrollback = String::from_utf8_lossy(&scrollback_bytes);
         assert_eq!(state.scrollback.len(), MAX_SCROLLBACK_BYTES);
         assert!(scrollback.starts_with("23"));
         assert!(scrollback.ends_with("bcde"));
@@ -2693,7 +3211,7 @@ mod tests {
             Some(&capture),
         );
 
-        assert_eq!(state.scrollback, b"live tmux buffer");
+        assert_eq!(Vec::from(state.scrollback.clone()), b"live tmux buffer");
         assert!(state.scrollback_truncated);
     }
 

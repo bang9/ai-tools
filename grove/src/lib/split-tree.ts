@@ -222,6 +222,20 @@ export function setSizesAtPath(node: SplitNode, path: number[], sizes: number[])
   return { ...node, children: newChildren };
 }
 
+/** Collect the ids of every leaf node under `node` (including `node` itself if it is a leaf). */
+export function collectLeafPaneIds(node: SplitNode): string[] {
+  const ids: string[] = [];
+  const walk = (n: SplitNode) => {
+    if (n.type === "leaf") {
+      ids.push(n.id);
+    } else {
+      n.children?.forEach(walk);
+    }
+  };
+  walk(node);
+  return ids;
+}
+
 export function findFirstLeaf(node: SplitNode): string | null {
   if (node.type === "leaf") return node.ptyId ?? null;
   if (node.children) {

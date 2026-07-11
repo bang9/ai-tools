@@ -1,5 +1,12 @@
 export type UnlistenFn = () => void;
 
+/**
+ * How a platform delivers PTY output to the frontend.
+ * - `globalEvent`: Electron's shared `pty-output` event carrying `{ id, data }`.
+ * - `channel`: Tauri's per-PTY `tauri::ipc::Channel` (raw ArrayBuffer, no id).
+ */
+export type PtyOutputTransport = "globalEvent" | "channel";
+
 export interface BrowserBounds {
   x: number;
   y: number;

@@ -1260,7 +1260,6 @@ dependencies = [
 name = "grove"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "grove-core",
  "objc2",
  "serde",
@@ -1295,7 +1294,6 @@ dependencies = [
 name = "grove-electron-native"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "grove-core",
  "napi",
  "napi-build",

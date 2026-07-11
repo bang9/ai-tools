@@ -9,11 +9,18 @@ import { subscribeTerminalLayoutSync } from "./terminal-layout-sync";
 import {
   clearPtyScrollback,
   platform,
+  ptyOutputTransport,
   resizePty,
   writePty,
 } from "./platform";
 import { useTerminalStore } from "../store/terminal";
 import { isSafeExternalUrl, openUrl } from "./url-open";
+import { PtyInputQueue } from "./terminal-input-queue";
+import {
+  clearPtyOutputHandler,
+  routePtyOutput,
+  setPtyOutputHandler,
+} from "./terminal-output-router";
 
 import {
   getMacShortcutSequence,
@@ -72,11 +79,73 @@ function toXtermTheme(theme: TerminalTheme | null) {
 
 const paneSeeds = new Map<string, TerminalPaneSeed>();
 const runtimes = new Map<string, TerminalPaneRuntime>();
-const runtimesByPtyId = new Map<string, TerminalPaneRuntime>();
 const activityListeners = new Set<(activity: TerminalPaneActivity) => void>();
-const LAYOUT_SYNC_RETRY_FRAMES = 3;
+// Bridge a genuinely slow mount without an unbounded loop: keep rescheduling the
+// fit until the grid is measurable or this wall-clock deadline (from the first
+// attempt) passes. The ResizeObserver/layout-sync bus catch any later change.
+const LAYOUT_SYNC_RECONCILE_DEADLINE_MS = 1500;
+// Minimum usable box + grid before committing a fit, so a mid-animation or
+// barely-laid-out container never fits the PTY to a garbled sub-grid.
+const MIN_FIT_WIDTH_PX = 48;
+const MIN_FIT_HEIGHT_PX = 24;
+const MIN_FIT_COLS = 8;
+const MIN_FIT_ROWS = 4;
 const RUNTIME_RELEASE_GRACE_MS = 50;
+// Grace before suspending a hidden pane's WebGL context, so rapid worktree/tab
+// switching does not thrash the heavyweight GPU context create/destroy path.
+const RUNTIME_SUSPEND_GRACE_MS = 300;
 let ptyOutputListenerStarted = false;
+
+/**
+ * A WebGL addon should be (re)loaded only when the pane has none yet and is
+ * currently visible. Keeping this a pure predicate makes the "don't double-load
+ * on repeated reveals" contract testable without a live GPU context.
+ */
+export function shouldLoadWebglAddon(
+  hasLoadedWebgl: boolean,
+  visible: boolean,
+): boolean {
+  return !hasLoadedWebgl && visible;
+}
+
+/**
+ * A hidden pane's WebGL context may be freed only when one is loaded and the
+ * pane is not focused — the focused pane is never suspended.
+ */
+export function shouldSuspendWebglAddon(
+  hasLoadedWebgl: boolean,
+  focused: boolean,
+): boolean {
+  return hasLoadedWebgl && !focused;
+}
+
+interface ResizeTarget {
+  cols: number;
+  rows: number;
+}
+
+/**
+ * Decide whether a resize should be sent to the PTY. Rapid identical fit
+ * triggers collapse to a single resizePty call.
+ *
+ * Dedupe against where the PTY is actually heading: while a resize is in
+ * flight the backend is converging to `inFlight`, not to the (stale, not-yet-
+ * advanced) `applied` size, so compare against `inFlight`. Only when nothing is
+ * in flight is `applied` the current size. This is why a revert back to
+ * `applied` while a *different* resize is still in flight must still be sent —
+ * otherwise the backend PTY lands on the in-flight size while xterm renders the
+ * reverted size, corrupting line wrapping until an unrelated refit.
+ */
+export function shouldSendResize(
+  target: ResizeTarget,
+  applied: ResizeTarget,
+  inFlight: ResizeTarget | null,
+): boolean {
+  if (inFlight) {
+    return !(target.cols === inFlight.cols && target.rows === inFlight.rows);
+  }
+  return !(target.cols === applied.cols && target.rows === applied.rows);
+}
 
 function emitTerminalPaneActivity(activity: TerminalPaneActivity) {
   for (const listener of activityListeners) {
@@ -176,15 +245,18 @@ export function shouldDetachTerminalContainer(
 }
 
 function ensurePtyOutputListener() {
-  if (ptyOutputListenerStarted) {
+  // Tauri routes PTY output through a per-PTY tauri::ipc::Channel established in
+  // createPty (raw ArrayBuffer, no global event); only Electron uses the shared
+  // global `pty-output` event, so the global listener is Electron-only.
+  if (ptyOutputTransport !== "globalEvent" || ptyOutputListenerStarted) {
     return;
   }
 
   ptyOutputListenerStarted = true;
-  void platform.listen<{ id: string; data: string }>(
+  void platform.listen<{ id: string; data: Uint8Array }>(
     "pty-output",
     (payload) => {
-      runtimesByPtyId.get(payload.id)?.handlePtyOutput(payload.data);
+      routePtyOutput(payload.id, payload.data);
     },
   ).catch((error) => {
     ptyOutputListenerStarted = false;
@@ -209,8 +281,15 @@ class TerminalPaneRuntime {
   private frameId: number | null = null;
   private refCount = 0;
   private hasLoadedWebgl = false;
-  private lastCols = 0;
-  private lastRows = 0;
+  private webglAddon: WebglAddon | null = null;
+  // Off-screen panes suspend their WebGL context; term.write keeps flowing into
+  // xterm's DOM renderer fallback so scrollback stays current while hidden.
+  private visible = true;
+  private suspendTimer: number | null = null;
+  private pendingRevealRefresh = false;
+  private appliedSize: ResizeTarget = { cols: 0, rows: 0 };
+  private inFlightSize: ResizeTarget | null = null;
+  private layoutSyncSuppressed = false;
   private initialScrollback = "";
   private initialScrollbackSource: TerminalInitialContentSource | undefined;
   private hydrationStarted = false;
@@ -228,6 +307,23 @@ class TerminalPaneRuntime {
   private readonly unlistenLayoutSync: () => void;
   private readonly dataDisposable: { dispose(): void };
   private readonly bellDisposable: { dispose(): void };
+  // Stable identity so the output router can drop this runtime's route only
+  // while it is still the owner (see clearPtyOutputHandler).
+  private readonly boundHandlePtyOutput = (data: Uint8Array) => {
+    this.handlePtyOutput(data);
+  };
+  // Coalesces dense input bursts into fewer backend writes; flushes to the
+  // current ptyId on a microtask boundary so query replies are never delayed.
+  private readonly inputQueue = new PtyInputQueue({
+    flush: (data) => {
+      if (this.disposed || !this.ptyId) {
+        return;
+      }
+      writePty(this.ptyId, data).catch((error) => {
+        console.error("writePty failed:", error);
+      });
+    },
+  });
 
   constructor(
     paneId: string,
@@ -253,7 +349,22 @@ class TerminalPaneRuntime {
     this.term.loadAddon(this.fitAddon);
 
     this.unlistenLayoutSync = subscribeTerminalLayoutSync((request) => {
-      if (request.paneId && request.paneId !== this.paneId) {
+      if (request.paneId) {
+        // Requests aimed at a specific pane always refit that pane, even while
+        // suppressed (e.g. a global terminal tab's on-activate refit).
+        if (request.paneId !== this.paneId) {
+          return;
+        }
+      } else if (request.paneIds) {
+        if (!request.paneIds.includes(this.paneId)) {
+          return;
+        }
+        if (this.layoutSyncSuppressed) {
+          return;
+        }
+      } else if (this.layoutSyncSuppressed) {
+        // Truly global broadcast, but this runtime is an offscreen/inactive
+        // global terminal tab — skip the per-frame fit until it is shown.
         return;
       }
 
@@ -282,10 +393,7 @@ class TerminalPaneRuntime {
         return;
       }
 
-      const bytes = Array.from(new TextEncoder().encode(data));
-      writePty(this.ptyId, bytes).catch((error) => {
-        console.error("writePty failed:", error);
-      });
+      this.writeInput(new TextEncoder().encode(data));
     });
 
     this.term.attachCustomKeyEventHandler((event) => {
@@ -306,8 +414,7 @@ class TerminalPaneRuntime {
         if (ptyId) {
           // Send Ctrl+L (form feed) so the shell redraws the prompt at the top,
           // then clear the scrollback buffer to mimic macOS Terminal Cmd+K.
-          const bytes = Array.from(new TextEncoder().encode("\x0c"));
-          writePty(ptyId, bytes).catch(() => {});
+          this.writeInput(new TextEncoder().encode("\x0c"));
           setTimeout(() => {
             this.term.clear();
             clearPtyScrollback(ptyId).catch(() => {});
@@ -328,8 +435,7 @@ class TerminalPaneRuntime {
         return false;
       }
 
-      const bytes = Array.from(new TextEncoder().encode(sequence));
-      writePty(this.ptyId, bytes).catch(() => {});
+      this.writeInput(new TextEncoder().encode(sequence));
       return false;
     });
 
@@ -384,6 +490,11 @@ class TerminalPaneRuntime {
 
     const previousPtyId = this.ptyId;
     this.ptyId = ptyId;
+    // A swapped-in PTY starts at an unknown backend size, so clear the tracked
+    // sizes; otherwise a fit that happens to match the previous PTY's applied
+    // size would skip the new PTY's initial resize and leave it mis-sized.
+    this.appliedSize = { cols: 0, rows: 0 };
+    this.inFlightSize = null;
     this.syncPtyOutputRoute(previousPtyId, ptyId);
   }
 
@@ -391,27 +502,20 @@ class TerminalPaneRuntime {
     return this.ptyId;
   }
 
-  handlePtyOutput(data: string) {
+  handlePtyOutput(data: Uint8Array) {
     if (this.disposed) {
       return;
     }
 
-    try {
-      const binary = atob(data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-
-      if (this.hydrated) {
-        this.term.write(bytes);
-      } else {
-        this.pendingOutput.push(bytes);
-      }
-      this.reportActivity("output");
-    } catch (error) {
-      console.error("pty-output decode error:", error);
+    // Bytes cross IPC pre-decoded (Electron: structured-clone Uint8Array;
+    // Tauri: per-PTY channel ArrayBuffer), so write straight to xterm with no
+    // base64/atob and no per-byte charCodeAt loop on the main thread.
+    if (this.hydrated) {
+      this.term.write(data);
+    } else {
+      this.pendingOutput.push(data);
     }
+    this.reportActivity("output");
   }
 
   setTheme(theme: TerminalTheme | null) {
@@ -441,6 +545,60 @@ class TerminalPaneRuntime {
     this.searchHandler = handler;
   }
 
+  /**
+   * Gate this runtime against non-targeted (paneless/paneIds) layout-sync
+   * broadcasts. Used for inactive global terminal tabs, which stay mounted and
+   * full-size (translated offscreen) but must not run a per-frame fit while
+   * hidden. Targeted paneId requests (attach/on-activate) still refit.
+   */
+  setLayoutSyncSuppressed(suppressed: boolean) {
+    this.layoutSyncSuppressed = suppressed;
+  }
+
+  /**
+   * Visibility is pushed explicitly by the owning component (worktree pane's
+   * active state, global terminal tab's isActive) rather than inferred from
+   * rects — translateX-hidden tabs still report non-zero dimensions. On hide we
+   * free the GPU context after a grace; on reveal we reload it and force a
+   * repaint so the first shown frame is not blank/stale.
+   */
+  setVisible(visible: boolean) {
+    if (this.visible === visible) {
+      return;
+    }
+
+    this.visible = visible;
+    if (this.suspendTimer !== null) {
+      window.clearTimeout(this.suspendTimer);
+      this.suspendTimer = null;
+    }
+
+    if (visible) {
+      this.pendingRevealRefresh = true;
+      // Reload via layout-sync, which already waits for real dimensions before
+      // (re)adding the addon; the atlas rebuild + refresh runs after the fit.
+      this.scheduleLayoutSync();
+      return;
+    }
+
+    this.pendingRevealRefresh = false;
+    this.suspendTimer = window.setTimeout(() => {
+      this.suspendTimer = null;
+      this.suspendWebgl();
+    }, RUNTIME_SUSPEND_GRACE_MS);
+  }
+
+  private suspendWebgl() {
+    const focused = useTerminalStore.getState().focusedPtyId === this.ptyId;
+    if (this.disposed || !shouldSuspendWebglAddon(this.hasLoadedWebgl, focused)) {
+      return;
+    }
+
+    this.webglAddon?.dispose();
+    this.webglAddon = null;
+    this.hasLoadedWebgl = false;
+  }
+
   findNext(term: string): boolean {
     return this.searchAddon.findNext(term);
   }
@@ -461,6 +619,10 @@ class TerminalPaneRuntime {
     if (this.container !== container) {
       this.detach();
       this.container = container;
+      // A freshly attached container is assumed visible; an inactive global
+      // terminal tab re-applies suppression after attach. This keeps a runtime
+      // shared with a live worktree pane (mirror tabs) responsive.
+      this.layoutSyncSuppressed = false;
       this.installContainerBindings(container);
 
       if (this.term.element && this.term.element.parentElement !== container) {
@@ -563,7 +725,7 @@ class TerminalPaneRuntime {
     this.resizeObserver.observe(container);
   }
 
-  private scheduleLayoutSync(attempt = 0) {
+  private scheduleLayoutSync(deadline?: number) {
     if (this.disposed || !this.container) {
       return;
     }
@@ -579,16 +741,32 @@ class TerminalPaneRuntime {
       }
 
       this.ensureTerminalHost();
-      if (!this.hasLayoutDimensions()) {
-        if (attempt < LAYOUT_SYNC_RETRY_FRAMES) {
-          this.scheduleLayoutSync(attempt + 1);
+      if (!this.canFitTerminal()) {
+        const until =
+          deadline ?? performance.now() + LAYOUT_SYNC_RECONCILE_DEADLINE_MS;
+        if (performance.now() < until) {
+          this.scheduleLayoutSync(until);
         }
         return;
       }
 
       this.loadWebglAddon();
       this.fitTerminal();
+      this.refreshAfterReveal();
     });
+  }
+
+  private refreshAfterReveal() {
+    if (!this.pendingRevealRefresh) {
+      return;
+    }
+
+    this.pendingRevealRefresh = false;
+    // A suspended context drops its glyph atlas; rebuild it and force a repaint
+    // so the newly revealed pane paints its current buffer instead of a blank
+    // or stale first frame.
+    this.webglAddon?.clearTextureAtlas();
+    this.term.refresh(0, Math.max(0, this.term.rows - 1));
   }
 
   private ensureTerminalHost() {
@@ -607,24 +785,55 @@ class TerminalPaneRuntime {
     }
   }
 
-  private hasLayoutDimensions() {
+  private canFitTerminal() {
     if (!this.container) {
       return false;
     }
 
     const { width, height } = this.container.getBoundingClientRect();
-    return width > 0 && height > 0;
+    if (width < MIN_FIT_WIDTH_PX || height < MIN_FIT_HEIGHT_PX) {
+      return false;
+    }
+
+    try {
+      const dims = this.fitAddon.proposeDimensions();
+      if (
+        !dims ||
+        !dims.cols ||
+        !dims.rows ||
+        dims.cols < MIN_FIT_COLS ||
+        dims.rows < MIN_FIT_ROWS
+      ) {
+        return false;
+      }
+    } catch {
+      // proposeDimensions throws until the renderer is attached — defer.
+      return false;
+    }
+
+    return true;
   }
 
   private loadWebglAddon() {
-    if (this.hasLoadedWebgl) {
+    if (!shouldLoadWebglAddon(this.hasLoadedWebgl, this.visible)) {
       return;
     }
 
     try {
       const webglAddon = new WebglAddon(true);
-      webglAddon.onContextLoss(() => webglAddon.dispose());
+      webglAddon.onContextLoss(() => {
+        // Recover instead of dropping to the DOM renderer forever: dispose the
+        // lost context and reschedule a load, which is gated behind layout
+        // dimensions (and visibility), so it only re-adds once the pane is shown.
+        webglAddon.dispose();
+        if (this.webglAddon === webglAddon) {
+          this.webglAddon = null;
+        }
+        this.hasLoadedWebgl = false;
+        this.scheduleLayoutSync();
+      });
       this.term.loadAddon(webglAddon);
+      this.webglAddon = webglAddon;
       this.hasLoadedWebgl = true;
     } catch {
       // Canvas renderer fallback
@@ -646,13 +855,32 @@ class TerminalPaneRuntime {
       return;
     }
 
-    if (cols === this.lastCols && rows === this.lastRows) {
+    const target: ResizeTarget = { cols, rows };
+    if (!shouldSendResize(target, this.appliedSize, this.inFlightSize)) {
       return;
     }
 
-    this.lastCols = cols;
-    this.lastRows = rows;
-    resizePty(this.ptyId, cols, rows).catch(() => {});
+    const ptyId = this.ptyId;
+    this.inFlightSize = target;
+    resizePty(ptyId, cols, rows)
+      .then(() => {
+        // Advance the applied size only once the PTY confirms the resize, and
+        // only while this runtime still drives the same PTY — a setPtyId swap
+        // clears the tracked sizes, so a late resolve for the old PTY must not
+        // resurrect a stale applied size for the new one.
+        if (this.ptyId === ptyId) {
+          this.appliedSize = target;
+        }
+      })
+      .catch(() => {
+        // Leave appliedSize unchanged so the next fit re-sends this size.
+      })
+      .finally(() => {
+        // Clear only if a newer resize hasn't superseded this one in flight.
+        if (this.inFlightSize === target) {
+          this.inFlightSize = null;
+        }
+      });
   }
 
   private startHydration() {
@@ -706,13 +934,20 @@ class TerminalPaneRuntime {
     });
   }
 
+  private writeInput(bytes: Uint8Array) {
+    if (!this.ptyId) {
+      return;
+    }
+    this.inputQueue.enqueue(bytes);
+  }
+
   private syncPtyOutputRoute(previousPtyId: string, nextPtyId: string) {
-    if (previousPtyId && runtimesByPtyId.get(previousPtyId) === this) {
-      runtimesByPtyId.delete(previousPtyId);
+    if (previousPtyId) {
+      clearPtyOutputHandler(previousPtyId, this.boundHandlePtyOutput);
     }
 
     if (nextPtyId) {
-      runtimesByPtyId.set(nextPtyId, this);
+      setPtyOutputHandler(nextPtyId, this.boundHandlePtyOutput);
     }
   }
 
@@ -722,6 +957,10 @@ class TerminalPaneRuntime {
     }
 
     this.disposed = true;
+    if (this.suspendTimer !== null) {
+      window.clearTimeout(this.suspendTimer);
+      this.suspendTimer = null;
+    }
     this.detach();
     this.dataDisposable.dispose();
     this.bellDisposable.dispose();

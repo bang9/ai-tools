@@ -23,6 +23,7 @@ import type {
   BrowserNavEvent,
   BrowserNewWindowEvent,
   Platform,
+  PtyOutputTransport,
   UnlistenFn,
 } from "./types";
 
@@ -49,6 +50,13 @@ function getBridge(): GroveElectronBridge {
 export const windowDragRegionProps = {
   style: { WebkitAppRegion: "drag" } as React.CSSProperties,
 } as const;
+
+/**
+ * Electron delivers PTY output on the shared global `pty-output` event carrying
+ * `{ id, data }` (structured-clone Uint8Array), so terminal-runtime keeps the
+ * single global output listener and routes by id.
+ */
+export const ptyOutputTransport: PtyOutputTransport = "globalEvent";
 
 export const platform: Platform = {
   invoke<T>(cmd: string, args?: Record<string, unknown>) {
@@ -445,7 +453,9 @@ export async function createPty(
   return platform.invoke<CreatePtyResult>("create_pty", { ...request });
 }
 
-export async function writePty(id: string, data: number[]): Promise<void> {
+export async function writePty(id: string, data: Uint8Array): Promise<void> {
+  // The Uint8Array crosses the Electron IPC via structured clone (no number[]
+  // boxing) and is re-wrapped as a Node Buffer in the main process.
   return platform.invoke("write_pty", { id, data });
 }
 

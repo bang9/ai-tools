@@ -19,17 +19,18 @@ import {
   buildTerminalPaneTopologySignature,
   buildTerminalSnapshotRequest,
   collectTerminalPanes,
-  findWorktreePathForPtyId,
 } from "../../lib/terminal-session";
 import {
   getTerminalPaneLaunchCwd,
   subscribeTerminalPaneActivity,
 } from "../../lib/terminal-runtime";
+import { registerSyncJob, unregisterSyncJob } from "../../lib/sync-manager";
 import { cn } from "../../lib/cn";
 import type { SplitNode } from "../../types";
 
 const SNAPSHOT_SAVE_DEBOUNCE_MS = 750;
 const PTY_BELL_POLL_MS = 1000;
+const PTY_BELL_STATUS_JOB_KEY = "pty-bell-status";
 
 function buildPaneTopologySignatures(sessions: Record<string, SplitNode>) {
   const signatures = new Map<string, string>();
@@ -42,6 +43,26 @@ function buildPaneTopologySignatures(sessions: Record<string, SplitNode>) {
   }
 
   return signatures;
+}
+
+/**
+ * Inverted index for O(1) ptyId -> worktreePath lookups on the per-chunk
+ * activity path. Rebuilt wholesale from the sessions tree (rather than
+ * mutated incrementally) so a rebound ptyId never resolves to a stale
+ * worktree after a split-tree move.
+ */
+export function buildPtyIdToWorktreeIndex(sessions: Record<string, SplitNode>) {
+  const index = new Map<string, string>();
+
+  for (const [worktreePath, node] of Object.entries(sessions)) {
+    for (const pane of collectTerminalPanes(node)) {
+      if (pane.ptyId) {
+        index.set(pane.ptyId, worktreePath);
+      }
+    }
+  }
+
+  return index;
 }
 
 const TerminalSessionView = memo(function TerminalSessionView({
@@ -87,6 +108,7 @@ function TerminalPanel() {
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
   const sessionsRef = useRef(useTerminalStore.getState().sessions);
+  const ptyIdToWorktreeRef = useRef(new Map<string, string>());
 
   const persistSnapshot = (worktreePath: string) => {
     const node = sessionsRef.current[worktreePath];
@@ -129,6 +151,7 @@ function TerminalPanel() {
     const initialSessions = useTerminalStore.getState().sessions;
     sessionsRef.current = initialSessions;
     previousPaneTopologyRef.current = buildPaneTopologySignatures(initialSessions);
+    ptyIdToWorktreeRef.current = buildPtyIdToWorktreeIndex(initialSessions);
 
     return useTerminalStore.subscribe((state, previousState) => {
       if (state.sessions === previousState.sessions) {
@@ -136,6 +159,7 @@ function TerminalPanel() {
       }
 
       sessionsRef.current = state.sessions;
+      ptyIdToWorktreeRef.current = buildPtyIdToWorktreeIndex(state.sessions);
 
       const previous = previousPaneTopologyRef.current;
       const next = buildPaneTopologySignatures(state.sessions);
@@ -160,7 +184,7 @@ function TerminalPanel() {
 
   useEffect(
     () => subscribeTerminalPaneActivity(({ ptyId }) => {
-      const worktreePath = findWorktreePathForPtyId(sessionsRef.current, ptyId);
+      const worktreePath = ptyIdToWorktreeRef.current.get(ptyId);
       if (!worktreePath) {
         return;
       }
@@ -225,40 +249,24 @@ function TerminalPanel() {
   }, [terminalPath, setActiveWorktree]);
 
   useEffect(() => {
-    let cancelled = false;
-    let polling = false;
-
     const pollBellEvents = async () => {
-      if (polling || cancelled || Object.keys(sessionsRef.current).length === 0) {
+      if (Object.keys(sessionsRef.current).length === 0) {
         return;
       }
 
-      polling = true;
       try {
         const events = await pollPtyBells();
-        if (cancelled || events.length === 0) {
-          return;
-        }
-
         for (const { ptyId, aiStatus } of events) {
           updateAiStatus(ptyId, aiStatus);
         }
       } catch {
         // Ignore bell polling errors to avoid noisy UI while sessions churn.
-      } finally {
-        polling = false;
       }
     };
 
-    void pollBellEvents();
-    const timer = window.setInterval(() => {
-      void pollBellEvents();
-    }, PTY_BELL_POLL_MS);
+    registerSyncJob(PTY_BELL_STATUS_JOB_KEY, pollBellEvents, PTY_BELL_POLL_MS);
 
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+    return () => unregisterSyncJob(PTY_BELL_STATUS_JOB_KEY);
   }, [updateAiStatus]);
 
   // Create session for new worktree

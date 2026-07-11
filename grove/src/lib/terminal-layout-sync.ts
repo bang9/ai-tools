@@ -10,6 +10,7 @@ export type TerminalLayoutSyncSource =
 
 export interface TerminalLayoutSyncRequest {
   paneId?: string;
+  paneIds?: string[];
   source: TerminalLayoutSyncSource;
 }
 

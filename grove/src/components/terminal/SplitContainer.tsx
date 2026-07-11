@@ -1,8 +1,9 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useMemo } from "react";
 import type { SplitNode } from "../../types";
 import TerminalInstance from "./TerminalInstance";
 import { useTerminalStore } from "../../store/terminal";
 import { cn } from "../../lib/cn";
+import { collectLeafPaneIds } from "../../lib/split-tree";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
 import ResizablePanelGroup from "../ui/resizable-panel-group";
 
@@ -38,6 +39,10 @@ function SplitContainer({
     updateSizes(worktreePath, path, ratios);
   }, [path, updateSizes, worktreePath]);
 
+  // Scope panelResize layout-sync to the leaf panes under this split so a sash
+  // drag only wakes the runtimes that actually rescale, not every pane app-wide.
+  const paneIds = useMemo(() => collectLeafPaneIds(node), [node]);
+
   if (node.type === "leaf") {
     return node.ptyId ? (
       <div className={cn("relative w-full h-full")}>
@@ -58,7 +63,7 @@ function SplitContainer({
       vertical={node.type === "vertical"}
       ratios={node.sizes}
       onLayout={() => {
-        requestTerminalLayoutSync({ source: "panelResize" });
+        requestTerminalLayoutSync({ source: "panelResize", paneIds });
       }}
       onCommit={handleCommit}
     >

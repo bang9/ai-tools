@@ -1,6 +1,7 @@
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { routePtyOutput } from "../terminal-output-router";
 import type {
   TerminalTheme,
   AppConfig,
@@ -25,12 +26,20 @@ import type {
   BrowserNavEvent,
   BrowserNewWindowEvent,
   Platform,
+  PtyOutputTransport,
   UnlistenFn,
 } from "./types";
 
 export const windowDragRegionProps = {
   "data-tauri-drag-region": "",
 } as const;
+
+/**
+ * Tauri delivers PTY output through a per-PTY `tauri::ipc::Channel` (raw
+ * ArrayBuffer) wired in {@link createPty}, not the shared global `pty-output`
+ * event, so terminal-runtime skips the Electron-only global output listener.
+ */
+export const ptyOutputTransport: PtyOutputTransport = "channel";
 
 export const platform: Platform = {
   invoke<T>(cmd: string, args?: Record<string, unknown>) {
@@ -423,11 +432,28 @@ export async function listGitignorePatterns(projectId: string): Promise<string[]
 export async function createPty(
   request: CreatePtyRequest,
 ): Promise<CreatePtyResult> {
-  return platform.invoke<CreatePtyResult>("create_pty", { ...request });
+  // A per-PTY channel carries raw output bytes as an ArrayBuffer with no base64
+  // and no JSON number-array blowup. Its onmessage routes by the immutable
+  // ptyId, so pane re-acquire / ptyId reassignment is handled entirely by the
+  // output router (the owning runtime registers/unregisters its handler); the
+  // channel itself never needs re-creation. Tauri unregisters the JS callback
+  // when the Rust channel drops (PTY reader EOF), so there is nothing to tear
+  // down here.
+  const { ptyId } = request;
+  const onOutput = new Channel<ArrayBuffer>();
+  onOutput.onmessage = (message) => {
+    routePtyOutput(ptyId, new Uint8Array(message));
+  };
+  return tauriInvoke<CreatePtyResult>("create_pty", { ...request, onOutput });
 }
 
-export async function writePty(id: string, data: number[]): Promise<void> {
-  return platform.invoke("write_pty", { id, data });
+export async function writePty(id: string, data: Uint8Array): Promise<void> {
+  // A Uint8Array nested in a JSON args object degrades to a JSON number array
+  // (~4x blowup) under Tauri's IPC serializer. Passing it as the top-level
+  // payload ships it as an application/octet-stream raw body (Vec<u8> on the
+  // Rust side); the ptyId rides a header since the raw body replaces the whole
+  // argument object.
+  return tauriInvoke("write_pty", data, { headers: { "pty-id": id } });
 }
 
 export async function resizePty(

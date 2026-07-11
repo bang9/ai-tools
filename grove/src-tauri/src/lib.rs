@@ -349,7 +349,7 @@ async fn reload_app_window(window: tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 async fn create_pty(
-    app_handle: tauri::AppHandle,
+    on_output: tauri::ipc::Channel,
     pty_id: String,
     pane_id: String,
     worktree_path: String,
@@ -367,13 +367,30 @@ async fn create_pty(
         rows,
         restore,
     };
-    let sink = eventbus::pty_sink(app_handle);
+    let sink = eventbus::pty_sink(on_output);
 
     blocking(move || grove_core::pty::create(request, sink)).await
 }
 
+// Input arrives as a raw octet-stream body (a nested Uint8Array degrades to a
+// JSON number array under Tauri's serializer), so the bytes are the whole
+// payload and the ptyId rides the `pty-id` header. Returning a `Result` is
+// required for an async command that borrows a reference arg (`Request`).
 #[tauri::command]
-async fn write_pty(id: String, data: Vec<u8>) -> Result<(), String> {
+async fn write_pty(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let id = request
+        .headers()
+        .get("pty-id")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("write_pty: missing pty-id header")?
+        .to_string();
+    let data = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err("write_pty: expected a raw byte body".to_string());
+        }
+    };
+
     blocking(move || grove_core::pty::write(&id, &data)).await
 }
 

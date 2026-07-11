@@ -37,7 +37,7 @@ export function useTerminalCommandPipeline() {
 
       const payload =
         options?.addNewline === false ? text : `${text}\r`;
-      const bytes = Array.from(new TextEncoder().encode(payload));
+      const bytes = new TextEncoder().encode(payload);
 
       await runCommandSafely(() => writePty(focusedPtyId, bytes), {
         errorToast: "Failed to send terminal command",
