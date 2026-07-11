@@ -22,7 +22,7 @@ Dual-platform macOS desktop app (Tauri v2 by default, Electron optional) — Git
 ```bash
 cd grove
 pnpm install
-pnpm lint              # ESLint for src/**/*.{ts,tsx}
+pnpm lint              # oxlint for src (custom rules in lint/classname-plugin.js via .oxlintrc.json jsPlugins)
 pnpm test              # Vitest
 pnpm test:core         # grove-core Rust tests
 pnpm dev:tauri         # Dev server + Tauri window (default)

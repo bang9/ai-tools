@@ -59,6 +59,8 @@ import {
 import { runJobNow, startSyncManager, stopSyncManager } from "./sync-manager";
 
 function fireFocus() {
+  // Snapshot: handlers may unlisten (splice) mid-dispatch.
+  // eslint-disable-next-line unicorn/no-useless-spread
   for (const h of [...focusHandlers]) h();
 }
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": ["dist/**", "node_modules/**", "src-tauri/**", "target/**"],
+  "jsPlugins": [
+    {
+      "name": "grove-classname",
+      "specifier": "./lint/classname-plugin.js"
+    }
+  ],
+  "rules": {
+    "no-nested-ternary": "error",
+    "grove-classname/require-cn-for-classname": "error",
+    "grove-classname/prefer-object-syntax-in-cn": "error"
+  }
+}
