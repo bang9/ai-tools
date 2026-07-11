@@ -751,6 +751,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Why: advertise the real app version as TERM_PROGRAM_VERSION in spawned
+            // terminals. Set before any PTY create so panes never fall back.
+            grove_core::set_app_version(&app.package_info().version.to_string());
             grove_core::pty::install_panic_hook();
             grove_core::tool_hooks::ensure_installed();
             if let Err(error) = grove_core::pty::cleanup_stale_tmux_sessions_on_startup() {

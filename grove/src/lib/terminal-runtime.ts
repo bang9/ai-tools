@@ -37,6 +37,15 @@ import {
 import { installBracketedPasteSanitizer } from "./terminal-bracketed-paste";
 import { parseOsc7Cwd } from "./terminal-osc7";
 import { handleOsc52ClipboardRequest } from "./terminal-osc52-clipboard";
+import {
+  colorSchemeModeForBackground,
+  csiParamsIncludeMode2031,
+  decideColorSchemeThemePush,
+  decideMode2031Csi,
+  INITIAL_MODE_2031_STATE,
+  type Mode2031SubscriptionState,
+  type TerminalColorSchemeMode,
+} from "./terminal-color-scheme";
 import { log } from "./logger";
 
 export type TerminalInitialContentSource = "snapshotFallback" | "tmuxCapture";
@@ -503,14 +512,22 @@ class TerminalPaneRuntime {
   private initialScrollbackSource: TerminalInitialContentSource | undefined;
   private hydrationStarted = false;
   private hydrated = false;
+  // True only while the restored-scrollback bytes are being parsed (see
+  // startHydration); scopes the DECSET 2031 replay guard.
+  private replayingScrollback = false;
   private pendingOutput: Uint8Array[] = [];
   private disposed = false;
   private lastError: string | null = null;
   // Why: the shell's last OSC 7-reported cwd. Cleared on a PTY swap so a
   // reused runtime never reports the previous shell's directory.
   private lastOsc7Cwd: string | null = null;
-  // OSC 7/52 parser handlers (xterm has no built-in for either); disposed on teardown.
+  // OSC 7/52 + DECSET 2031 parser handlers (xterm has no built-in for these); disposed on teardown.
   private readonly oscDisposables: { dispose(): void }[] = [];
+  // DECSET 2031 color-scheme subscription state + the mode derived from the
+  // current theme background. Kept per-runtime so a theme flip only notifies
+  // TUIs that actually subscribed on this pane.
+  private mode2031: Mode2031SubscriptionState = INITIAL_MODE_2031_STATE;
+  private colorSchemeMode: TerminalColorSchemeMode = "dark";
 
   private onTrackpadMouseDown: (() => void) | null = null;
   private onTrackpadMouseUp: (() => void) | null = null;
@@ -550,6 +567,7 @@ class TerminalPaneRuntime {
     this.initialScrollback = seed?.initialScrollback ?? "";
     this.initialScrollbackSource = seed?.initialScrollbackSource;
     this.hydrated = this.initialScrollback.length === 0;
+    this.colorSchemeMode = colorSchemeModeForBackground(theme?.background);
     this.term = new Terminal({
       cursorBlink: true,
       fontFamily: theme?.fontFamily ?? "Menlo, monospace",
@@ -618,6 +636,17 @@ class TerminalPaneRuntime {
           onWriteError: (error) => log("terminal", "OSC 52 clipboard write failed:", error),
         }),
       ),
+      // DECSET 2031 (color-scheme change notification) subscribe/unsubscribe.
+      // Return false so xterm's own DEC private-mode handler still runs — we
+      // only observe the 2031 bit to know which panes to notify on a theme flip.
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+        this.handleMode2031Csi(params, true);
+        return false;
+      }),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+        this.handleMode2031Csi(params, false);
+        return false;
+      }),
     );
 
     this.searchAddon = new SearchAddon();
@@ -814,6 +843,25 @@ class TerminalPaneRuntime {
     if (theme) {
       this.term.options.fontFamily = theme.fontFamily;
       this.term.options.fontSize = theme.fontSize;
+    }
+
+    // DECSET 2031: after the value-gated theme write, notify a subscribed TUI
+    // when the derived color-scheme mode actually changed so 2031-aware apps
+    // (fish, neovim, Claude Code) repaint their palette. The mode-change check
+    // (last pushed mode) is the near-threshold flapping guard. A null theme is
+    // a transient reset, not a real background flip — never push on it (the
+    // classifier would coerce it to dark and flip a light TUI spuriously).
+    if (theme) {
+      this.colorSchemeMode = colorSchemeModeForBackground(theme.background);
+      const push = decideColorSchemeThemePush(this.mode2031, {
+        hydrated: this.hydrated,
+        hasPtyId: Boolean(this.ptyId),
+        newMode: this.colorSchemeMode,
+      });
+      this.mode2031 = push.state;
+      if (push.emit) {
+        this.writeInput(new TextEncoder().encode(push.emit));
+      }
     }
 
     this.scheduleLayoutSync();
@@ -1384,7 +1432,13 @@ class TerminalPaneRuntime {
       return;
     }
 
+    // Why: the 2031 replay guard must cover EXACTLY the restored-scrollback
+    // bytes. pendingOutput drained after this write is LIVE output (a real TUI
+    // subscribing during startup) and must be honored, so the flag — not the
+    // broader hydrated bit — scopes the guard.
+    this.replayingScrollback = true;
     this.term.write(this.initialScrollback, () => {
+      this.replayingScrollback = false;
       // Guard each step independently so a throw cannot escape into xterm's
       // WriteBuffer and wedge the pane, and so a failed finish step still runs
       // the flush that keeps output draining.
@@ -1433,6 +1487,26 @@ class TerminalPaneRuntime {
       return;
     }
     this.inputQueue.enqueue(bytes);
+  }
+
+  // DECSET 2031 subscribe (`h`) / unsubscribe (`l`). The replay guard lives in
+  // decideMode2031Csi: a `?2031h` parsed out of the restored-scrollback replay
+  // records nothing and emits nothing (echoing during replay is orca's "random
+  // characters on restart" bug); a live subscribe — including one buffered in
+  // pendingOutput during hydration — records the bit and seeds the mode once.
+  private handleMode2031Csi(params: (number | number[])[], set: boolean) {
+    if (!csiParamsIncludeMode2031(params)) {
+      return;
+    }
+    const decision = decideMode2031Csi(this.mode2031, {
+      set,
+      replaying: this.replayingScrollback,
+      currentMode: this.colorSchemeMode,
+    });
+    this.mode2031 = decision.state;
+    if (decision.emit) {
+      this.writeInput(new TextEncoder().encode(decision.emit));
+    }
   }
 
   private syncPtyOutputRoute(previousPtyId: string, nextPtyId: string) {

@@ -18,6 +18,31 @@ pub mod worktree_lifecycle;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// Compiled fallback for the user-facing app version. Why: grove-core is the crate
+/// spawning PTYs, so its own package version is the sanest default to advertise as
+/// TERM_PROGRAM_VERSION when no GUI host has injected the real app version yet
+/// (e.g. Electron before main.ts wires set_app_version, or in unit tests).
+const DEFAULT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+static APP_VERSION: OnceLock<String> = OnceLock::new();
+
+/// Record the host application's user-facing version so spawned terminals can
+/// advertise TERM_PROGRAM_VERSION. Idempotent and first-write-wins (OnceLock);
+/// hosts call this once at startup, before any PTY create. Later calls are no-ops.
+pub fn set_app_version(version: &str) {
+    let _ = APP_VERSION.set(version.to_string());
+}
+
+/// The host-advertised app version, or the compiled fallback when no host has set
+/// one. Used by the PTY env builders (TERM_PROGRAM_VERSION).
+pub fn app_version() -> String {
+    APP_VERSION
+        .get()
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string())
+}
 
 pub use config::{
     AppConfig, GrovePreferences, IdeMenuItem, ProjectCategory, ProjectCategoryIcon,

@@ -90,6 +90,14 @@ where
         .map_err(|error| Error::from_reason(format!("Failed to parse {label}: {error}")))
 }
 
+/// Record the host app version so spawned terminals advertise TERM_PROGRAM_VERSION.
+/// Why: main.ts must call this with app.getVersion() at startup, before any PTY
+/// create; until it does, grove-core uses its compiled fallback version.
+#[napi]
+pub fn set_app_version(version: String) {
+    grove_core::set_app_version(&version);
+}
+
 #[napi]
 pub async fn get_terminal_theme() -> Result<String> {
     blocking_json(|| Ok(grove_core::terminal_theme::detect_terminal_theme())).await

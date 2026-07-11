@@ -659,7 +659,17 @@ fn preferred_utf8_locale() -> String {
         }
     }
 
-    "C.UTF-8".to_string()
+    // Why: macOS ships no C.UTF-8 locale, so a GUI launch with LANG unset would
+    // fall through to C/POSIX and garble CJK. en_US.UTF-8 is always present on
+    // macOS. Every other platform does ship C.UTF-8, which stays the neutral pick.
+    #[cfg(target_os = "macos")]
+    {
+        "en_US.UTF-8".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "C.UTF-8".to_string()
+    }
 }
 
 /// Bare "UTF-8" / "UTF8" are not valid POSIX locale names and cause tools
@@ -668,6 +678,41 @@ fn preferred_utf8_locale() -> String {
 fn is_usable_locale(locale: &str) -> bool {
     let upper = locale.to_ascii_uppercase();
     upper != "UTF-8" && upper != "UTF8"
+}
+
+/// Reject a working directory that would make tmux fail opaquely: empty, missing,
+/// not a directory, or a filesystem root. Why: a root-like cwd (its own parent) is
+/// where the unbounded file discovery this guard exists to prevent begins, and a
+/// missing/non-dir path can only be a caller bug. Mirrors orca pty-path-safety.ts.
+/// Missing/non-dir paths already fail today (raw tmux error); rejecting a
+/// filesystem root is a deliberate new guard — tmux accepts `/`, but no grove
+/// flow passes it. Runs before ensure_grove_tmux_session so the caller gets a
+/// descriptive error instead of a raw tmux failure.
+fn validate_pty_cwd(cwd: &str) -> Result<(), String> {
+    let trimmed = cwd.trim();
+    if trimmed.is_empty() {
+        return Err("terminal working directory is empty".to_string());
+    }
+
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() {
+        return Err(format!(
+            "terminal working directory does not exist: {trimmed}"
+        ));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "terminal working directory is not a directory: {trimmed}"
+        ));
+    }
+    // A filesystem root is its own parent (Path::parent returns None for "/").
+    if path.parent().is_none_or(|parent| parent == path) {
+        return Err(format!(
+            "terminal working directory is a filesystem root: {trimmed}"
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn create(
@@ -697,6 +742,8 @@ pub fn create(
             return Err(format!("PTY already exists: {pty_id}"));
         }
     }
+
+    validate_pty_cwd(&cwd)?;
 
     let session_name = grove_tmux_session_name(&worktree_path, &pane_id);
     let session_state = ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &cwd)?;
@@ -2164,6 +2211,10 @@ fn apply_portable_terminal_env(cmd: &mut CommandBuilder) {
         cmd.env(&key, &value);
     }
     cmd.env("TERM", "xterm-256color");
+    // Why: advertise Grove so tools (and the user's shell prompt) can detect the
+    // host terminal the same way they detect iTerm/Apple_Terminal.
+    cmd.env("TERM_PROGRAM", "Grove");
+    cmd.env("TERM_PROGRAM_VERSION", crate::app_version());
     let locale = preferred_utf8_locale();
     cmd.env("LC_ALL", &locale);
     cmd.env("LANG", &locale);
@@ -2247,6 +2298,10 @@ fn grove_tmux_environment(session_name: &str) -> Vec<(&'static str, String)> {
         ("PATH", enriched_path().to_string()),
         ("LANG", locale.clone()),
         ("LC_CTYPE", locale),
+        // Why: advertise Grove into the tmux session environment so panes inherit
+        // the same TERM_PROGRAM signal as the direct-spawn path.
+        ("TERM_PROGRAM", "Grove".to_string()),
+        ("TERM_PROGRAM_VERSION", crate::app_version()),
     ];
     if let Some(ssh_auth_sock) = preferred_ssh_auth_sock() {
         vars.push(("SSH_AUTH_SOCK", ssh_auth_sock));
@@ -3572,6 +3627,122 @@ mod tests {
         assert!(is_usable_locale("en_US.UTF-8"));
         assert!(is_usable_locale("ko_KR.UTF-8"));
         assert!(is_usable_locale("C.UTF-8"));
+    }
+
+    fn with_locale_env_cleared<T>(body: impl FnOnce() -> T) -> T {
+        let _lock = env_lock();
+        let keys = ["LC_ALL", "LC_CTYPE", "LANG"];
+        let saved: Vec<(&str, Option<String>)> =
+            keys.iter().map(|k| (*k, env::var(k).ok())).collect();
+        unsafe {
+            for key in keys {
+                env::remove_var(key);
+            }
+        }
+        let result = body();
+        unsafe {
+            for (key, value) in saved {
+                match value {
+                    Some(val) => env::set_var(key, val),
+                    None => env::remove_var(key),
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn preferred_utf8_locale_falls_back_per_os_when_env_unset() {
+        let locale = with_locale_env_cleared(preferred_utf8_locale);
+        #[cfg(target_os = "macos")]
+        assert_eq!(locale, "en_US.UTF-8");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(locale, "C.UTF-8");
+    }
+
+    #[test]
+    fn preferred_utf8_locale_honors_usable_env_locale() {
+        let locale = with_locale_env_cleared(|| {
+            unsafe {
+                env::set_var("LANG", "ko_KR.UTF-8");
+            }
+            preferred_utf8_locale()
+        });
+        assert_eq!(locale, "ko_KR.UTF-8");
+    }
+
+    #[test]
+    fn validate_pty_cwd_rejects_bad_and_accepts_dir() {
+        // Empty.
+        assert!(validate_pty_cwd("").is_err());
+        assert!(validate_pty_cwd("   ").is_err());
+
+        // Missing.
+        let missing = unique_test_dir("grove-cwd-missing");
+        assert!(validate_pty_cwd(missing.to_string_lossy().as_ref()).is_err());
+
+        // File, not a directory.
+        let file = unique_test_dir("grove-cwd-file");
+        fs::write(&file, b"x").unwrap();
+        assert!(validate_pty_cwd(file.to_string_lossy().as_ref()).is_err());
+        let _ = fs::remove_file(&file);
+
+        // Filesystem root.
+        assert!(validate_pty_cwd("/").is_err());
+
+        // Valid directory.
+        let dir = unique_test_dir("grove-cwd-ok");
+        fs::create_dir_all(&dir).unwrap();
+        assert!(validate_pty_cwd(dir.to_string_lossy().as_ref()).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn grove_tmux_environment_advertises_term_program() {
+        let vars = grove_tmux_environment("grove-test-term-program");
+        let term_program = vars
+            .iter()
+            .find(|(k, _)| *k == "TERM_PROGRAM")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(term_program, Some("Grove"));
+
+        let version = vars
+            .iter()
+            .find(|(k, _)| *k == "TERM_PROGRAM_VERSION")
+            .map(|(_, v)| v.clone())
+            .expect("TERM_PROGRAM_VERSION present");
+        assert!(!version.is_empty());
+        assert_eq!(version, crate::app_version());
+    }
+
+    #[test]
+    fn apply_portable_terminal_env_advertises_term_program() {
+        let mut cmd = CommandBuilder::new("true");
+        apply_portable_terminal_env(&mut cmd);
+        assert_eq!(
+            cmd.get_env("TERM_PROGRAM").and_then(|v| v.to_str()),
+            Some("Grove")
+        );
+        let version = cmd
+            .get_env("TERM_PROGRAM_VERSION")
+            .and_then(|v| v.to_str())
+            .expect("TERM_PROGRAM_VERSION present");
+        assert!(!version.is_empty());
+        assert_eq!(version, crate::app_version());
+    }
+
+    // Why: fallback and set-value in ONE test because APP_VERSION is a process-wide
+    // OnceLock — checking the fallback must happen before any set, and no other
+    // grove-core test sets it, so this reads the compiled default first, then pins
+    // the first-write-wins behavior.
+    #[test]
+    fn app_version_uses_compiled_fallback_then_host_value() {
+        assert_eq!(crate::app_version(), env!("CARGO_PKG_VERSION"));
+        crate::set_app_version("42.0.0-grove-test");
+        assert_eq!(crate::app_version(), "42.0.0-grove-test");
+        // First-write-wins: a second set is a no-op.
+        crate::set_app_version("99.0.0-ignored");
+        assert_eq!(crate::app_version(), "42.0.0-grove-test");
     }
 
     #[test]

@@ -282,7 +282,7 @@ pub fn enriched_path() -> &'static str {
         .as_str()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn resolve_login_shell_path() -> Option<String> {
     resolve_with_retry(
         LOGIN_SHELL_RETRY_ATTEMPTS,
@@ -291,7 +291,7 @@ fn resolve_login_shell_path() -> Option<String> {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn resolve_login_shell_path_once() -> Option<String> {
     let shell = env::var("SHELL").ok()?;
     if !is_posix_like_shell(&shell) {
@@ -331,7 +331,7 @@ fn resolve_login_shell_path_once() -> Option<String> {
     parse_path_marker(&stdout)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 fn resolve_login_shell_path() -> Option<String> {
     None
 }
@@ -406,13 +406,13 @@ fn parse_env_marker_output(output: &str) -> HashMap<String, String> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn resolve_interactive_shell_env_once() -> Option<HashMap<String, String>> {
     let output = shell_output(&shell_env_snapshot_command(), true).ok()?;
     Some(parse_env_marker_output(&output))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn interactive_shell_env() -> &'static HashMap<String, String> {
     static ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
     ENV.get_or_init(|| {
@@ -425,7 +425,7 @@ fn interactive_shell_env() -> &'static HashMap<String, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 fn interactive_shell_env() -> &'static HashMap<String, String> {
     static ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
     ENV.get_or_init(HashMap::new)
@@ -618,7 +618,27 @@ fn well_known_path_suffix() -> Option<String> {
     (!dirs.is_empty()).then(|| dirs.join(":"))
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux counterpart of the macOS well-known dirs. Why: a Linux GUI launch (e.g.
+/// AppImage/desktop entry) inherits a minimal PATH, so fold in the standard
+/// user/system bin dirs — mirroring the macOS suffix — so tmux/claude/gh resolve
+/// even when every shell snapshot fails. ~/.local/bin needs home expansion, so the
+/// list is built at runtime rather than a static &[&str].
+#[cfg(all(unix, not(target_os = "macos")))]
+fn well_known_path_suffix() -> Option<String> {
+    let mut dirs: Vec<String> = vec!["/usr/local/bin".to_string()];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/bin").to_string_lossy().into_owned());
+    }
+    dirs.push("/snap/bin".to_string());
+
+    let dirs: Vec<String> = dirs
+        .into_iter()
+        .filter(|dir| std::path::Path::new(dir).is_dir())
+        .collect();
+    (!dirs.is_empty()).then(|| dirs.join(":"))
+}
+
+#[cfg(not(unix))]
 fn well_known_path_suffix() -> Option<String> {
     None
 }
