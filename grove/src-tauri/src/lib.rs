@@ -2,7 +2,8 @@ mod browser;
 mod browser_cookie_inject;
 mod eventbus;
 use grove_core::{
-    AppConfig, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest, CreatePtyRestore,
+    AppConfig, AppliedPtySize, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest,
+    CreatePtyRestore,
     CreatePtyResult, DeepDirectoryListing, DetectedThemeResult, DirectoryFileEntry, FileDiff,
     FileStatus, WorkspaceFileContent,
     GrovePreferences, IdeMenuItem, Project, PtyBellEvent, SaveTerminalSessionSnapshotRequest,
@@ -412,6 +413,11 @@ async fn resize_pty(id: String, cols: u16, rows: u16) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn applied_pty_size(id: String) -> Result<Option<AppliedPtySize>, String> {
+    blocking(move || grove_core::pty::applied_pty_size(&id)).await
+}
+
+#[tauri::command]
 async fn clear_pty_scrollback(pty_id: String) -> Result<(), String> {
     blocking(move || grove_core::pty::clear_scrollback(&pty_id)).await
 }
@@ -700,6 +706,7 @@ pub fn run() {
             create_pty,
             write_pty,
             resize_pty,
+            applied_pty_size,
             clear_pty_scrollback,
             close_pty,
             poll_pty_bells,

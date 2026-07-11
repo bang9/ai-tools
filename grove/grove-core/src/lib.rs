@@ -120,6 +120,16 @@ pub struct PtySession {
     pub worktree_path: String,
 }
 
+/// The pane size tmux has actually applied to a session's pane.
+/// Why: lets the UI reconcile xterm's grid against the authoritative size the
+/// shell/TUI truly sees, rather than trusting only the optimistic resize path.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedPtySize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyBellEvent {

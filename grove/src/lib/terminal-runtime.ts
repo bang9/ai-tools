@@ -7,7 +7,20 @@ import { Terminal } from "@xterm/xterm";
 import type { ITheme } from "@xterm/xterm";
 import type { TerminalTheme } from "../types";
 import { subscribeTerminalLayoutSync } from "./terminal-layout-sync";
-import { clearPtyScrollback, platform, ptyOutputTransport, resizePty, writePty } from "./platform";
+import {
+  appliedPtySize,
+  clearPtyScrollback,
+  platform,
+  ptyOutputTransport,
+  resizePty,
+  writePty,
+} from "./platform";
+import {
+  createPtySizeReassertion,
+  reconcilePtySizeAcrossFrames,
+  type PtySizeReassertion,
+  type PtySizeReconcileHandle,
+} from "./terminal-pty-reassert";
 import { useTerminalStore } from "../store/terminal";
 import { isSafeExternalUrl, openUrl } from "./url-open";
 import { PtyInputQueue } from "./terminal-input-queue";
@@ -30,6 +43,9 @@ import {
   WebglRenderLatch,
 } from "./terminal-webgl-lifecycle";
 import { recoverTerminalForWake } from "./terminal-display-wake";
+import { terminalOutputContainsAtlasRiskGlyph } from "./terminal-complex-script";
+import { AtlasRecoveryDebounce, bytesContainNonAscii } from "./terminal-atlas-recovery";
+import { nextFitStability, type FitStabilityState } from "./terminal-fit-stability";
 import {
   installTerminalImeCompositionTracker,
   type TerminalImeCompositionTracker,
@@ -151,6 +167,12 @@ const RUNTIME_RELEASE_GRACE_MS = 50;
 const RUNTIME_SUSPEND_GRACE_MS = 300;
 let ptyOutputListenerStarted = false;
 
+// Why: a single reused decoder for the atlas-risk content scan only. xterm does
+// its own UTF-8 decode of the raw bytes; this is a separate, throwaway decode
+// used purely to classify a chunk, so a byte sequence split at a chunk boundary
+// decoding to U+FFFD is acceptable (it conservatively flags a recovery).
+const atlasRiskDecoder = new TextDecoder();
+
 /**
  * A WebGL addon should be (re)loaded only when the pane has none yet and is
  * currently visible. Keeping this a pure predicate makes the "don't double-load
@@ -173,34 +195,20 @@ interface ResizeTarget {
   rows: number;
 }
 
-// Divider drags propose a new grid nearly every frame, and every applied fit
-// runs xterm's renderer clear + scrollback reflow — per-frame fits read as
-// visible blinking. Apply a proposal only once it has held for
-// FIT_STABLE_FRAMES consecutive frames; FIT_MAX_STABILITY_FRAMES bounds the
-// wait so a long continuous drag still tracks the pane instead of freezing.
-const FIT_STABLE_FRAMES = 2;
-const FIT_MAX_STABILITY_FRAMES = 8;
+// The grid every grove PTY is spawned at (see useTerminal / useGlobalTerminal /
+// terminal-{pane,tab}-commands). The post-spawn reconcile uses this as the
+// baseline the PTY believes it is until the pane lays out and forwards its real
+// grid.
+const PTY_SPAWN_COLS = 80;
+const PTY_SPAWN_ROWS = 24;
 
-export interface FitStabilityState {
-  cols: number;
-  rows: number;
-  matchedFrames: number;
-  totalFrames: number;
-}
-
-export function nextFitStability(
-  prev: FitStabilityState | null,
-  proposed: ResizeTarget,
-): { state: FitStabilityState; shouldFit: boolean } {
-  const matchedFrames =
-    prev && prev.cols === proposed.cols && prev.rows === proposed.rows ? prev.matchedFrames + 1 : 1;
-  const totalFrames = (prev?.totalFrames ?? 0) + 1;
-  const state = { cols: proposed.cols, rows: proposed.rows, matchedFrames, totalFrames };
-  return {
-    state,
-    shouldFit: matchedFrames >= FIT_STABLE_FRAMES || totalFrames >= FIT_MAX_STABILITY_FRAMES,
-  };
-}
+// nextFitStability moved to terminal-fit-stability.ts so the post-spawn
+// reconcile can gate its per-frame proposals through the SAME pure gate as the
+// live layout-sync path (without a terminal-runtime ↔ terminal-pty-reassert
+// import cycle). Re-exported here (imported above) to keep existing
+// importers/tests stable.
+export { nextFitStability };
+export type { FitStabilityState };
 
 export interface PreFitViewport {
   wasAtBottom: boolean;
@@ -497,6 +505,13 @@ class TerminalPaneRuntime {
   private hasLoadedWebgl = false;
   private webglAddon: WebglAddon | null = null;
   private readonly webglLatch = new WebglRenderLatch();
+  // Trailing-edge quiet-wait debounce: coalesces a burst of atlas-risk output
+  // chunks into one clearTextureAtlas()+refresh that fires only after the stream
+  // settles, so a stale wide/complex glyph is repaired without per-chunk (or
+  // per-window) repaints that would flicker a CJK-heavy TUI stream.
+  private readonly atlasRecovery = new AtlasRecoveryDebounce({
+    run: () => this.recoverGlyphAtlas(),
+  });
   // Off-screen panes suspend their WebGL context; term.write keeps flowing into
   // xterm's DOM renderer fallback so scrollback stays current while hidden.
   private visible = true;
@@ -505,6 +520,19 @@ class TerminalPaneRuntime {
   private appliedSize: ResizeTarget = { cols: 0, rows: 0 };
   private inFlightSize: ResizeTarget | null = null;
   private fitStability: FitStabilityState | null = null;
+  // Verifies what tmux ACTUALLY applied after a fit/reveal and re-forwards on
+  // true drift (with a non-convergence guard). Created lazily once attached.
+  private ptyReassert: PtySizeReassertion | null = null;
+  // Set when a reassert is requested while a PTY resize is still in flight: a
+  // readback then races the resize (the applied grid may still be the pre-resize
+  // one, misread as drift), so it is deferred and re-fired once the resize
+  // resolves (sendPtyResize's finally).
+  private pendingReassertAfterResize = false;
+  // Bounded post-spawn cross-frame loop that corrects the 80x24 spawn grid once
+  // a hidden/unsettled pane lays out. Tracks which ptyId it is reconciling so a
+  // swap restarts it.
+  private ptyReconcile: PtySizeReconcileHandle | null = null;
+  private reconcilePtyId = "";
   private resizeHoldDepth = 0;
   private pendingHeldFit = false;
   private layoutSyncSuppressed = false;
@@ -708,7 +736,46 @@ class TerminalPaneRuntime {
         this.bellHandler?.(this.ptyId);
       }
     });
+
+    // Closes the loop on what tmux APPLIED after a fit/reveal. grove PTYs are
+    // always local (isRemotePtyId → false); a sash-drag hold suppresses it so it
+    // never fights the hold. Requested with fit:false because the runtime has
+    // already fitted by the time it reasserts.
+    this.ptyReassert = createPtySizeReassertion({
+      isDisposed: () => this.disposed,
+      getPtyId: () => this.ptyId || null,
+      isRemotePtyId: () => false,
+      shouldSuppressDesktopResize: () => this.resizeHoldDepth > 0,
+      fit: () => this.fitTerminal(),
+      getTerminalDimensions: () => ({ cols: this.term.cols, rows: this.term.rows }),
+      getAppliedSize: (ptyId) => appliedPtySize(ptyId),
+      // Defense against the readback racing an in-flight PTY resize (the applied
+      // grid may still be the pre-resize one). The runtime also gates this in
+      // requestPtyReassert and re-fires on resolve.
+      hasInFlightResize: () => this.inFlightSize !== null,
+      forwardResize: (cols, rows) => this.forwardReconcileResize(cols, rows),
+      onAdoptClamp: (cols, rows) =>
+        log("terminal", "adopted pty size clamp", { paneId: this.paneId, cols, rows }),
+    });
+
     this.syncPtyOutputRoute("", this.ptyId);
+  }
+
+  // Why: re-verify what tmux applied after a fit settles or on reveal. Guarded
+  // internally (no-pty / remote / hold) and coalesced, so callers can fire it
+  // freely. fit:false — the runtime already fitted before reasserting.
+  private requestPtyReassert() {
+    if (this.disposed || this.resizeHoldDepth > 0 || !this.ptyId) {
+      return;
+    }
+    if (this.inFlightSize !== null) {
+      // A PTY resize is still converging; a readback now can return the
+      // pre-resize grid and be misread as drift. Latch and re-fire once the
+      // resize resolves (sendPtyResize's finally).
+      this.pendingReassertAfterResize = true;
+      return;
+    }
+    this.ptyReassert?.request({ fit: false });
   }
 
   retain() {
@@ -786,6 +853,9 @@ class TerminalPaneRuntime {
       this.term.write(resetPlan.termWrite);
     }
     this.syncPtyOutputRoute(previousPtyId, ptyId);
+    // A swapped-in PTY spawned fresh at 80x24 — run the spawn correction for it.
+    // No-ops until the runtime is attached (startPtySizeReconcile guards on it).
+    this.startPtySizeReconcile();
   }
 
   getPtyId() {
@@ -825,10 +895,46 @@ class TerminalPaneRuntime {
     // base64/atob and no per-byte charCodeAt loop on the main thread.
     if (this.hydrated) {
       this.term.write(data);
+      this.maybeScheduleAtlasRecovery(data);
     } else {
       this.pendingOutput.push(data);
     }
     this.reportActivity("output");
+  }
+
+  /**
+   * After a live write, schedule a throttled WebGL atlas rebuild when the chunk
+   * carries a wide/complex glyph (CJK/emoji/RTL/fullwidth/replacement) that an
+   * in-place redraw could leave stale in the texture atlas. Skipped for plain
+   * ASCII (the hot path) and whenever WebGL is absent/DOM-latched — the DOM
+   * renderer has no atlas to rebuild. The throttle coalesces a burst so a
+   * CJK-heavy stream repaints at most once per window instead of per chunk.
+   */
+  private maybeScheduleAtlasRecovery(data: Uint8Array) {
+    if (!this.webglAddon) {
+      return;
+    }
+    if (!bytesContainNonAscii(data)) {
+      return;
+    }
+    if (!terminalOutputContainsAtlasRiskGlyph(atlasRiskDecoder.decode(data))) {
+      return;
+    }
+    this.atlasRecovery.request();
+  }
+
+  private recoverGlyphAtlas() {
+    if (this.disposed || !this.webglAddon) {
+      return;
+    }
+    // Same repair the reveal/wake paths use: drop the stale atlas and repaint
+    // the visible rows so the correct wide glyphs are rasterized.
+    this.webglAddon.clearTextureAtlas();
+    try {
+      this.term.refresh(0, Math.max(0, this.term.rows - 1));
+    } catch {
+      // Pane may be mid-teardown; a missed repaint is harmless.
+    }
   }
 
   setTheme(theme: TerminalTheme | null) {
@@ -970,6 +1076,10 @@ class TerminalPaneRuntime {
       if (this.term.element && this.term.element.parentElement !== container) {
         container.appendChild(this.term.element);
       }
+
+      // Now that a container exists, kick off the post-spawn reconcile for the
+      // current PTY (setPtyId may have run before attach). Guarded once-per-pty.
+      this.startPtySizeReconcile();
     }
   }
 
@@ -983,6 +1093,10 @@ class TerminalPaneRuntime {
       this.frameId = null;
     }
     this.fitStability = null;
+    // Stop the reconcile frames while detached, but keep reconcilePtyId so a
+    // re-attach of the same (already sized) PTY does not restart the loop.
+    this.ptyReconcile?.cancel();
+    this.ptyReconcile = null;
 
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
@@ -1121,8 +1235,14 @@ class TerminalPaneRuntime {
         // renderer can change cell metrics, so re-evaluate once after loading.
         this.fitStability = null;
         const loadedWebgl = this.loadWebglAddon();
+        const wasReveal = this.pendingRevealRefresh;
         this.syncPtySize();
         this.refreshAfterReveal();
+        // On reveal, verify tmux still matches xterm's grid (a hidden pane may
+        // have been coerced by a second attached client while off screen).
+        if (wasReveal) {
+          this.requestPtyReassert();
+        }
         if (loadedWebgl) {
           this.scheduleLayoutSync(deadline);
         }
@@ -1150,6 +1270,9 @@ class TerminalPaneRuntime {
       this.loadWebglAddon();
       this.fitTerminal();
       this.refreshAfterReveal();
+      // A fit changed the grid and forwarded it; verify tmux actually applied
+      // that grid and re-forward on true drift (bounded by the clamp guard).
+      this.requestPtyReassert();
     });
   }
 
@@ -1330,6 +1453,16 @@ class TerminalPaneRuntime {
   }
 
   private fitTerminal() {
+    if (this.applyFit()) {
+      this.syncPtySize();
+    }
+  }
+
+  // Fit xterm to its container with viewport preservation, WITHOUT forwarding to
+  // the PTY. Split out so the post-spawn reconcile can fit-then-forward
+  // authoritatively (bypassing shouldSendResize) while fitTerminal keeps the
+  // deduped path. Returns whether a fit actually ran.
+  private applyFit(): boolean {
     try {
       const buffer = this.term.buffer.active;
       const isAlternate = buffer.type === "alternate";
@@ -1349,9 +1482,10 @@ class TerminalPaneRuntime {
           this.term.scrollToLine(target);
         }
       }
-      this.syncPtySize();
+      return true;
     } catch {
       // ignore fit errors if the host is not ready yet
+      return false;
     }
   }
 
@@ -1397,7 +1531,19 @@ class TerminalPaneRuntime {
       return;
     }
 
+    this.sendPtyResize(cols, rows);
+  }
+
+  // The raw resize send + applied/in-flight tracking, shared by the deduped
+  // syncPtySize path and the authoritative reconcile/reassert path (which have
+  // already confirmed drift, so they bypass shouldSendResize).
+  private sendPtyResize(cols: number, rows: number) {
     const ptyId = this.ptyId;
+    if (!cols || !rows || !ptyId) {
+      return;
+    }
+
+    const target: ResizeTarget = { cols, rows };
     this.inFlightSize = target;
     resizePty(ptyId, cols, rows)
       .then(() => {
@@ -1416,8 +1562,97 @@ class TerminalPaneRuntime {
         // Clear only if a newer resize hasn't superseded this one in flight.
         if (this.inFlightSize === target) {
           this.inFlightSize = null;
+          // A reassert deferred during this resize can now read a settled grid.
+          if (this.pendingReassertAfterResize && !this.disposed) {
+            this.pendingReassertAfterResize = false;
+            this.requestPtyReassert();
+          }
         }
       });
+  }
+
+  // Authoritative correction from the reconcile/reassertion: drift is already
+  // confirmed against tmux's applied grid, so bypass shouldSendResize. Still
+  // respects the drag hold (both callers gate on it too).
+  private forwardReconcileResize(cols: number, rows: number) {
+    if (this.disposed || this.resizeHoldDepth > 0 || !this.ptyId) {
+      return;
+    }
+    this.sendPtyResize(cols, rows);
+  }
+
+  // Return the currently PROPOSED grid without touching xterm — the reconcile
+  // gates these per-frame proposals through nextFitStability and only commits
+  // (fit + forward) once one holds, so an unsettled pane never reflows +
+  // SIGWINCHes every frame during the spawn window. Null when not measurable or
+  // a hold is active.
+  private proposeFitForReconcile(): ResizeTarget | null {
+    if (this.disposed || !this.container || this.resizeHoldDepth > 0) {
+      return null;
+    }
+    return this.proposeFit();
+  }
+
+  // Commit a settled reconcile proposal: fit xterm to the container (the single
+  // reflow, mirroring the live fit path) then forward authoritatively (drift is
+  // already confirmed, so this bypasses shouldSendResize). Both callers gate on
+  // the hold.
+  private applyFitAndForwardReconcile(cols: number, rows: number) {
+    if (this.disposed || this.resizeHoldDepth > 0 || !this.ptyId) {
+      return;
+    }
+    if (cols !== this.term.cols || rows !== this.term.rows) {
+      this.applyFit();
+    }
+    this.forwardReconcileResize(cols, rows);
+  }
+
+  // Start (or restart) the bounded post-spawn reconcile for the current PTY.
+  // Corrects the 80x24 spawn grid once a pane that mounted hidden/unsettled lays
+  // out, verifying via appliedPtySize before handing off to the live
+  // ResizeObserver/layout-sync path. Runs once per ptyId; a swap restarts it.
+  private startPtySizeReconcile() {
+    if (this.disposed || !this.container || !this.ptyId) {
+      return;
+    }
+    // Once per ptyId: a re-attach of the same PTY (already sized) leaves the
+    // live ResizeObserver/reassert path in charge; only a genuinely new PTY
+    // needs the spawn correction.
+    if (this.reconcilePtyId === this.ptyId) {
+      return;
+    }
+    this.ptyReconcile?.cancel();
+    const ptyId = this.ptyId;
+    this.reconcilePtyId = ptyId;
+    // Seed lastSent from the size the PTY currently BELIEVES it is: the runtime's
+    // already-applied grid when a prior fit forwarded a real size, else the 80x24
+    // spawn. So an already-correctly-sized spawn re-measures the same grid and
+    // forwards nothing (no redundant first resize). appliedSize is {0,0} for a
+    // fresh/never-resized PTY, which stays at the spawn baseline.
+    const seedCols = this.appliedSize.cols > 0 ? this.appliedSize.cols : PTY_SPAWN_COLS;
+    const seedRows = this.appliedSize.rows > 0 ? this.appliedSize.rows : PTY_SPAWN_ROWS;
+    this.ptyReconcile = reconcilePtySizeAcrossFrames({
+      spawnCols: seedCols,
+      spawnRows: seedRows,
+      isAlive: () => !this.disposed && this.ptyId === ptyId && this.container !== null,
+      // Pause (skip, don't cancel) while a sash drag holds resizes, so the
+      // reconcile never fights the hold or the fit-stability loop.
+      isHeld: () => this.resizeHoldDepth > 0,
+      isAuthoritative: () => this.visible,
+      measure: () => this.proposeFitForReconcile(),
+      resize: (cols, rows) => this.applyFitAndForwardReconcile(cols, rows),
+      getAppliedSize: () => appliedPtySize(ptyId),
+      onAdoptClamp: (cols, rows) =>
+        log("terminal", "adopted spawn pty size clamp", { paneId: this.paneId, cols, rows }),
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (handle) => cancelAnimationFrame(handle),
+    });
+  }
+
+  private cancelPtySizeReconcile() {
+    this.ptyReconcile?.cancel();
+    this.ptyReconcile = null;
+    this.reconcilePtyId = "";
   }
 
   private startHydration() {
@@ -1525,6 +1760,10 @@ class TerminalPaneRuntime {
     }
 
     this.disposed = true;
+    this.atlasRecovery.cancel();
+    this.cancelPtySizeReconcile();
+    this.ptyReassert?.dispose();
+    this.ptyReassert = null;
     if (this.suspendTimer !== null) {
       window.clearTimeout(this.suspendTimer);
       this.suspendTimer = null;

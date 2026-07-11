@@ -121,6 +121,12 @@ export interface PtyBellEvent {
   aiStatus: string | null;
 }
 
+/** Pane size tmux has actually applied — the grid the shell/TUI truly sees. */
+export interface AppliedPtySize {
+  cols: number;
+  rows: number;
+}
+
 export interface TerminalPaneSnapshotInput {
   paneId: string;
   ptyId?: string | null;
@@ -504,6 +510,19 @@ export async function writePty(id: string, data: Uint8Array): Promise<void> {
 
 export async function resizePty(id: string, cols: number, rows: number): Promise<void> {
   return platform.invoke("resize_pty", { id, cols, rows });
+}
+
+// Why: null when the session/pane is gone — a normal live-UI race, not an error.
+export async function appliedPtySize(ptyId: string): Promise<AppliedPtySize | null> {
+  const result = await platform.invoke<AppliedPtySize | string | null>("applied_pty_size", {
+    id: ptyId,
+  });
+  // The NAPI method returns JSON; parse defensively so a main.ts that has not
+  // yet registered the command in JSON_RESPONSE_COMMANDS still round-trips.
+  if (typeof result === "string") {
+    return JSON.parse(result) as AppliedPtySize | null;
+  }
+  return result;
 }
 
 export async function clearPtyScrollback(ptyId: string): Promise<void> {

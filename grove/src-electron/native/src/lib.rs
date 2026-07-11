@@ -361,6 +361,11 @@ pub async fn resize_pty(id: String, cols: u16, rows: u16) -> Result<()> {
 }
 
 #[napi]
+pub async fn applied_pty_size(id: String) -> Result<String> {
+    blocking_json(move || grove_core::pty::applied_pty_size(&id)).await
+}
+
+#[napi]
 pub async fn clear_pty_scrollback(pty_id: String) -> Result<()> {
     blocking_core(move || grove_core::pty::clear_scrollback(&pty_id)).await
 }

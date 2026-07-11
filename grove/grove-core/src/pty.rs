@@ -3,8 +3,9 @@ use crate::{
     process_env::{enriched_path, preferred_ssh_auth_sock, subprocess_env_pairs},
     tool_hooks::{self, TMUX_GROVE_AI_STATUS_OPTION},
     worktree_lifecycle::WorktreeResource,
-    CreatePtyInitialHydration, CreatePtyInitialHydrationSource, CreatePtyRequest, CreatePtyRestore,
-    CreatePtyResult, CreatePtySessionState, PtyBellEvent, SaveTerminalSessionSnapshotRequest,
+    AppliedPtySize, CreatePtyInitialHydration, CreatePtyInitialHydrationSource, CreatePtyRequest,
+    CreatePtyRestore, CreatePtyResult, CreatePtySessionState, PtyBellEvent,
+    SaveTerminalSessionSnapshotRequest,
     TerminalGcReport, TerminalPaneSnapshot, TerminalPaneSnapshotInput, TerminalRestoreCwdSource,
     TerminalSessionSnapshot,
 };
@@ -902,6 +903,46 @@ pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
             pixel_height: 0,
         })
         .map_err(|e| e.to_string())
+}
+
+/// tmux format that yields the pane's applied grid as `<cols>x<rows>`.
+const APPLIED_PTY_SIZE_FORMAT: &str = "#{pane_width}x#{pane_height}";
+
+/// Read back the size tmux has actually applied to this pane's session.
+/// Why: the UI reconciles xterm's grid against the size the shell/TUI truly
+/// sees (tmux owns the real PTY), so the resize path can converge on the
+/// authoritative grid instead of its own optimistic tracking.
+///
+/// Returns `None` when the session/pane is gone — a normal race on a live UI
+/// path, not an error we should surface to the renderer.
+pub fn applied_pty_size(id: &str) -> Result<Option<AppliedPtySize>, String> {
+    let session_name = {
+        let reg = lock_recover(registry());
+        match reg.get(id) {
+            Some(instance) => instance.session_name.clone(),
+            // Why: an evicted/unknown pane is the "pane is gone" case, not a fault.
+            None => return Ok(None),
+        }
+    };
+
+    match tmux_display_message_value(&session_name, APPLIED_PTY_SIZE_FORMAT) {
+        Ok(value) => Ok(value.as_deref().and_then(parse_applied_pty_size)),
+        // Why: session killed mid-flight (GC, crash) is expected; don't error.
+        Err(error) if tmux_session_missing(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Parse tmux's `<cols>x<rows>` readback. Any malformed or zero dimension
+/// yields `None` so a bogus grid never reaches the resize reconcile.
+fn parse_applied_pty_size(value: &str) -> Option<AppliedPtySize> {
+    let (cols, rows) = value.trim().split_once('x')?;
+    let cols: u16 = cols.trim().parse().ok()?;
+    let rows: u16 = rows.trim().parse().ok()?;
+    if cols == 0 || rows == 0 {
+        return None;
+    }
+    Some(AppliedPtySize { cols, rows })
 }
 
 pub fn clear_scrollback(id: &str) -> Result<(), String> {
@@ -3507,6 +3548,92 @@ mod tests {
         );
 
         pty_id
+    }
+
+    #[test]
+    fn parse_applied_pty_size_reads_cols_and_rows() {
+        assert_eq!(
+            parse_applied_pty_size("120x40"),
+            Some(AppliedPtySize {
+                cols: 120,
+                rows: 40
+            })
+        );
+        // Why: tmux may pad the readback with surrounding whitespace/newline.
+        assert_eq!(
+            parse_applied_pty_size(" 80 x 24 \n"),
+            Some(AppliedPtySize { cols: 80, rows: 24 })
+        );
+    }
+
+    #[test]
+    fn parse_applied_pty_size_rejects_malformed_or_zero() {
+        assert_eq!(parse_applied_pty_size(""), None);
+        assert_eq!(parse_applied_pty_size("80"), None);
+        assert_eq!(parse_applied_pty_size("80x"), None);
+        assert_eq!(parse_applied_pty_size("x24"), None);
+        assert_eq!(parse_applied_pty_size("abcxdef"), None);
+        assert_eq!(parse_applied_pty_size("80x24x2"), None);
+        // Why: a zero dimension is never a real grid; don't feed it to reconcile.
+        assert_eq!(parse_applied_pty_size("0x24"), None);
+        assert_eq!(parse_applied_pty_size("80x0"), None);
+        // Why: tmux never reports negatives, but guard the u16 parse anyway.
+        assert_eq!(parse_applied_pty_size("-1x24"), None);
+    }
+
+    #[test]
+    fn applied_pty_size_returns_none_for_unknown_pty() {
+        assert_eq!(applied_pty_size("pty-does-not-exist").unwrap(), None);
+    }
+
+    #[test]
+    fn applied_pty_size_reads_back_live_session_and_none_when_gone() {
+        if Command::new("tmux").arg("-V").output().is_err() {
+            return;
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let session_name = format!("grove-test-applied-size-{nonce}");
+        let cwd = env::current_dir().unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+
+        let _ = kill_tmux_session_if_exists(&session_name);
+        create_tmux_session(&session_name, &cwd).unwrap();
+
+        let pty_id = register_mock_pty(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            session_name.clone(),
+        );
+
+        // Readback must match tmux's own per-dimension report (parse ground truth).
+        let expected_cols: u16 = tmux_display_message_value(&session_name, "#{pane_width}")
+            .unwrap()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let expected_rows: u16 = tmux_display_message_value(&session_name, "#{pane_height}")
+            .unwrap()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        assert_eq!(
+            applied_pty_size(&pty_id).unwrap(),
+            Some(AppliedPtySize {
+                cols: expected_cols,
+                rows: expected_rows,
+            })
+        );
+
+        // Missing session on a still-registered pane -> None, not an error.
+        kill_tmux_session_if_exists(&session_name).unwrap();
+        assert_eq!(applied_pty_size(&pty_id).unwrap(), None);
     }
 
     fn run_zdotdir_tmux_child_assertions() {
