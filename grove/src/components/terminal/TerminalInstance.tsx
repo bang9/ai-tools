@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChevronDown, ChevronUp, Plus, Radio, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Columns2, Plus, Radio, Rows2, ScreenShare, X } from "lucide-react";
 import { useTerminalStore } from "../../store/terminal";
 import { useBroadcastStore } from "../../store/broadcast";
 import { usePanelLayoutStore } from "../../store/panel-layout";
@@ -15,7 +15,12 @@ import "@xterm/xterm/css/xterm.css";
 import { cn } from "../../lib/cn";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
 import { acquireTerminalRuntime } from "../../lib/terminal-runtime";
-import { TERMINAL_PANE_LABEL_MAX_LENGTH } from "../../lib/split-tree";
+import { countLeaves, TERMINAL_PANE_LABEL_MAX_LENGTH } from "../../lib/split-tree";
+import {
+  closeTerminalPane,
+  mirrorTerminalPane,
+  splitTerminalPane,
+} from "../../lib/terminal-pane-commands";
 import { shouldAttachPrimaryRuntime } from "../../lib/broadcast-policy";
 import { restoreBroadcastSessionSize } from "../../lib/broadcast-session";
 import { Button, IconButton } from "../ui/button";
@@ -169,6 +174,78 @@ function TerminalPaneLabel({
   );
 }
 
+function TerminalPaneActions({
+  worktreePath,
+  paneId,
+  ptyId,
+  paneCount,
+}: {
+  worktreePath: string;
+  paneId: string;
+  ptyId: string;
+  paneCount: number;
+}) {
+  const stopTerminalFocus = (event: SyntheticEvent) => {
+    event.stopPropagation();
+  };
+
+  const actionButtonClass =
+    "inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-white/45 hover:bg-white/10 hover:text-white/80";
+
+  return (
+    <div
+      className={cn(
+        "absolute right-2 top-2 z-20 flex h-6 items-center gap-0.5 rounded-md border border-white/15 bg-white/10 px-0.5 opacity-0 backdrop-blur-sm transition-opacity duration-150 focus-within:opacity-100 group-hover/terminal-pane:opacity-100",
+      )}
+      onClick={stopTerminalFocus}
+      onMouseDown={stopTerminalFocus}
+    >
+      <button
+        type="button"
+        className={cn(actionButtonClass)}
+        onClick={() => {
+          mirrorTerminalPane(paneId, ptyId);
+        }}
+        title="Mirror to Global Terminal"
+      >
+        <ScreenShare className={cn("h-3 w-3")} />
+      </button>
+      <button
+        type="button"
+        className={cn(actionButtonClass)}
+        onClick={() => {
+          splitTerminalPane(worktreePath, ptyId, "vertical").catch(() => {});
+        }}
+        title="Split Vertical"
+      >
+        <Rows2 className={cn("h-3 w-3")} />
+      </button>
+      <button
+        type="button"
+        className={cn(actionButtonClass)}
+        onClick={() => {
+          splitTerminalPane(worktreePath, ptyId, "horizontal").catch(() => {});
+        }}
+        title="Split Horizontal"
+      >
+        <Columns2 className={cn("h-3 w-3")} />
+      </button>
+      {paneCount > 1 && (
+        <button
+          type="button"
+          className={cn(actionButtonClass)}
+          onClick={() => {
+            closeTerminalPane(worktreePath, ptyId).catch(() => {});
+          }}
+          title="Close Terminal"
+        >
+          <X className={cn("h-3 w-3")} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   const termRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<ReturnType<typeof acquireTerminalRuntime> | null>(null);
@@ -185,6 +262,10 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   });
   const isBroadcasting = Boolean(mirrorSession || pipSession);
   const snapshot = mirrorSession?.snapshot ?? pipSession?.snapshot ?? null;
+  const paneCount = useTerminalStore((s) => {
+    const node = s.sessions[worktreePath];
+    return node ? countLeaves(node) : 0;
+  });
   const markBellPty = useTerminalStore((s) => s.markBellPty);
   const [error, setError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -274,7 +355,7 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
 
   return (
     <div
-      className={cn("terminal-pane absolute inset-0 p-4", {
+      className={cn("terminal-pane group/terminal-pane absolute inset-0 p-4", {
         "terminal-pane-focused": isFocused,
       })}
       style={{ backgroundColor: theme?.background ?? "#000" }}
@@ -289,6 +370,16 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
           runtimeRef.current?.focus();
         }}
       />
+      {/* The search box and the broadcast overlay both claim the same top-right
+          corner, so the action cluster yields to them. */}
+      {!searchOpen && !isBroadcasting && (
+        <TerminalPaneActions
+          worktreePath={worktreePath}
+          paneId={paneId}
+          ptyId={ptyId}
+          paneCount={paneCount}
+        />
+      )}
       {searchOpen && (
         <div
           className={cn(

@@ -67,7 +67,7 @@ mirroring / pip ──[stop]─→ idle (restore original size)
 
 ### Mirror (Global Terminal)
 
-- **Trigger**: mirror button in terminal toolbar (copy icon)
+- **Trigger**: mirror button in the pane's top-right action cluster (shown on pane hover, alongside split/close)
 - **Position**: new tab in Global Terminal
 - **Title**: derived from the current project label and worktree name; if no project is resolved, the label falls back to `Terminal`
 - **Indicator**: red live-ping dot on top-left corner of the terminal icon

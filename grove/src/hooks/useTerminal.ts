@@ -2,7 +2,6 @@ import { useCallback } from "react";
 import { useTerminalStore } from "../store/terminal";
 import {
   createPty as ipcCreatePty,
-  closePty as ipcClosePty,
   loadTerminalSessionSnapshot,
   type CreatePtyRequest,
   type CreatePtyRestore,
@@ -15,8 +14,6 @@ import { buildTerminalPaneSeed } from "../lib/terminal-startup";
 export function useTerminal() {
   const createSession = useTerminalStore((s) => s.createSession);
   const restoreSession = useTerminalStore((s) => s.restoreSession);
-  const splitTerminal = useTerminalStore((s) => s.splitTerminal);
-  const closeTerminalStore = useTerminalStore((s) => s.closeTerminal);
   const getSavedLayout = useTerminalStore((s) => s.getSavedLayout);
 
   const createTerminal = useCallback(
@@ -88,58 +85,7 @@ export function useTerminal() {
     [createSession, getSavedLayout, restoreSession],
   );
 
-  const splitCurrent = useCallback(
-    async (direction: "horizontal" | "vertical") => {
-      const { activeWorktree, focusedPtyId } = useTerminalStore.getState();
-      if (!activeWorktree || !focusedPtyId) return;
-      const newPaneId = crypto.randomUUID();
-      const newPtyId = crypto.randomUUID();
-      const created = await runCommandSafely(
-        async () => {
-          await ipcCreatePty({
-            ptyId: newPtyId,
-            paneId: newPaneId,
-            worktreePath: activeWorktree,
-            cwd: activeWorktree,
-            cols: 80,
-            rows: 24,
-          });
-          return true;
-        },
-        {
-          errorToast: "Failed to split terminal",
-        },
-      );
-      if (created) {
-        splitTerminal(activeWorktree, focusedPtyId, direction, newPaneId, newPtyId);
-      }
-    },
-    [splitTerminal],
-  );
-
-  const closeCurrent = useCallback(async () => {
-    const { activeWorktree, focusedPtyId } = useTerminalStore.getState();
-    if (!activeWorktree || !focusedPtyId) return;
-    closeTerminalStore(activeWorktree, focusedPtyId);
-    await runCommandSafely(() => ipcClosePty(focusedPtyId), {
-      errorToast: "Failed to close terminal",
-    });
-  }, [closeTerminalStore]);
-
-  const refreshCurrent = useCallback(async () => {
-    const { activeWorktree, focusedPtyId } = useTerminalStore.getState();
-    if (!activeWorktree || !focusedPtyId) return;
-    await splitCurrent("horizontal");
-    closeTerminalStore(activeWorktree, focusedPtyId);
-    await runCommandSafely(() => ipcClosePty(focusedPtyId), {
-      errorToast: false,
-    });
-  }, [splitCurrent, closeTerminalStore]);
-
   return {
     createTerminal,
-    splitCurrent,
-    closeCurrent,
-    refreshCurrent,
   };
 }

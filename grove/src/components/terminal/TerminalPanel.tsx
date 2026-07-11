@@ -13,7 +13,6 @@ import {
 import { runCommand } from "../../lib/command";
 import { useTerminal } from "../../hooks/useTerminal";
 import SplitContainer from "./SplitContainer";
-import TerminalToolbar from "./TerminalToolbar";
 import { log, error as logError } from "../../lib/logger";
 import {
   buildTerminalPaneTopologySignature,
@@ -299,7 +298,6 @@ function TerminalPanel() {
 
   return (
     <div className={cn("flex flex-col h-full bg-background")}>
-      <TerminalToolbar />
       <div className={cn("flex-1 relative overflow-hidden")}>
         {!activeWorktree ? (
           <div className={cn("flex flex-col items-center justify-center h-full gap-3")}>
