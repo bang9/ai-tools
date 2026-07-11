@@ -16,7 +16,7 @@ function navEvent(
 
 describe("useBrowserStore", () => {
   beforeEach(() => {
-    useBrowserStore.setState({ navs: {}, recentUrls: [] });
+    useBrowserStore.setState({ navs: {}, history: [] });
   });
 
   describe("navigate", () => {
@@ -240,11 +240,28 @@ describe("useBrowserStore", () => {
     expect(useBrowserStore.getState().navs.t1).toBeUndefined();
   });
 
-  it("recordRecentUrl keeps an MRU list", () => {
+  it("records visited history when a navigation settles", () => {
     const store = useBrowserStore.getState();
-    store.recordRecentUrl("http://a/");
-    store.recordRecentUrl("http://b/");
-    store.recordRecentUrl("http://a/");
-    expect(useBrowserStore.getState().recentUrls).toEqual(["http://a/", "http://b/"]);
+    store.navigate("hist1", "http://a.example/");
+    store.applyNavEvent(
+      navEvent({ tabId: "hist1", url: "http://a.example/", loading: false, title: "A" }),
+    );
+    const [top] = useBrowserStore.getState().history;
+    expect(top).toMatchObject({ url: "http://a.example/", title: "A", visitCount: 1 });
+  });
+
+  it("does not record history while a navigation is still loading", () => {
+    const store = useBrowserStore.getState();
+    store.navigate("hist2", "http://b.example/");
+    store.applyNavEvent(navEvent({ tabId: "hist2", url: "http://b.example/", loading: true }));
+    expect(useBrowserStore.getState().history).toHaveLength(0);
+  });
+
+  it("recordFavicon attaches a favicon to an existing history entry", () => {
+    const store = useBrowserStore.getState();
+    store.navigate("hist3", "http://c.example/");
+    store.applyNavEvent(navEvent({ tabId: "hist3", url: "http://c.example/", loading: false }));
+    store.recordFavicon("http://c.example/", "http://c.example/favicon.ico");
+    expect(useBrowserStore.getState().history[0].faviconUrl).toBe("http://c.example/favicon.ico");
   });
 });

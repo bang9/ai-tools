@@ -1,6 +1,20 @@
 import { create } from "zustand";
 import type { BrowserNavEvent } from "../lib/platform";
-import { loadRecentUrls, pushRecentUrl, saveRecentUrls } from "../lib/browser-history";
+import {
+  loadHistory,
+  recordFavicon,
+  saveHistory,
+  upsertHistory,
+  normalizeHistoryUrl,
+  type BrowserHistoryEntry,
+} from "../lib/browser-history";
+
+/**
+ * Per-tab last-recorded normalized URL, used to decide whether a settled nav
+ * event is a NEW visit (bump visitCount) or a follow-up title/favicon update of
+ * a page already counted. Non-reactive: pure dedup memory, not UI state.
+ */
+const lastRecordedByTab = new Map<string, string>();
 
 export interface BrowserNavState {
   /** URL currently shown by the native webview. */
@@ -21,8 +35,11 @@ export interface BrowserNavState {
 
 interface BrowserState {
   navs: Record<string, BrowserNavState>;
-  /** MRU list of address-bar-committed URLs, persisted to localStorage. */
-  recentUrls: string[];
+  /**
+   * Frecency-ranked visited-page history (every committed navigation, not just
+   * address-bar entries), capped and persisted to localStorage.
+   */
+  history: BrowserHistoryEntry[];
   /** Committed navigation from the URL bar. */
   navigate: (tabId: string, url: string) => void;
   /** Apply a navigation event emitted by the native webview. */
@@ -36,12 +53,13 @@ interface BrowserState {
    */
   suspendTab: (tabId: string) => void;
   removeTab: (tabId: string) => void;
-  recordRecentUrl: (url: string) => void;
+  /** Attach a favicon to the history entry for `url` (no visit-count change). */
+  recordFavicon: (url: string, faviconUrl: string) => void;
 }
 
 export const useBrowserStore = create<BrowserState>((set) => ({
   navs: {},
-  recentUrls: loadRecentUrls(),
+  history: loadHistory(),
 
   navigate: (tabId, url) =>
     set((state) => {
@@ -93,7 +111,29 @@ export const useBrowserStore = create<BrowserState>((set) => ({
         index = history.length - 1;
       }
 
+      // Record the visit into the persistent frecency history once the page
+      // has settled (loading=false). A settled URL identical to the tab's last
+      // recorded one is a follow-up (title/favicon) update, not a new visit —
+      // refresh it without bumping the visit count.
+      let visited = state.history;
+      if (!ev.loading) {
+        const normalized = normalizeHistoryUrl(ev.url);
+        if (normalized && normalized !== "about:blank") {
+          const isNewVisit = lastRecordedByTab.get(ev.tabId) !== normalized;
+          lastRecordedByTab.set(ev.tabId, normalized);
+          visited = upsertHistory(
+            state.history,
+            ev.url,
+            ev.title ?? nav.title ?? "",
+            Date.now(),
+            isNewVisit,
+          );
+          if (visited !== state.history) saveHistory(visited);
+        }
+      }
+
       return {
+        history: visited,
         navs: {
           ...state.navs,
           [ev.tabId]: {
@@ -113,6 +153,8 @@ export const useBrowserStore = create<BrowserState>((set) => ({
     set((state) => {
       const nav = state.navs[tabId];
       if (!nav) return {};
+      // A fresh restored tab is a new visit again.
+      lastRecordedByTab.delete(tabId);
       return {
         navs: {
           ...state.navs,
@@ -130,17 +172,19 @@ export const useBrowserStore = create<BrowserState>((set) => ({
 
   removeTab: (tabId) =>
     set((state) => {
+      lastRecordedByTab.delete(tabId);
       if (!state.navs[tabId]) return {};
       const navs = { ...state.navs };
       delete navs[tabId];
       return { navs };
     }),
 
-  recordRecentUrl: (url) =>
+  recordFavicon: (url, faviconUrl) =>
     set((state) => {
-      const recentUrls = pushRecentUrl(state.recentUrls, url);
-      saveRecentUrls(recentUrls);
-      return { recentUrls };
+      const history = recordFavicon(state.history, url, faviconUrl);
+      if (history === state.history) return {};
+      saveHistory(history);
+      return { history };
     }),
 }));
 

@@ -7,7 +7,6 @@ import {
   Crosshair,
   ExternalLink,
   Globe,
-  History,
   Loader2,
   RotateCw,
   Search,
@@ -21,7 +20,11 @@ import { useTabStore } from "../../store/tab";
 import { useTerminalStore } from "../../store/terminal";
 import { useToast } from "../../store/toast";
 import { normalizeBrowserUrl, browserTabTitle } from "../../lib/browser-url";
-import { filterUrlSuggestions, findUrlCompletion } from "../../lib/browser-history";
+import {
+  buildSuggestions,
+  findInlineCompletion,
+  type BrowserHistoryEntry,
+} from "../../lib/browser-history";
 import {
   BRACKETED_PASTE_END,
   BRACKETED_PASTE_START,
@@ -92,11 +95,32 @@ function formatGrabMarkdown(p: GrabPayload): string {
   );
 }
 
+/** Browser-style display URL: drop the scheme and a trailing slash. */
+function prettyUrl(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+/** A page favicon, falling back to a globe glyph when absent or broken. */
+function Favicon({ src, className }: { src?: string; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return <Globe className={cn("size-3.5 shrink-0 text-muted-foreground", className)} />;
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      className={cn("size-3.5 shrink-0 rounded-sm object-contain", className)}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const nav = useBrowserStore(selectNav(tabId));
   const navigate = useBrowserStore((s) => s.navigate);
-  const recentUrls = useBrowserStore((s) => s.recentUrls);
-  const recordRecentUrl = useBrowserStore((s) => s.recordRecentUrl);
+  const history = useBrowserStore((s) => s.history);
   const updateTabTitle = useTabStore((s) => s.updateTabTitle);
   const overlayOpen = useOverlayPresence();
   const { toast } = useToast();
@@ -153,9 +177,19 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     el.setSelectionRange(pending.start, pending.end);
   }, [applyTick]);
 
-  // Dropdown filtering is always driven by the TYPED text, never the completed
-  // text — an inline completion must not narrow the suggestion list.
-  const suggestions = useMemo(() => filterUrlSuggestions(recentUrls, typed), [recentUrls, typed]);
+  // Dropdown suggestions are frecency-ranked and always driven by the TYPED
+  // text, never the completed text — an inline completion must not narrow the
+  // list. Entries carry title + favicon for richer rows.
+  const suggestions = useMemo<BrowserHistoryEntry[]>(
+    () => buildSuggestions(history, typed, Date.now()),
+    [history, typed],
+  );
+
+  // Most-frecent sites for the empty-state quick links.
+  const topSites = useMemo(
+    () => buildSuggestions(history, "", Date.now(), 3).map((entry) => entry.url),
+    [history],
+  );
 
   const url = nav?.url ?? null;
   const hasNav = !!nav;
@@ -192,13 +226,14 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       }
       navigate(tabId, normalized);
       updateTabTitle(tabId, browserTabTitle(normalized));
-      recordRecentUrl(normalized);
+      // History is recorded by applyNavEvent when the page settles, so both
+      // address-bar and link-click navigations are captured in one place.
       setSuggestOpen(false);
       setHighlightIndex(-1);
       setCompletion(null);
       inputRef.current?.blur();
     },
-    [navigate, recordRecentUrl, tabId, updateTabTitle],
+    [navigate, tabId, updateTabTitle],
   );
 
   // Cycle the dropdown highlight through [-1, 0 … n-1]. Index -1 means "no
@@ -224,7 +259,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
 
       const highlighted =
         suggestOpen && highlightIndex >= 0 && highlightIndex < suggestions.length
-          ? suggestions[highlightIndex]
+          ? suggestions[highlightIndex].url
           : null;
       const showingCompletion = completion !== null && input === completion.display;
 
@@ -661,7 +696,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
                   inputType.startsWith("insert") &&
                   inputType !== "insertCompositionText";
                 if (isInsert) {
-                  const match = findUrlCompletion(recentUrls, value);
+                  const match = findInlineCompletion(history, value, Date.now());
                   if (match) {
                     const display = value + match.completion;
                     setCompletion({ url: match.url, display });
@@ -712,13 +747,13 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
                 "absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-md",
               )}
             >
-              {suggestions.map((suggestion, index) => (
+              {suggestions.map((entry, index) => (
                 <button
-                  key={suggestion}
+                  key={entry.normalizedUrl}
                   type="button"
                   // Keep input focus so onBlur doesn't swallow the click
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => commit(suggestion)}
+                  onClick={() => commit(entry.url)}
                   onMouseEnter={() => setHighlightIndex(index)}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs transition-colors",
@@ -728,8 +763,19 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
                     },
                   )}
                 >
-                  <History className={cn("size-3 shrink-0 text-muted-foreground")} />
-                  <span className={cn("truncate")}>{suggestion}</span>
+                  <Favicon src={entry.faviconUrl} />
+                  <span className={cn("min-w-0 flex-1 truncate")}>
+                    {entry.title ? (
+                      <>
+                        <span>{entry.title}</span>
+                        <span className={cn("ml-2 text-muted-foreground/70")}>
+                          {prettyUrl(entry.url)}
+                        </span>
+                      </>
+                    ) : (
+                      prettyUrl(entry.url)
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -852,13 +898,13 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
             <div className={cn("text-center")}>
               <p className={cn("text-sm font-medium text-foreground")}>Browser</p>
               <p className={cn("mt-1 text-xs")}>
-                {recentUrls.length > 0
+                {topSites.length > 0
                   ? "Enter a URL above, or pick up where you left off"
                   : "Enter a URL above, or jump to a local dev server"}
               </p>
             </div>
             <div className={cn("flex max-w-md flex-wrap items-center justify-center gap-1.5")}>
-              {(recentUrls.length > 0 ? recentUrls.slice(0, 3) : QUICK_URLS).map((quickUrl) => (
+              {(topSites.length > 0 ? topSites : QUICK_URLS).map((quickUrl) => (
                 <button
                   key={quickUrl}
                   type="button"
