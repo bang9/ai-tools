@@ -46,11 +46,13 @@ import {
   browserFind,
   browserSetGrabMode,
   browserStopFind,
+  onBrowserFavicon,
   onBrowserFind,
   onBrowserFindOpen,
   onBrowserGrab,
   openExternal,
   writePty,
+  type BrowserFaviconEvent,
   type BrowserFindEvent,
   type BrowserGrabEvent,
 } from "../../lib/platform";
@@ -155,7 +157,9 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const nav = useBrowserStore(selectNav(tabId));
   const navigate = useBrowserStore((s) => s.navigate);
   const history = useBrowserStore((s) => s.history);
+  const recordFaviconInHistory = useBrowserStore((s) => s.recordFavicon);
   const updateTabTitle = useTabStore((s) => s.updateTabTitle);
+  const updateTabFavicon = useTabStore((s) => s.updateTabFavicon);
   const overlayOpen = useOverlayPresence();
   const { toast } = useToast();
   const [grabArmed, setGrabArmed] = useState(false);
@@ -590,6 +594,25 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     setFindOpen(false);
     setFindResult(null);
   }, [url]);
+
+  // Favicon delivered by the guest: show it on the tab chip and remember it in
+  // history so suggestion rows for this site carry the icon too.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onBrowserFavicon((event: BrowserFaviconEvent) => {
+      if (event.tabId !== tabId) return;
+      updateTabFavicon(tabId, event.faviconUrl);
+      if (event.pageUrl) recordFaviconInHistory(event.pageUrl, event.faviconUrl);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [recordFaviconInHistory, tabId, updateTabFavicon]);
 
   // Match ordinal shown in the find bar: "3/12", "No results", or blank.
   let findLabel = "";

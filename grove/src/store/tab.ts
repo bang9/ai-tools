@@ -18,6 +18,7 @@ interface TabState {
   setActiveTab: (tabId: string) => void;
   moveTab: (tabId: string, targetIndex: number) => void;
   updateTabTitle: (tabId: string, title: string) => void;
+  updateTabFavicon: (tabId: string, faviconUrl: string) => void;
   syncTerminalTabs: (worktreePath: string, terminalTabIds: string[] | null) => void;
   removeSession: (worktreePath: string) => void;
 }
@@ -206,6 +207,17 @@ export const useTabStore = create<TabState>((set, get) => ({
       return updateSession(state, () => ({
         ...session,
         tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
+      }));
+    }),
+
+  updateTabFavicon: (tabId, faviconUrl) =>
+    set((state) => {
+      const session = getSession(state);
+      const tab = session.tabs.find((t) => t.id === tabId);
+      if (!tab || tab.faviconUrl === faviconUrl) return {};
+      return updateSession(state, () => ({
+        ...session,
+        tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, faviconUrl } : t)),
       }));
     }),
 

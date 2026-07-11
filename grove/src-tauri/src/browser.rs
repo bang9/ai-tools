@@ -93,6 +93,17 @@ struct BrowserFindOpenPayload {
     tab_id: String,
 }
 
+/// Payload for the `browser:favicon` event emitted when the guest resolves the
+/// page favicon. `page_url` associates it with the right history entry even if
+/// a later navigation is already in flight.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserFaviconPayload {
+    tab_id: String,
+    page_url: String,
+    favicon_url: String,
+}
+
 /// Schemes a page (or its subframes) may navigate to. `data`/`blob` are common
 /// in embedded content; `file` backs local HTML previews opened from the file
 /// viewer; everything else — notably custom app schemes like `tauri:` — is
@@ -120,6 +131,12 @@ const GUEST_GRAB_SCHEME: &str = "grovegrab";
 /// the other guest schemes, the navigation is always denied — it is the guest →
 /// main channel carrying the result of `window.__groveFind`.
 const GUEST_FIND_SCHEME: &str = "grovefind";
+
+/// Custom scheme the injected favicon detector navigates to when it resolves the
+/// page's favicon (WKWebView has no `page-favicon-updated` event). Like the
+/// other guest schemes the navigation is always denied — it carries the favicon
+/// URL and the page URL back to the app.
+const GUEST_FAVICON_SCHEME: &str = "grovefavicon";
 
 /// Injected into every browser guest before page scripts run. Suppresses
 /// WebKit's native right-click menu and renders Grove's own menu inside a
@@ -468,6 +485,68 @@ const GUEST_FIND_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Injected into every browser guest before page scripts run. WKWebView has no
+/// `page-favicon-updated` event, so the favicon is resolved in the guest:
+/// prefer the largest declared `<link rel~="icon">`, else fall back to the
+/// origin `/favicon.ico`. The result (http(s)/data only, so the app chrome can
+/// render it in an <img>) is posted back over `grovefavicon://`. A Mutation
+/// observer on <head> re-reports when SPAs swap their icon after load. One
+/// self-contained IIFE so re-injection on every navigation is idempotent.
+const GUEST_FAVICON_SCRIPT: &str = r#"
+(function () {
+  if (window.__groveFavicon) return;
+  window.__groveFavicon = true;
+  var SCHEME = 'grovefavicon://f?';
+  var last = '';
+  function pick() {
+    var links = document.querySelectorAll(
+      'link[rel~="icon"],link[rel="shortcut icon"],link[rel="apple-touch-icon"],link[rel="apple-touch-icon-precomposed"]'
+    );
+    var best = '';
+    var bestSize = -1;
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].href;
+      if (!href) continue;
+      var sizes = links[i].getAttribute('sizes') || '';
+      var m = sizes.match(/(\d+)x\d+/);
+      var size = m ? parseInt(m[1], 10) : 16;
+      if (size > bestSize) { bestSize = size; best = href; }
+    }
+    if (!best) {
+      try { best = location.origin + '/favicon.ico'; } catch (e) {}
+    }
+    return best;
+  }
+  function report() {
+    var href = pick();
+    if (!href || href === last) return;
+    if (!/^(https?:|data:image\/)/i.test(href)) return;
+    last = href;
+    try {
+      location.href = SCHEME + 'favicon=' + encodeURIComponent(href) +
+        '&page=' + encodeURIComponent(location.href);
+    } catch (e) {}
+  }
+  function schedule() { setTimeout(report, 0); }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', schedule);
+  } else {
+    schedule();
+  }
+  window.addEventListener('load', schedule);
+  try {
+    var mo = new MutationObserver(schedule);
+    var head = document.head || document.documentElement;
+    if (head) {
+      mo.observe(head, {
+        childList: true, subtree: true, attributes: true,
+        attributeFilter: ['href', 'rel', 'sizes']
+      });
+    }
+  } catch (e) {}
+})();
+"#;
+
 /// Handle a `grovemenu://` callback from the injected guest menu. Runs on the
 /// Tauri main thread (the wry navigation handler fires there). `raw_url` is the
 /// full denied navigation URL.
@@ -584,6 +663,10 @@ pub fn browser_create(
         // Driven by browser_find/browser_stop_find; reports match counts back
         // over the grovefind:// channel below.
         .initialization_script(GUEST_FIND_SCRIPT)
+        // Injected before page scripts: favicon resolver (see
+        // GUEST_FAVICON_SCRIPT). Reports the page favicon over the
+        // grovefavicon:// channel below.
+        .initialization_script(GUEST_FAVICON_SCRIPT)
         // NOTE: on_navigation fires for subframe (iframe) navigations too, so
         // it must only filter — never emit nav events, or embedded frames
         // would overwrite the address bar. URL tracking happens in
@@ -640,6 +723,30 @@ pub fn browser_create(
                             tab_id: nav_tab.clone(),
                             active,
                             total,
+                        },
+                    );
+                }
+                return false;
+            }
+            // Favicon resolver reporting the page icon: forward it and deny the
+            // navigation (it is a message, not a load).
+            if url.scheme() == GUEST_FAVICON_SCHEME {
+                let mut favicon_url = String::new();
+                let mut page_url = String::new();
+                for (key, value) in url.query_pairs() {
+                    match key.as_ref() {
+                        "favicon" => favicon_url = value.into_owned(),
+                        "page" => page_url = value.into_owned(),
+                        _ => {}
+                    }
+                }
+                if !favicon_url.is_empty() {
+                    let _ = nav_app.emit(
+                        "browser:favicon",
+                        BrowserFaviconPayload {
+                            tab_id: nav_tab.clone(),
+                            page_url,
+                            favicon_url,
                         },
                     );
                 }

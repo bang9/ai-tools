@@ -44,6 +44,13 @@ export interface BrowserFindEvent {
   total: number;
 }
 
+/** The resolved favicon for a browser tab's current page. */
+export interface BrowserFaviconEvent {
+  tabId: string;
+  pageUrl: string;
+  faviconUrl: string;
+}
+
 /** A browser Grove can import cookies from (from grove-core detection). */
 export interface DetectedBrowser {
   family: string;

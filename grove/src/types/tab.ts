@@ -5,4 +5,6 @@ export interface AppTab {
   type: AppTabType;
   title: string;
   closable: boolean;
+  /** Favicon URL for browser tabs, shown on the tab chip. */
+  faviconUrl?: string;
 }

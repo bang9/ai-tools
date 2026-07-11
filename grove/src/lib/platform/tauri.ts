@@ -25,6 +25,7 @@ import type {
 } from "../../types";
 import type {
   BrowserBounds,
+  BrowserFaviconEvent,
   BrowserFindEvent,
   BrowserGrabEvent,
   BrowserNavEvent,
@@ -448,6 +449,13 @@ export function onBrowserFindOpen(
   handler: (event: { tabId: string }) => void,
 ): Promise<UnlistenFn> {
   return platform.listen<{ tabId: string }>("browser:find-open", handler);
+}
+
+/** Fired when the guest resolves the page favicon. */
+export function onBrowserFavicon(
+  handler: (event: BrowserFaviconEvent) => void,
+): Promise<UnlistenFn> {
+  return platform.listen<BrowserFaviconEvent>("browser:favicon", handler);
 }
 
 // === ENV SYNC COMMANDS ===
