@@ -48,6 +48,15 @@ src/lib/platform/
 - Both files export the same `platform` object + matching command wrappers
 - Platform-specific code (drag region props, error sanitization) lives in each file, not shared
 
+### Dev server is target-locked
+
+The Vite dev server bakes `GROVE_TARGET` in at startup, so a running server on port 1420 serves exactly one platform's renderer. Never point a Tauri window at a Vite started with `GROVE_TARGET=electron` (or vice versa) — the app loads but the platform bridge is missing (e.g. white screen with "electron bridge is not available on window.groveElectron"). If port 1420 is taken by the other target's server (parallel sessions), run a second Vite on another port for your target and point the shell at it, e.g.:
+
+```bash
+GROVE_TARGET=tauri pnpm exec vite --port 1421 --strictPort
+pnpm tauri dev --config '{"build":{"devUrl":"http://localhost:1421","beforeDevCommand":""}}'
+```
+
 ## Structure
 
 ```
