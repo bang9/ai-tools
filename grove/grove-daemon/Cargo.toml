@@ -21,6 +21,7 @@ serde_json = "1"
 base64 = "0.22"
 portable-pty = "0.8"
 vt100 = "0.16"
+libc = "0.2"
 
 [dev-dependencies]
 grove-core = { path = "../grove-core" }

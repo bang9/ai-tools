@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use grove_core::daemon::protocol::{
-    daemon_pid_path, daemon_token_path, serialize_pid_file, write_secret_file, DaemonPidFile,
-    GROVE_DAEMON_PROTOCOL_VERSION,
+    daemon_pid_path, daemon_token_path, history_root, serialize_pid_file, write_secret_file,
+    DaemonPidFile, GROVE_DAEMON_PROTOCOL_VERSION,
 };
 use grove_daemon::server::Daemon;
 use tokio::net::UnixListener;
@@ -108,13 +108,18 @@ async fn main() {
         GROVE_DAEMON_PROTOCOL_VERSION
     );
 
-    let daemon = Daemon::new(config.token.clone());
+    // The version-namespaced history root under the daemon's base dir (design
+    // D1/§5). Cold restore and the checkpointer both use this single tree; it is
+    // stable across daemon restarts (same --base-dir), so a fresh daemon finds a
+    // predecessor's unclean checkpoints.
+    let hist_root = history_root(&config.base_dir);
+    let daemon = Daemon::new(config.token.clone(), hist_root);
     let serve = {
         let daemon = Arc::clone(&daemon);
         tokio::spawn(async move { daemon.serve(listener).await })
     };
 
-    // SIGTERM/SIGINT → kill sessions, trigger the bounded shutdown (design L8).
+    // SIGTERM/SIGINT handler (design L8, fix F3).
     {
         let daemon = Arc::clone(&daemon);
         tokio::spawn(async move {
@@ -125,13 +130,40 @@ async fn main() {
                 _ = sigint.recv() => {}
             }
             eprintln!("grove-daemon: shutdown signal received");
-            daemon.kill_all_sessions();
+            // Fix F3: a signal (launchd SIGTERMs the daemon on a clean macOS reboot)
+            // must flush a final checkpoint for every session but leave history
+            // UNCLEAN — stamping `ended_at` here would make a rebooted session
+            // cold-restore INELIGIBLE, regressing Tier-B vs tmux. `ended_at` is
+            // stamped ONLY on child self-exit, an explicit close/kill RPC, and the
+            // explicit shutdown ("Restart daemon") RPC. We also do NOT kill children
+            // here: a kill would drive each reader to EOF → `close_history` →
+            // stamp `ended_at` (the child-self-exit path), re-suppressing cold
+            // restore. On process exit the PTY masters close and the shells get
+            // SIGHUP; on a real reboot the OS reaps everything.
+            //
+            // The graceful flush is bounded by the shutdown budget (design L8) so a
+            // wedged final write can't hang the process indefinitely.
+            if tokio::time::timeout(SHUTDOWN_BUDGET, daemon.flush_history_unclean())
+                .await
+                .is_err()
+            {
+                eprintln!(
+                    "grove-daemon: final flush exceeded {SHUTDOWN_BUDGET:?}; forcing exit"
+                );
+            }
             daemon.trigger_shutdown();
         });
     }
 
-    // Serve until shutdown; never hang past the bounded budget.
-    let _ = tokio::time::timeout(SHUTDOWN_BUDGET, serve).await;
+    // Serve until a shutdown is triggered (the signal path above or the shutdown
+    // RPC), then fall through to socket/token/pid cleanup.
+    //
+    // Fix F1: await the serve loop UNCONDITIONALLY. The old
+    // `timeout(SHUTDOWN_BUDGET, serve)` wrapped the ENTIRE serve future, so every
+    // daemon died ~5s after launch (unlinking its socket) regardless of activity —
+    // a catastrophic self-termination. The 5s budget now bounds ONLY the
+    // post-signal teardown flush (above), never steady-state serving.
+    let _ = serve.await;
 
     let _ = std::fs::remove_file(&config.socket);
     let _ = std::fs::remove_file(daemon_token_path(&config.base_dir));

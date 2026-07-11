@@ -26,7 +26,9 @@ use grove_core::pty::{append_scrollback_capped, OutputCoalescer, PtyWriter};
 use grove_core::PtyEventSink;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
+use crate::checkpointer::{CheckpointSource, PendingTake};
 use crate::emulator::{DaemonEmulator, DaemonSnapshot, SnapshotOptions, DEFAULT_SCROLLBACK_LINES};
+use crate::history::HistoryRecord;
 use crate::lock;
 use crate::server::{SessionReaper, StreamHub};
 
@@ -37,10 +39,70 @@ const WRITE_DEADLINE: Duration = Duration::from_secs(30);
 const RING_CAP_BYTES: usize = 256 * 1024;
 /// Force-dispose timer after a graceful kill (orca session.ts KILL_TIMEOUT_MS).
 const KILL_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Pending-output overflow cap (design S4): past this the accumulated records are
+/// dropped and `overflowed` is flagged, forcing the checkpointer to take a full
+/// snapshot instead of an incremental append.
+const PENDING_OUTPUT_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// Coalesce trailing `Output` records under this segment cap (design S4) so a
+/// long burst becomes a few large records instead of thousands of tiny ones.
+const PENDING_SEGMENT_CAP: usize = 64 * 1024;
 
 struct Ring {
     buf: VecDeque<u8>,
     truncated: bool,
+}
+
+/// Accumulated output records drained by the checkpointer's incremental append
+/// (design S2/S4). Populated on the reader tee + on resize ONLY while history is
+/// enabled — in stage 1 the checkpointer is not wired to sessions, so this stays
+/// inert (zero extra work/memory) until stage 2 calls [`Session::enable_history`].
+#[derive(Default)]
+struct PendingOutput {
+    records: Vec<HistoryRecord>,
+    bytes: usize,
+    overflowed: bool,
+}
+
+impl PendingOutput {
+    /// Append raw output, coalescing into a trailing `Output` record under the
+    /// segment cap. On exceeding the 2 MB total cap, drop everything and flag
+    /// overflow (design S4) — the next take forces a full snapshot.
+    fn push_output(&mut self, data: &[u8]) {
+        if self.overflowed {
+            return;
+        }
+        self.bytes += data.len();
+        if self.bytes > PENDING_OUTPUT_MAX_BYTES {
+            self.records.clear();
+            self.bytes = 0;
+            self.overflowed = true;
+            return;
+        }
+        if let Some(HistoryRecord::Output(last)) = self.records.last_mut() {
+            if last.len() < PENDING_SEGMENT_CAP {
+                last.extend_from_slice(data);
+                return;
+            }
+        }
+        self.records.push(HistoryRecord::Output(data.to_vec()));
+    }
+
+    fn push_record(&mut self, record: HistoryRecord) {
+        if self.overflowed {
+            return;
+        }
+        // Non-output records count a small fixed weight toward the cap.
+        self.bytes += 8;
+        self.records.push(record);
+    }
+
+    fn take(&mut self) -> PendingTake {
+        let records = std::mem::take(&mut self.records);
+        let overflowed = self.overflowed;
+        self.bytes = 0;
+        self.overflowed = false;
+        PendingTake { records, overflowed }
+    }
 }
 
 /// The stream sink: each coalesced output batch becomes one `Data` frame pushed
@@ -106,6 +168,13 @@ pub struct Session {
     /// Guards against emitting two `Exit` frames (reader EOF racing a kill).
     exit_emitted: Arc<AtomicBool>,
     applied: Mutex<(u16, u16)>,
+    /// Pending output drained by the checkpointer's incremental append (design
+    /// S2/S4). Only populated while `history_enabled` is set (stage 2).
+    pending: Mutex<PendingOutput>,
+    /// Gates pending-output accumulation. Default false so the tee stays exactly
+    /// as before until stage 2 wires the checkpointer and calls `enable_history`
+    /// — no memory or work is spent on history in stage 1.
+    history_enabled: AtomicBool,
     /// Removes this session from the daemon's map on reader exit (fix #3), so a
     /// dead session never leaks its master fd or lingers as a zombie map entry.
     reaper: SessionReaper,
@@ -200,6 +269,8 @@ impl Session {
             alive: Arc::new(AtomicBool::new(true)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
             applied: Mutex::new((cols, rows)),
+            pending: Mutex::new(PendingOutput::default()),
+            history_enabled: AtomicBool::new(false),
             reaper,
         });
 
@@ -234,10 +305,34 @@ impl Session {
     fn tee(&self, chunk: &[u8]) {
         self.append_ring(chunk);
         self.feed_emulator(chunk);
+        // History accumulation (design S2/S4) — inert until stage 2 enables it.
+        if self.history_enabled.load(Ordering::Relaxed) {
+            lock(&self.pending).push_output(chunk);
+            // Fix F2: mark the session dirty so the 5s tick actually persists this
+            // output. NOTHING else calls `mark_dirty` on output — without this the
+            // checkpointer only fires at open/register/reopen, so after the first
+            // anchor the incremental log + periodic checkpoint never run again and
+            // crash loss is UNBOUNDED (not the intended ≤5s). Gated on
+            // `history_enabled` so the stage-1 inert property survives. The pending
+            // lock is released before this call (no cross-lock hold).
+            self.reaper.mark_dirty(&self.id);
+        }
         // Advance AFTER feed_emulator so the counter never leads the emulator
         // content a concurrent snapshot would serialize.
         self.ingest_seq
             .fetch_add(chunk.len() as u64, Ordering::SeqCst);
+    }
+
+    /// Enable pending-output accumulation for the checkpointer (design S2/S4).
+    /// Called by stage 2 when the session is registered with the checkpointer;
+    /// until then the tee does no history work.
+    pub fn enable_history(&self) {
+        self.history_enabled.store(true, Ordering::SeqCst);
+    }
+
+    /// Drain the pending output for one incremental append (design S2/S4).
+    pub fn take_pending_output(&self) -> PendingTake {
+        lock(&self.pending).take()
     }
 
     /// Feed the emulator under per-write panic isolation (design P5 item 2 /
@@ -368,6 +463,16 @@ impl Session {
             emu.resize(cols, rows);
         }
         *lock(&self.applied) = (cols, rows);
+        // Record the resize for the incremental log (design D4) — inert until
+        // stage 2 enables history. Ordered relative to output records so cold
+        // restore re-sizes the scratch vt100 at the right point.
+        if self.history_enabled.load(Ordering::Relaxed) {
+            lock(&self.pending).push_record(HistoryRecord::Resize { cols, rows });
+            // Fix F2: a resize is persistable state too — mark dirty so the tick
+            // appends the Resize record (cold restore re-sizes the scratch vt100 at
+            // the right point). Same wiring as the output tee.
+            self.reaper.mark_dirty(&self.id);
+        }
         Ok(())
     }
 
@@ -409,11 +514,15 @@ impl Session {
         });
     }
 
-    fn emit_exit(&self, hub: &StreamHub) {
+    /// Emit the ordered `Exit` frame and return the child's exit code (for the
+    /// history `ended_at` stamp, design D2). Returns `None` when a prior kill/EOF
+    /// already emitted the Exit (only the first caller wins) or the code is
+    /// unavailable.
+    fn emit_exit(&self, hub: &StreamHub) -> Option<i32> {
         // Why: reader EOF and a kill can both reach here; only the first wins so
         // the stream never carries a duplicate Exit.
         if self.exit_emitted.swap(true, Ordering::SeqCst) {
-            return;
+            return None;
         }
         let status = {
             let mut child = lock(&self.child);
@@ -428,11 +537,13 @@ impl Session {
                 },
             }
         };
+        let code = status.code;
         let seq = self.seq.load(Ordering::SeqCst);
         let frame = StreamFrame::exit(self.id.clone(), seq, &status);
         if let Ok(bytes) = frame.to_bytes() {
             hub.emit(bytes);
         }
+        code
     }
 
     /// A trivial spawn+exit probe (design L3 `checkPtySpawnHealth`): confirms the
@@ -459,6 +570,41 @@ impl Session {
         let ok = matches!(child.wait(), Ok(status) if status.success());
         drop(pair.master);
         ok
+    }
+}
+
+/// The checkpointer reads a live session through this trait (design D8/S2/S4).
+/// All reads are the session's own cheap, isolated accessors; the disk write
+/// happens off-thread in the checkpointer. `Arc<Session>` unsizes to
+/// `Arc<dyn CheckpointSource>` for the registry. Implemented on `Session` (not
+/// `Arc<Session>`) so the inherent `Session::snapshot(opts)` still wins method
+/// resolution — the trait's zero-arg `snapshot()` would otherwise shadow it. All
+/// bodies name the inherent methods explicitly to avoid any self-recursion.
+/// Stage 2 registers the session and calls `enable_history` to start the tee.
+impl CheckpointSource for Session {
+    fn session_id(&self) -> String {
+        self.id.clone()
+    }
+    fn is_alive(&self) -> bool {
+        Session::is_alive(self)
+    }
+    fn applied_size(&self) -> (u16, u16) {
+        Session::applied_size(self)
+    }
+    fn ring_tail(&self) -> Vec<u8> {
+        Session::ring_tail(self)
+    }
+    fn snapshot(&self) -> Option<DaemonSnapshot> {
+        Session::snapshot(self, SnapshotOptions::default())
+    }
+    fn take_pending(&self) -> PendingTake {
+        Session::take_pending_output(self)
+    }
+    fn output_sequence(&self) -> u64 {
+        Session::output_sequence(self)
+    }
+    fn cwd(&self) -> Option<String> {
+        Session::cwd(self)
     }
 }
 
@@ -500,13 +646,17 @@ fn run_reader(
     // Ordering barrier (design P13): join the sole flusher so the final Data
     // batch has reached the hub BEFORE the Exit frame is enqueued.
     coalescer.close_and_join();
-    session.emit_exit(&hub);
+    let exit_code = session.emit_exit(&hub);
     // Fix #3: the session is dead — drop the master fd so it can't leak, then
     // remove ourselves from the daemon's map. Ordering: this runs AFTER the Exit
     // barrier above, and the reaper only removes the entry if it still points at
     // THIS Session (Arc identity), so a same-id session created in the race
     // window is never clobbered.
     let _ = lock(&session.master).take();
+    // Child self-exit is a clean teardown (design D2 teardown table): stamp
+    // ended_at so a cleanly-ended session is cold-restore INELIGIBLE (it exited by
+    // its own process, not a crash), then reap from the daemon's session map.
+    session.reaper.close_history(&session.id, exit_code);
     session.reaper.reap(&session.id, &session);
 }
 

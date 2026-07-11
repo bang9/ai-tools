@@ -42,7 +42,10 @@ async fn setup(token: &str) -> (std::sync::Arc<Daemon>, PathBuf) {
     let sock = unique_socket_path();
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).expect("bind temp socket");
-    let daemon = Daemon::new(token.to_string());
+    // A unique temp history root per daemon (design §5); derived from the socket
+    // path so parallel tests never share a tree.
+    let hist_root = sock.with_extension("hist");
+    let daemon = Daemon::new(token.to_string(), hist_root);
     let serving = std::sync::Arc::clone(&daemon);
     tokio::spawn(async move { serving.serve(listener).await });
     (daemon, sock)

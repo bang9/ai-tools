@@ -9,6 +9,7 @@
 //! wire. Client disconnect is disconnect-not-kill: sessions keep running (L7).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -25,7 +26,9 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Notify as TokioNotify};
 
+use crate::checkpointer::{CheckpointSource, Checkpointer};
 use crate::emulator::SnapshotOptions;
+use crate::history::{session_dir, ColdRestore, HistoryReader, OwnerLock, SessionMeta};
 use crate::lock;
 use crate::session::Session;
 
@@ -97,6 +100,9 @@ type SessionMap = Mutex<HashMap<String, SessionSlot>>;
 #[derive(Clone)]
 pub struct SessionReaper {
     sessions: Weak<SessionMap>,
+    /// Weak so the reader thread never keeps the checkpointer alive past shutdown;
+    /// on a clean child exit it stamps the session's `ended_at` (design D2).
+    checkpointer: Weak<Checkpointer>,
 }
 
 impl SessionReaper {
@@ -106,6 +112,29 @@ impl SessionReaper {
     pub fn dangling() -> Self {
         Self {
             sessions: Weak::new(),
+            checkpointer: Weak::new(),
+        }
+    }
+
+    /// A reaper wired to a real checkpointer but no session map — for the fix-F2
+    /// wiring test, which spawns a real `Session` and asserts its output marks the
+    /// checkpointer dirty. Reaping is a no-op (the map is absent).
+    #[cfg(test)]
+    pub fn with_checkpointer(checkpointer: &Arc<Checkpointer>) -> Self {
+        Self {
+            sessions: Weak::new(),
+            checkpointer: Arc::downgrade(checkpointer),
+        }
+    }
+
+    /// Bump the session's dirty flag on the checkpointer (design D8, fix F2).
+    /// Called from the `Session` reader tee + resize so output/resize arriving
+    /// AFTER the first anchor actually gets persisted by the periodic tick — the
+    /// wiring the checkpointer relied on but nothing provided. A no-op when the
+    /// checkpointer is gone (shutdown) or the session was never registered.
+    pub fn mark_dirty(&self, id: &str) {
+        if let Some(ckpt) = self.checkpointer.upgrade() {
+            ckpt.mark_dirty(id);
         }
     }
 
@@ -123,6 +152,16 @@ impl SessionReaper {
             }
         }
     }
+
+    /// Stamp `ended_at` + drop the session's history writer (releasing its flock)
+    /// on a clean child exit (design D2 teardown table). A no-op when the
+    /// checkpointer is gone or the session had no history (never registered /
+    /// owned elsewhere).
+    pub fn close_history(&self, id: &str, exit_code: Option<i32>) {
+        if let Some(ckpt) = self.checkpointer.upgrade() {
+            ckpt.close_session(id, exit_code);
+        }
+    }
 }
 
 pub struct Daemon {
@@ -136,10 +175,19 @@ pub struct Daemon {
     /// integration test that asserts concurrent `ensure_connected` callers
     /// coalesce into exactly ONE control connection (design P7).
     control_hellos: AtomicU64,
+    /// Disk-backed history + cold restore (design §5). The tick loop is started in
+    /// `serve`; attach/close paths drive it (open/register/reopen/close).
+    checkpointer: Arc<Checkpointer>,
+    /// The protocol-version-namespaced history root — where the cold-restore reader
+    /// probes for an unclean checkpoint under the createOrAttach decision (D12).
+    history_root: PathBuf,
+    /// Stops the checkpointer tick loop on shutdown (separate from `shutdown`,
+    /// which the accept loop waits on).
+    checkpointer_shutdown: Arc<TokioNotify>,
 }
 
 impl Daemon {
-    pub fn new(token: String) -> Arc<Self> {
+    pub fn new(token: String, history_root: PathBuf) -> Arc<Self> {
         Arc::new(Self {
             version: GROVE_DAEMON_PROTOCOL_VERSION,
             token,
@@ -148,18 +196,39 @@ impl Daemon {
             shutdown: TokioNotify::new(),
             shutdown_flag: AtomicBool::new(false),
             control_hellos: AtomicU64::new(0),
+            checkpointer: Checkpointer::new(history_root.clone()),
+            history_root,
+            checkpointer_shutdown: Arc::new(TokioNotify::new()),
         })
     }
 
     fn reaper(&self) -> SessionReaper {
         SessionReaper {
             sessions: Arc::downgrade(&self.sessions),
+            checkpointer: Arc::downgrade(&self.checkpointer),
         }
     }
 
     /// Accept connections until a shutdown is triggered (RPC or signal).
     pub async fn serve(self: Arc<Self>, listener: UnixListener) {
+        // Start the checkpoint tick loop (design D8). It sleeps until a session is
+        // marked dirty, so an idle daemon does no periodic work; `trigger_shutdown`
+        // stops it (and a runtime drop cleans it up regardless).
+        {
+            let ckpt = Arc::clone(&self.checkpointer);
+            let stop = Arc::clone(&self.checkpointer_shutdown);
+            tokio::spawn(ckpt.run(stop));
+        }
         loop {
+            // Fix F1 (hardening): `main` now awaits this loop UNCONDITIONALLY (the
+            // old `timeout(SHUTDOWN_BUDGET, serve)` masked a missed shutdown by
+            // aborting at 5s). `trigger_shutdown` sets this flag BEFORE
+            // `notify_waiters`, so checking it at the top of every iteration closes
+            // the notify race (a wake delivered while we were in the accept branch
+            // is still observed here) — the loop can never spin past a shutdown.
+            if self.is_shutting_down() {
+                break;
+            }
             tokio::select! {
                 _ = self.shutdown.notified() => break,
                 accepted = listener.accept() => match accepted {
@@ -176,6 +245,26 @@ impl Daemon {
     pub fn trigger_shutdown(&self) {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         self.shutdown.notify_waiters();
+        self.checkpointer_shutdown.notify_waiters();
+    }
+
+    /// Graceful teardown flush (design D2 teardown table): a final checkpoint for
+    /// EVERY session AND stamp `ended_at` — cold-restore INELIGIBLE. Used by the
+    /// SIGTERM/SIGINT signal path (main.rs) and the shutdown ("Restart daemon")
+    /// RPC. Contrast the client-disconnect flush (`run_control`), which leaves
+    /// history UNCLEAN so an unattended crash is still cold-restorable (design L7).
+    pub async fn shutdown_history(&self) {
+        self.checkpointer.shutdown_all().await;
+    }
+
+    /// Flush a final checkpoint for EVERY live session but leave history UNCLEAN —
+    /// `ended_at` is NOT stamped (fix F3). This is the SIGTERM/SIGINT path: launchd
+    /// SIGTERMs the daemon on a clean macOS reboot, and stamping `ended_at` there
+    /// would suppress Tier-B cold restore (regressing vs tmux). Same leave-unclean
+    /// semantics as the client-disconnect flush; contrast `shutdown_history`
+    /// (the explicit "Restart daemon" RPC), which stamps `ended_at`.
+    pub async fn flush_history_unclean(&self) {
+        self.checkpointer.flush_all().await;
     }
 
     pub fn is_shutting_down(&self) -> bool {
@@ -289,7 +378,14 @@ impl Daemon {
                 _ => {}
             }
         }
-        // disconnect-not-kill (design L7): sessions keep running.
+        // disconnect-not-kill (design L7 / fix #18): the daemon autonomously writes
+        // a final checkpoint for EVERY live session, awaiting any in-flight tick.
+        // Sessions keep RUNNING and history stays UNCLEAN (ended_at NOT stamped) so
+        // a daemon crash while no app is attached is still cold-restorable. Skipped
+        // during a graceful shutdown, whose own flush stamps ended_at.
+        if !self.is_shutting_down() {
+            self.checkpointer.flush_all().await;
+        }
     }
 
     async fn run_stream(
@@ -332,6 +428,10 @@ impl Daemon {
                 if let Some(session) = self.get(&id) {
                     Session::kill(&session);
                 }
+                // A deliberate close is a clean teardown (design D2 teardown table):
+                // stamp ended_at SYNCHRONOUSLY (not via the async reaper) so the
+                // pane is cold-restore INELIGIBLE the instant this RPC returns.
+                self.checkpointer.close_session(&id, None);
                 Ok(json!({}))
             }
             "listSessions" => Ok(self.rpc_list_sessions()),
@@ -372,6 +472,10 @@ impl Daemon {
                     .get("killSessions")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                // Graceful shutdown (design D2/L8): final checkpoint + ended_at for
+                // every session (cold-restore INELIGIBLE — the user chose to stop
+                // the daemon), before killing children and tearing down.
+                self.shutdown_history().await;
                 if kill_sessions {
                     self.kill_all_sessions();
                 }
@@ -418,11 +522,14 @@ impl Daemon {
             })
             .unwrap_or_default();
 
-        // Fix #4 (TOCTOU) + fix #3 (dead-but-unreaped): resolve the id under the
-        // map lock BEFORE the blocking spawn. The winner installs a `Pending`
-        // reservation and is the ONLY caller that spawns a PTY; a concurrent
-        // caller either attaches to a live session, or waits out the reservation
-        // and then attaches — so exactly one PTY is ever spawned per id.
+        // Fix #4 (TOCTOU) + fix #3 (dead-but-unreaped) + fix #16 (atomic cold
+        // restore): resolve the id under the map lock BEFORE the blocking spawn.
+        // The winner installs a `Pending` reservation and is the ONLY caller that
+        // spawns a PTY; a concurrent caller either attaches to a live session, or
+        // waits out the reservation and then attaches — so exactly one PTY is ever
+        // spawned per id. The live-vs-not decision is atomic under this lock; once
+        // reserved, the disk cold-restore probe (below) is race-free because the id
+        // is held and no concurrent path can bring it alive (design invariant #11).
         loop {
             enum Action {
                 Attach,
@@ -453,7 +560,8 @@ impl Daemon {
                     // Warm reattach (design P9/S15): return the live VT snapshot so
                     // the renderer rehydrates the current screen + modes. The
                     // atomic live-vs-cold decision (D12) has already resolved to
-                    // "live" under the map lock above.
+                    // "live" under the map lock above; the session was registered
+                    // with the checkpointer when it spawned, so no history action.
                     let session = self.get(&session_id).ok_or_else(session_not_found)?;
                     // Off the reactor (design FIX 6): same blocking snapshot path
                     // as getSnapshot.
@@ -467,23 +575,100 @@ impl Daemon {
                     continue;
                 }
                 Action::Spawn => {
+                    // The session is absent and reserved (design D12/fix #16): the
+                    // live-vs-cold decision already resolved to "not live", so the
+                    // disk probe is race-free — nothing can bring the id alive while
+                    // we hold the reservation. An UNCLEAN (ended_at==null) checkpoint
+                    // whose flock is acquirable → cold restore; else a fresh spawn.
+                    // The probe + VT replay run off the reactor (disk + CPU work).
+                    // Fix F4 / R9: the cold-restore probe FIRST tries the dir's
+                    // owner flock (non-blocking). A held lock ⇒ a live daemon
+                    // (an old, still-running build during an update) OWNS this
+                    // session — treat it as NOT restorable → a plain fresh spawn
+                    // with NO cold payload and NO history writes; the live owner
+                    // wins. We acquire, read the cold data, then RELEASE; the flock
+                    // is reacquired by `register_history` below. That release→
+                    // reacquire window is benign: within THIS process the
+                    // `SessionSlot::Pending` reservation serializes same-id spawns,
+                    // and if a cross-version daemon grabs the dir in the window,
+                    // `register_history` fails to reacquire and the `persisted` gate
+                    // (below) drops any cold payload — so the live owner's scrollback
+                    // is never delivered as a duplicate.
+                    let cold_restore = {
+                        let root = self.history_root.clone();
+                        let sid = session_id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            match OwnerLock::acquire(&session_dir(&root, &sid)) {
+                                Ok(_lock) => {
+                                    // `_lock` releases at the end of this arm, before
+                                    // the spawn + register_history reacquire.
+                                    let reader = HistoryReader::new(&root);
+                                    if reader.has_restorable_history(&sid) {
+                                        // ignore_clean_end: eligibility was
+                                        // established, so a clean end racing in must
+                                        // not downgrade (design D12).
+                                        reader.detect_cold_restore(&sid, true)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                // Owned elsewhere / io error → not restorable.
+                                Err(_) => None,
+                            }
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    };
+
+                    // Recovered cwd/cols/rows OVERRIDE the requested geometry (D12).
+                    let (spawn_cwd, spawn_cols, spawn_rows) = match &cold_restore {
+                        Some(cr) => (
+                            cr.cwd.clone().unwrap_or_else(|| cwd.clone()),
+                            cr.cols.max(1),
+                            cr.rows.max(1),
+                        ),
+                        None => (cwd.clone(), cols, rows),
+                    };
+
                     let hub = self.hub.clone();
                     let reaper = self.reaper();
                     let spawn_id = session_id.clone();
-                    let cwd = cwd.clone();
+                    let spawn_cwd_c = spawn_cwd.clone();
                     let env = env.clone();
                     // Why: openpty + spawn_command are blocking; keep them off the
                     // reactor.
                     let spawned = tokio::task::spawn_blocking(move || {
-                        Session::spawn(spawn_id, &cwd, cols, rows, &env, hub, reaper)
+                        Session::spawn(spawn_id, &spawn_cwd_c, spawn_cols, spawn_rows, &env, hub, reaper)
                     })
                     .await;
 
                     match spawned {
                         Ok(Ok(session)) => {
+                            // Wire disk history (design D9/D10/D11): a fresh session
+                            // opens a new writer (unlinks stale); a cold-restored one
+                            // re-registers the preserved dir, clears ended_at, and
+                            // re-anchors on the next tick with a fresh generation.
+                            // `persisted` is false when a live owner elsewhere holds
+                            // the flock (fix F4/R9) — the reacquire fails.
+                            let persisted = self.register_history(
+                                &session,
+                                Some(spawn_cwd),
+                                spawn_cols,
+                                spawn_rows,
+                                cold_restore.is_some(),
+                            );
                             lock(&self.sessions)
                                 .insert(session_id, SessionSlot::Live(session));
-                            return Ok(json!({ "isNew": true }));
+                            // Fix F4: deliver a cold payload ONLY if we actually took
+                            // ownership of the dir. If a live owner grabbed it in the
+                            // probe→register window, `persisted` is false and we
+                            // return a plain fresh spawn — delivering the payload
+                            // would duplicate the live owner's scrollback (R9).
+                            return match cold_restore {
+                                Some(cr) if persisted => Ok(cold_restore_reply(&cr)),
+                                _ => Ok(json!({ "isNew": true })),
+                            };
                         }
                         Ok(Err(spawn_err)) => {
                             // Release the reservation so a later attempt can retry.
@@ -497,6 +682,52 @@ impl Daemon {
                     }
                 }
             }
+        }
+    }
+
+    /// Wire a freshly-spawned session into the disk history subsystem (design
+    /// D9/D10/D11/L12). A GENUINELY NEW session opens a fresh writer (unlinks any
+    /// stale files, writes clean meta); a COLD-RESTORE-seeded session re-registers
+    /// the preserved dir and clears `ended_at` so it is cold-restorable again. On
+    /// `OwnedElsewhere`/io error the session runs WITHOUT persistence — a live
+    /// owner elsewhere wins and we neither write history nor deliver cold data
+    /// (design R9). Only on success do we start the reader's pending-output tee.
+    ///
+    /// ended_at discipline (design D2 teardown table — every teardown path stamps
+    /// or skips `ended_at` deliberately):
+    ///   - child self-exit (reader EOF)     → STAMP (SessionReaper::close_history)
+    ///   - explicit "kill"/close RPC        → STAMP (dispatch_rpc "kill")
+    ///   - kill watchdog force-dispose       → STAMP (via the reader EOF it forces)
+    ///   - explicit shutdown ("Restart daemon") RPC → STAMP (shutdown_history)
+    ///   - SIGTERM/SIGINT (reboot / dev)     → SKIP  (flush_history_unclean; fix F3)
+    ///   - client-disconnect / app-quit      → SKIP  (flush_all; sessions run on)
+    ///   - daemon SIGKILL (no chance to run) → SKIP  (stays unclean → cold-restore)
+    ///
+    /// Returns whether persistence was established (fix F4): `false` when the dir's
+    /// flock is held by a live owner elsewhere (`OwnedElsewhere`) or an io error
+    /// occurred — the session then runs WITHOUT history and any cold payload the
+    /// probe computed must be dropped by the caller (R9).
+    fn register_history(
+        &self,
+        session: &Arc<Session>,
+        meta_cwd: Option<String>,
+        cols: u16,
+        rows: u16,
+        cold: bool,
+    ) -> bool {
+        let session_arc: Arc<Session> = Arc::clone(session);
+        let source: Arc<dyn CheckpointSource> = session_arc;
+        let outcome = if cold {
+            self.checkpointer.reopen_session(source)
+        } else {
+            let meta = SessionMeta::new(meta_cwd, cols, rows);
+            self.checkpointer.open_session(source, &meta)
+        };
+        if outcome.is_ok() {
+            session.enable_history();
+            true
+        } else {
+            false
         }
     }
 
@@ -564,6 +795,39 @@ impl Daemon {
     }
 }
 
+/// Build the cold-restore `createOrAttach` reply (design S15 cold variant / D13,
+/// fix #16). The fields deserialize into grove-core `ColdRestorePayload`
+/// (camelCase): `snapshot` is the land-in-NORMAL body (never `?1049h`), and
+/// `isColdRestore: true` makes `DaemonClient`'s sticky cache capture it (P16).
+/// Recovered `cols`/`rows` are the geometry the session was re-seeded at (D12).
+fn cold_restore_reply(cr: &ColdRestore) -> Value {
+    // `from_utf8_lossy` boundary (verifier note): the cold snapshot is carried as a
+    // JSON string, so any invalid UTF-8 byte becomes U+FFFD here. This lossy step
+    // is STRUCTURALLY FORCED by the JSON reply shape (a JSON string cannot hold a
+    // lone continuation byte) and matches tmux `capture-pane` parity, which also
+    // hands the renderer a decoded string. The byte-exact history lives in the
+    // on-disk log / ring; this reply is a display payload, not the source of truth.
+    let snapshot = String::from_utf8_lossy(&cr.cold_snapshot()).into_owned();
+    let mut obj = json!({
+        "isNew": true,
+        "isColdRestore": true,
+        "snapshot": snapshot,
+        "cols": cr.cols,
+        "rows": cr.rows,
+        "isAlternateScreen": cr.is_alternate_screen,
+    });
+    if cr.degraded {
+        // Fix F7: the scrollback base was lost (torn checkpoint); only the log tail
+        // survived. Surface it so the renderer can note the truncated history.
+        obj["degraded"] = json!(true);
+    }
+    if !cr.pending_escape_tail.is_empty() {
+        obj["pendingEscapeTailAnsi"] =
+            json!(String::from_utf8_lossy(&cr.pending_escape_tail).into_owned());
+    }
+    obj
+}
+
 /// Build the `createOrAttach`/`getSnapshot` reply payload from a session's warm
 /// VT snapshot (design S15). The concatenated `scrollback ++ rehydrate ++ alt`
 /// body is the `snapshot` string; siblings (dims, alt flag, kitty flags, pending
@@ -572,6 +836,11 @@ impl Daemon {
 fn warm_snapshot_json(session: &Arc<Session>) -> Value {
     match session.snapshot(SnapshotOptions::default()) {
         Some(snap) => {
+            // `from_utf8_lossy` boundary (verifier note): the warm payload rides as
+            // a JSON string, so invalid UTF-8 → U+FFFD. This is STRUCTURALLY FORCED
+            // by the JSON reply shape and matches tmux-capture parity (the renderer
+            // is handed a decoded string either way). vt100's serialized output is
+            // valid UTF-8; only an exotic pending tail could ever be lossy here.
             let payload = String::from_utf8_lossy(&snap.warm_payload()).into_owned();
             let mut obj = json!({
                 "snapshot": payload,
@@ -674,5 +943,89 @@ fn internal(message: String) -> RpcError {
     RpcError {
         code: -32000,
         message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::{Checkpoint, HistoryWriter};
+    use std::path::Path;
+    use std::sync::atomic::AtomicU64;
+
+    fn temp_root() -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("grove-srv-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn seed_unclean(root: &Path, id: &str, marker: &[u8]) {
+        // Seed a restorable (unclean, ended_at=null) session dir, then drop the
+        // writer so its flock is released and a fresh daemon COULD cold-restore it
+        // — if not for a live owner holding the lock (the F4 scenario).
+        let mut w =
+            HistoryWriter::open_session(root, id, &SessionMeta::new(Some("/tmp".into()), 80, 24))
+                .expect("seed open");
+        w.checkpoint(Checkpoint {
+            snapshot_ansi: Vec::new(),
+            scrollback_ansi: marker.to_vec(),
+            rehydrate_sequences: Vec::new(),
+            pending_escape_tail: Vec::new(),
+            cwd: Some("/tmp".into()),
+            cols: 80,
+            rows: 24,
+            is_alternate_screen: false,
+            kitty_keyboard_flags: 0,
+            last_title: None,
+            scrollback_seq: marker.len() as u64,
+            generation: 0,
+            checkpointed_at_ms: 0,
+        })
+        .expect("seed checkpoint");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cold_restore_skipped_when_dir_owned_by_live_daemon() {
+        // Fix F4 / R9: a session dir whose `.owner.lock` is held by a LIVE owner
+        // must NOT be cold-restored — createOrAttach returns a plain fresh spawn
+        // (isNew, no isColdRestore, no snapshot) and writes NO history, so the live
+        // owner's scrollback is never duplicated into a second seeded PTY.
+        let root = temp_root();
+        seed_unclean(&root, "s1", b"LIVE-OWNED-DATA");
+
+        // A live owner elsewhere holds the flock. Same-process second-fd contention
+        // is exactly what a second process would see (proven by the history.rs flock
+        // tests), so this needs no helper binary.
+        let held = OwnerLock::acquire(&session_dir(&root, "s1")).expect("hold owner lock");
+
+        let daemon = Daemon::new("tok".to_string(), root.clone());
+        let reply = daemon
+            .rpc_create_or_attach(json!({
+                "sessionId": "s1", "cwd": "/tmp", "cols": 80, "rows": 24
+            }))
+            .await
+            .expect("createOrAttach ok");
+
+        assert_eq!(reply["isNew"], json!(true), "must be a plain fresh spawn");
+        assert_ne!(
+            reply["isColdRestore"],
+            json!(true),
+            "must NOT cold-restore a dir owned by a live daemon"
+        );
+        assert!(
+            reply.get("snapshot").is_none(),
+            "a dir owned elsewhere must carry no cold payload: {reply:?}"
+        );
+        assert_eq!(
+            daemon.checkpointer.session_count(),
+            0,
+            "no history may be registered for a dir owned elsewhere (R9)"
+        );
+
+        daemon.kill_all_sessions();
+        drop(held);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
