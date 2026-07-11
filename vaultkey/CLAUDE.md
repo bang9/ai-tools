@@ -46,3 +46,4 @@ vaultkey vaults                                                 # list (* = defa
 - Vault selection priority: `--vault` flag → `VAULTKEY_VAULT` env → default set via `use`.
 - Use scope names like `project/env`, for example `menulens/prod`.
 - `set` and `delete` already sync changes; `push` and `pull` are for explicit repository sync.
+- If a command fails with "sync conflict", run `vaultkey repair --take-remote` (keep remote) or `vaultkey repair --keep-local` (keep local) — the error message includes the repo path and manual steps.

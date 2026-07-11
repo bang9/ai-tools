@@ -79,6 +79,10 @@ func LoadVault(repoPath, password string) (*Vault, error) {
 		return nil, fmt.Errorf("reading vault: %w", err)
 	}
 
+	if hasConflictMarkers(raw) {
+		return nil, &SyncConflictError{RepoPath: repoPath, Detail: "vault.json contains unresolved merge conflict markers"}
+	}
+
 	if err := json.Unmarshal(raw, &v.data); err != nil {
 		return nil, fmt.Errorf("parsing vault.json: %w", err)
 	}
@@ -277,6 +281,34 @@ func deriveKey(password string, salt []byte, version int, params *KDFParams) []b
 
 func buildAAD(scope, key string) []byte {
 	return []byte(scope + "/" + key)
+}
+
+func hasConflictMarkers(raw []byte) bool {
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "<<<<<<< ") {
+			return true
+		}
+	}
+	return false
+}
+
+// VaultFileHasConflictMarkers reports whether the on-disk vault.json carries
+// unresolved merge conflict markers.
+func VaultFileHasConflictMarkers(repoPath string) bool {
+	raw, err := os.ReadFile(filepath.Join(repoPath, vaultFileName))
+	if err != nil {
+		return false
+	}
+	return hasConflictMarkers(raw)
+}
+
+// RestoreVaultFile discards the working-tree vault.json in favor of the last
+// committed version.
+func RestoreVaultFile(repoPath string) error {
+	if out, err := git(repoPath, "checkout", "HEAD", "--", vaultFileName); err != nil {
+		return gitCommandError("git checkout", out, err)
+	}
+	return nil
 }
 
 // Version returns the vault format version.

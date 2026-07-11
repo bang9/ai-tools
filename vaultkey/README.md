@@ -56,6 +56,7 @@ vaultkey pull   # pull from remote
 | `pull` | Pull latest from remote |
 | `use <vault-name>` | Set the default vault |
 | `vaults` | List configured vaults (`*` marks default) |
+| `repair` | Recover from a conflicted git state (`--take-remote` / `--keep-local`) |
 
 ## Multiple Vaults
 
@@ -101,6 +102,22 @@ shared/global
 ```
 
 `vaultkey list menulens` matches all scopes starting with `menulens`.
+
+## Concurrent Use
+
+Multiple users (or machines) can share a vault. `set`/`delete` pull before mutating and
+push after, so concurrent edits normally just interleave. When histories genuinely
+diverge (e.g. someone worked offline), commands fail with recovery instructions instead
+of leaving the repo broken:
+
+```bash
+vaultkey repair                # abort stuck rebase, restore vault.json, re-sync
+vaultkey repair --take-remote  # discard local unpushed changes, keep remote
+vaultkey repair --keep-local   # overwrite remote with local state
+```
+
+Secrets are encrypted blobs, so git cannot merge concurrent edits to the same key —
+the last writer wins per key.
 
 ## Security
 

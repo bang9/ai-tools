@@ -22,16 +22,17 @@ var (
 
 func main() {
 	root := &cobra.Command{
-		Use:     "vaultkey",
-		Short:   "Encrypted secrets manager backed by a private Git repo",
-		Version: version,
+		Use:          "vaultkey",
+		Short:        "Encrypted secrets manager backed by a private Git repo",
+		Version:      version,
+		SilenceUsage: true,
 	}
 
 	root.PersistentFlags().StringVar(&passwordFlag, "password", "", "vault password (or use VAULTKEY_PASSWORD env)")
 	root.PersistentFlags().BoolVar(&ciFlag, "ci", false, "CI mode: skip interactive prompts")
 	root.PersistentFlags().StringVar(&vaultFlag, "vault", "", "vault to operate on (or use VAULTKEY_VAULT env; defaults to the vault set via 'vaultkey use')")
 
-	root.AddCommand(initCmd(), setCmd(), getCmd(), listCmd(), deleteCmd(), pushCmd(), pullCmd(), useCmd(), vaultsCmd(), upgradeCmd(), migrateCmd())
+	root.AddCommand(initCmd(), setCmd(), getCmd(), listCmd(), deleteCmd(), pushCmd(), pullCmd(), useCmd(), vaultsCmd(), repairCmd(), upgradeCmd(), migrateCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -168,27 +169,17 @@ func setCmd() *cobra.Command {
 				return err
 			}
 
-			// Pull latest before mutation
-			_ = vaultkey.GitPull(entry.RepoPath)
-
-			v, err := vaultkey.LoadVault(entry.RepoPath, pw)
+			err = vaultkey.SyncMutation(entry.RepoPath, pw, func(v *vaultkey.Vault) error {
+				if v.IsLegacy() {
+					fmt.Fprintln(os.Stderr, "Warning: vault uses legacy v1 format. Run 'vaultkey migrate' to upgrade to Argon2id.")
+				}
+				return v.Set(scope, key, value)
+			})
 			if err != nil {
 				return err
 			}
 
-			if v.IsLegacy() {
-				fmt.Fprintln(os.Stderr, "Warning: vault uses legacy v1 format. Run 'vaultkey migrate' to upgrade to Argon2id.")
-			}
-
-			if err := v.Set(scope, key, value); err != nil {
-				return err
-			}
-
 			fmt.Fprintf(os.Stderr, "Set %s/%s (vault: %s)\n", scope, key, name)
-
-			if err := vaultkey.GitSync(entry.RepoPath); err != nil {
-				return fmt.Errorf("sync failed: %w", err)
-			}
 			fmt.Fprintln(os.Stderr, "Synced.")
 			return nil
 		},
@@ -267,23 +258,14 @@ func deleteCmd() *cobra.Command {
 				return err
 			}
 
-			// Pull latest before mutation
-			_ = vaultkey.GitPull(entry.RepoPath)
-
-			v, err := vaultkey.LoadVault(entry.RepoPath, pw)
+			err = vaultkey.SyncMutation(entry.RepoPath, pw, func(v *vaultkey.Vault) error {
+				return v.Delete(scope, key)
+			})
 			if err != nil {
 				return err
 			}
 
-			if err := v.Delete(scope, key); err != nil {
-				return err
-			}
-
 			fmt.Fprintf(os.Stderr, "Deleted %s/%s (vault: %s)\n", scope, key, name)
-
-			if err := vaultkey.GitSync(entry.RepoPath); err != nil {
-				return fmt.Errorf("sync failed: %w", err)
-			}
 			fmt.Fprintln(os.Stderr, "Synced.")
 			return nil
 		},
@@ -383,6 +365,68 @@ func vaultsCmd() *cobra.Command {
 	}
 }
 
+func repairCmd() *cobra.Command {
+	var takeRemote, keepLocal bool
+	cmd := &cobra.Command{
+		Use:   "repair",
+		Short: "Recover a vault repo from a conflicted git state",
+		Long: `Recover a vault repo from a conflicted git state.
+
+Without flags, aborts any stuck rebase, restores a conflicted vault.json,
+and tries to sync. If local unpushed commits conflict with the remote,
+pick a side:
+
+  --take-remote   discard local unpushed changes, keep the remote state
+  --keep-local    overwrite the remote with the local state`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if takeRemote && keepLocal {
+				return fmt.Errorf("--take-remote and --keep-local are mutually exclusive")
+			}
+
+			name, entry, err := resolveVault()
+			if err != nil {
+				return err
+			}
+			repoPath := entry.RepoPath
+
+			if vaultkey.RebaseInProgress(repoPath) {
+				vaultkey.AbortRebase(repoPath)
+				fmt.Fprintln(os.Stderr, "Aborted in-progress rebase.")
+			}
+			if vaultkey.VaultFileHasConflictMarkers(repoPath) {
+				if err := vaultkey.RestoreVaultFile(repoPath); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "Restored vault.json from the last committed version.")
+			}
+
+			switch {
+			case takeRemote:
+				if err := vaultkey.ResetToUpstream(repoPath); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "Discarded local unpushed changes; vault now matches remote.")
+			case keepLocal:
+				if err := vaultkey.ForcePushLocal(repoPath); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "Overwrote remote with local state.")
+			}
+
+			if err := vaultkey.GitSync(repoPath); err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stderr, "Vault %q is healthy and synced.\n", name)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&takeRemote, "take-remote", false, "discard local unpushed changes and reset to the remote state")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "overwrite the remote with the local state (force push)")
+	return cmd
+}
+
 func upgradeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "upgrade",
@@ -414,8 +458,13 @@ func migrateCmd() *cobra.Command {
 				return err
 			}
 
-			// Pull latest before mutation
-			_ = vaultkey.GitPull(entry.RepoPath)
+			// Pull latest before mutation; a conflict must be repaired first
+			if perr := vaultkey.GitPull(entry.RepoPath); perr != nil {
+				var conflict *vaultkey.SyncConflictError
+				if errors.As(perr, &conflict) {
+					return perr
+				}
+			}
 
 			v, err := vaultkey.LoadVault(entry.RepoPath, pw)
 			if err != nil {
