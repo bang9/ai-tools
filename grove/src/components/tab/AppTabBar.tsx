@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, horizontalListSortingStrategy } from "@dnd-kit/sortable";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
@@ -76,6 +76,23 @@ function terminalTabNeedsAttention(
   );
 }
 
+/** A tab-chip favicon (browser tabs), falling back to a globe when absent/broken. */
+function TabFavicon({ src }: { src?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return <Globe className={cn("size-3 shrink-0 text-muted-foreground")} />;
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      className={cn("size-3 shrink-0 rounded-[2px] object-contain")}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 /**
  * Shared chip: fixed max width with ellipsis; the close affordance takes no
  * space until the chip is hovered, then animates its width in. With onRename,
@@ -86,6 +103,7 @@ function TabChip({
   title,
   isActive,
   needsAttention,
+  leading,
   onSelect,
   onClose,
   closeTitle,
@@ -94,6 +112,7 @@ function TabChip({
   title: string;
   isActive: boolean;
   needsAttention?: boolean;
+  leading?: ReactNode;
   onSelect: () => void;
   onClose?: () => void;
   closeTitle?: string;
@@ -129,6 +148,7 @@ function TabChip({
       title={title}
       className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
     >
+      {leading && <span className={cn("mr-1 flex shrink-0 items-center")}>{leading}</span>}
       <span className={cn("min-w-0 truncate")}>{title}</span>
       {needsAttention && (
         <span className={cn("ml-1.5 size-1.5 shrink-0 rounded-full bg-red-500")} />
@@ -447,6 +467,9 @@ function AppTabBar() {
                     <TabChip
                       title={tab.title}
                       isActive={tab.id === activeTabId}
+                      leading={
+                        tab.type === "browser" ? <TabFavicon src={tab.faviconUrl} /> : undefined
+                      }
                       onSelect={() => setActiveTab(tab.id)}
                       onClose={() => closeTab(tab.id)}
                       closeTitle="Close tab"

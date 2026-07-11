@@ -1,6 +1,7 @@
 import type {
   BrowserFaviconEvent,
   BrowserFindEvent,
+  BrowserGrabEvent,
   BrowserNavEvent,
   BrowserNewWindowEvent,
   UnlistenFn,
@@ -50,6 +51,8 @@ interface WebviewDomEvent extends Event {
   favicons?: string[];
   isMainFrame?: boolean;
   result?: { activeMatchOrdinal: number; matches: number; finalUpdate: boolean };
+  /** `console-message`: the guest's logged text (first console argument). */
+  message?: string;
 }
 
 /** The subset of Electron's WebviewTag API this module drives. */
@@ -67,7 +70,121 @@ interface BrowserWebviewElement extends HTMLElement {
   openDevTools(): void;
   findInPage(text: string, options?: { forward?: boolean; findNext?: boolean }): number;
   stopFindInPage(action: "clearSelection" | "keepSelection" | "activateSelection"): void;
+  executeJavaScript(code: string): Promise<unknown>;
 }
+
+// Guest → host channel. Electron's `<webview>` has no custom-scheme bridge like
+// Tauri's wry, and a preload bundle would add build plumbing; instead the guest
+// `console.log`s a sentinel-prefixed line and the host reads it off the
+// `console-message` event. Prefixes are unlikely to collide with page logs.
+const GRAB_SENTINEL = "__GROVE_GRAB__";
+const FIND_OPEN_SENTINEL = "__GROVE_FIND_OPEN__";
+
+/**
+ * Element picker injected into the guest for grab mode. Ported from the Tauri
+ * `GUEST_GRAB_SCRIPT`, but posts the picked element back via `console.log` +
+ * GRAB_SENTINEL instead of a `grovegrab://` navigation. Idempotent; exposes
+ * `window.__groveGrabArm()` / `__groveGrabDisarm()`.
+ */
+const GRAB_SCRIPT = `
+(function () {
+  if (window.__groveGrab) return;
+  window.__groveGrab = true;
+  var armed = false, overlay = null, lastEl = null;
+  function ensureOverlay() {
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.style.cssText =
+      'all:initial;position:fixed;z-index:2147483647;pointer-events:none;box-sizing:border-box;' +
+      'outline:2px solid #3b82f6;background:rgba(59,130,246,0.18);border-radius:2px';
+    return overlay;
+  }
+  function moveOverlay(el) {
+    var r = el.getBoundingClientRect();
+    var o = ensureOverlay();
+    if (!o.isConnected) (document.documentElement || document.body).appendChild(o);
+    o.style.left = r.left + 'px'; o.style.top = r.top + 'px';
+    o.style.width = r.width + 'px'; o.style.height = r.height + 'px';
+  }
+  function esc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, '\\\\$&'); }
+  function selectorFor(el) {
+    if (el.id) return '#' + esc(el.id);
+    var parts = [], node = el;
+    for (var depth = 0; node && node.nodeType === 1 && depth < 4; depth++) {
+      if (node.id) { parts.unshift('#' + esc(node.id)); break; }
+      var tag = node.tagName.toLowerCase(), nth = 1, sib = node;
+      while ((sib = sib.previousElementSibling)) { if (sib.tagName === node.tagName) nth++; }
+      parts.unshift(tag + ':nth-of-type(' + nth + ')');
+      node = node.parentElement;
+    }
+    return parts.join('>');
+  }
+  function payloadFor(el) {
+    return {
+      tag: el.tagName.toLowerCase(),
+      selector: selectorFor(el),
+      text: (el.innerText || '').slice(0, 500),
+      html: (el.outerHTML || '').slice(0, 2000),
+      pageUrl: location.href,
+      pageTitle: document.title
+    };
+  }
+  function onMove(e) {
+    if (!armed) return;
+    var el = e.target;
+    if (!el || el.nodeType !== 1 || el === overlay) return;
+    lastEl = el; moveOverlay(el);
+  }
+  function onClick(e) {
+    if (!armed) return;
+    e.preventDefault(); e.stopPropagation();
+    var el = e.target && e.target.nodeType === 1 && e.target !== overlay ? e.target : lastEl;
+    if (!el) { disarm(); return; }
+    var json;
+    try { json = JSON.stringify(payloadFor(el)); } catch (err) { disarm(); return; }
+    disarm();
+    console.log('${GRAB_SENTINEL}' + json);
+  }
+  function onKey(e) { if (armed && e.key === 'Escape') { e.preventDefault(); disarm(); } }
+  function arm() {
+    if (armed) return;
+    armed = true;
+    (document.documentElement || document.body).style.cursor = 'crosshair';
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey, true);
+  }
+  function disarm() {
+    armed = false;
+    (document.documentElement || document.body).style.cursor = '';
+    document.removeEventListener('mousemove', onMove, true);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown', onKey, true);
+    if (overlay && overlay.isConnected) overlay.remove();
+    lastEl = null;
+  }
+  window.__groveGrabArm = arm;
+  window.__groveGrabDisarm = disarm;
+})();
+`;
+
+/**
+ * Catches Cmd/Ctrl+F pressed while the guest page has focus (the keychord never
+ * reaches the embedder's document) and posts FIND_OPEN_SENTINEL so the host can
+ * open its find bar. Injected once per navigation on `dom-ready`.
+ */
+const FIND_OPEN_SCRIPT = `
+(function () {
+  if (window.__groveFindOpen) return;
+  window.__groveFindOpen = true;
+  document.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+      e.preventDefault();
+      console.log('${FIND_OPEN_SENTINEL}');
+    }
+  }, true);
+})();
+`;
 
 interface GuestState {
   host: HTMLElement | null;
@@ -89,6 +206,7 @@ type NewWindowSub = (event: BrowserNewWindowEvent) => void;
 type FaviconSub = (event: BrowserFaviconEvent) => void;
 type FindSub = (event: BrowserFindEvent) => void;
 type FindOpenSub = (event: { tabId: string }) => void;
+type GrabSub = (event: BrowserGrabEvent) => void;
 
 interface DomWebviewRegistry {
   guests: Map<string, GuestState>;
@@ -97,6 +215,7 @@ interface DomWebviewRegistry {
   faviconSubs: Set<FaviconSub>;
   findSubs: Set<FindSub>;
   findOpenSubs: Set<FindOpenSub>;
+  grabSubs: Set<GrabSub>;
 }
 
 // globalThis-backed so the registry (and the live guest elements it tracks)
@@ -113,6 +232,7 @@ const registry: DomWebviewRegistry = (() => {
     faviconSubs: new Set(),
     findSubs: new Set(),
     findOpenSubs: new Set(),
+    grabSubs: new Set(),
   };
   scope[REGISTRY_KEY] = next;
   return next;
@@ -167,6 +287,10 @@ function wireWebviewEvents(tabId: string, webview: BrowserWebviewElement): void 
     const state = registry.guests.get(tabId);
     if (state) state.ready = true;
     emitNav(tabId, webview);
+    // Re-arm the in-page Cmd/Ctrl+F catcher on every navigation (guard is
+    // idempotent). If grab mode was armed and survived a navigation, the picker
+    // is re-injected the next time it's toggled — no need to persist it here.
+    webview.executeJavaScript(FIND_OPEN_SCRIPT).catch(() => {});
   });
   webview.addEventListener("did-start-loading", () => emitNav(tabId, webview, true));
   webview.addEventListener("did-stop-loading", () => emitNav(tabId, webview, false));
@@ -194,6 +318,19 @@ function wireWebviewEvents(tabId: string, webview: BrowserWebviewElement): void 
       total: e.result.matches,
     };
     for (const sub of registry.findSubs) sub(event);
+  });
+
+  // Guest → host bridge over console output (see GRAB_SENTINEL / FIND_OPEN_SENTINEL).
+  webview.addEventListener("console-message", (e: WebviewDomEvent) => {
+    const message = e.message;
+    if (typeof message !== "string") return;
+    if (message.startsWith(GRAB_SENTINEL)) {
+      const data = message.slice(GRAB_SENTINEL.length);
+      const event: BrowserGrabEvent = { tabId, data };
+      for (const sub of registry.grabSubs) sub(event);
+    } else if (message.startsWith(FIND_OPEN_SENTINEL)) {
+      for (const sub of registry.findOpenSubs) sub({ tabId });
+    }
   });
 
   // target="_blank" / window.open: open a Grove browser tab instead of a native
@@ -317,6 +454,17 @@ export function domBrowserOpenDevtools(tabId: string): void {
   readyWebview(tabId)?.openDevTools();
 }
 
+export function domBrowserSetGrabMode(tabId: string, enabled: boolean): void {
+  const wv = readyWebview(tabId);
+  if (!wv) return;
+  // Inject the picker (idempotent) then arm; or disarm. The picker posts the
+  // picked element back over console-message (GRAB_SENTINEL).
+  const code = enabled
+    ? `${GRAB_SCRIPT}; window.__groveGrabArm && window.__groveGrabArm();`
+    : `window.__groveGrabDisarm && window.__groveGrabDisarm();`;
+  wv.executeJavaScript(code).catch(() => {});
+}
+
 export function domBrowserSetVisible(tabId: string, visible: boolean): void {
   const state = registry.guests.get(tabId);
   if (!state) return;
@@ -386,4 +534,9 @@ export function onDomBrowserFind(handler: FindSub): UnlistenFn {
 export function onDomBrowserFindOpen(handler: FindOpenSub): UnlistenFn {
   registry.findOpenSubs.add(handler);
   return () => registry.findOpenSubs.delete(handler);
+}
+
+export function onDomBrowserGrab(handler: GrabSub): UnlistenFn {
+  registry.grabSubs.add(handler);
+  return () => registry.grabSubs.delete(handler);
 }

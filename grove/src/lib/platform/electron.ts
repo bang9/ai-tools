@@ -45,12 +45,14 @@ import {
   domBrowserNavigate,
   domBrowserOpenDevtools,
   domBrowserReload,
+  domBrowserSetGrabMode,
   domBrowserSetVisible,
   domBrowserStopFind,
   emitDomBrowserNewWindow,
   onDomBrowserFavicon,
   onDomBrowserFind,
   onDomBrowserFindOpen,
+  onDomBrowserGrab,
   onDomBrowserNav,
   onDomBrowserNewWindow,
   registerBrowserHostDom,
@@ -456,11 +458,13 @@ export async function browserOpenDevtools(tabId: string): Promise<void> {
 }
 
 /**
- * No-op on Electron for now — grab mode injects a guest picker script, which an
- * in-DOM `<webview>` needs a dedicated preload to host. Tauri grab is unaffected.
- * TODO: wire via a `<webview>` preload + `ipc-message` channel.
+ * Arm/disarm the guest element picker. The picker is injected via
+ * executeJavaScript and posts the picked element back over console-message —
+ * no `<webview>` preload bundle needed.
  */
-export async function browserSetGrabMode(_tabId: string, _enabled: boolean): Promise<void> {}
+export async function browserSetGrabMode(tabId: string, enabled: boolean): Promise<void> {
+  domBrowserSetGrabMode(tabId, enabled);
+}
 
 /** Punchout layering — Tauri only. Electron's in-DOM overlay needs no layering. */
 export async function browserSetBehind(_tabId: string, _behind: boolean): Promise<void> {}
@@ -505,9 +509,8 @@ export function onBrowserNewWindow(
   return Promise.resolve(onDomBrowserNewWindow(handler));
 }
 
-export function onBrowserGrab(_handler: (event: BrowserGrabEvent) => void): Promise<UnlistenFn> {
-  // Electron grab is not wired yet (see browserSetGrabMode); never fires.
-  return Promise.resolve(() => {});
+export function onBrowserGrab(handler: (event: BrowserGrabEvent) => void): Promise<UnlistenFn> {
+  return Promise.resolve(onDomBrowserGrab(handler));
 }
 
 /**
@@ -533,9 +536,9 @@ export function onBrowserFind(handler: (event: BrowserFindEvent) => void): Promi
 }
 
 /**
- * Fired when the user presses Cmd/Ctrl+F over the page; open the find bar.
- * Not wired for the in-DOM guest yet (needs a `<webview>` preload to catch the
- * keychord inside the page); the toolbar ⌘F path still works. Never fires today.
+ * Fired when the user presses Cmd/Ctrl+F over the page. A catcher injected into
+ * the guest (FIND_OPEN_SCRIPT) posts back over console-message so the host opens
+ * its find bar even when the page — not the app chrome — has focus.
  */
 export function onBrowserFindOpen(
   handler: (event: { tabId: string }) => void,
