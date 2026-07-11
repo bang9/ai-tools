@@ -1,3 +1,4 @@
+pub mod browser_cookies;
 pub mod config;
 pub mod file_browser;
 pub mod git_diff;
@@ -216,6 +217,14 @@ pub struct TerminalGcReport {
     pub skipped_attached_worktree_paths: Vec<String>,
     #[serde(default)]
     pub leftover_process_ids: Vec<u32>,
+    /// Registry entries whose tmux session no longer exists (killed externally,
+    /// server restart, pane exit); their fds/child handles are reaped.
+    #[serde(default)]
+    pub reaped_pty_ids: Vec<String>,
+    /// Registry entries whose session is alive but whose reader thread has
+    /// exited — detected and reported only; re-attach is a separate concern.
+    #[serde(default)]
+    pub dead_reader_pty_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,11 +40,17 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 }
 
 function countDryRunFindings(report: TerminalGcReport): number {
-  return Math.max(report.staleWorktreePaths.length, report.staleSessionNames.length);
+  return (
+    Math.max(report.staleWorktreePaths.length, report.staleSessionNames.length) +
+    report.reapedPtyIds.length
+  );
 }
 
 function countAppliedChanges(report: TerminalGcReport): number {
-  return Math.max(report.prunedWorktreePaths.length, report.killedSessionNames.length);
+  return (
+    Math.max(report.prunedWorktreePaths.length, report.killedSessionNames.length) +
+    report.reapedPtyIds.length
+  );
 }
 
 function buildReportEntries(report: TerminalGcReport): ReportEntry[] {
@@ -84,6 +90,18 @@ function buildReportEntries(report: TerminalGcReport): ReportEntry[] {
       kind: "leftover pid",
       value: String(value),
       tone: "danger" as const,
+    })),
+    ...report.reapedPtyIds.map((value) => ({
+      id: `reaped-pty:${value}`,
+      kind: "reaped pty",
+      value,
+      tone: "success" as const,
+    })),
+    ...report.deadReaderPtyIds.map((value) => ({
+      id: `dead-reader:${value}`,
+      kind: "dead reader",
+      value,
+      tone: "warning" as const,
     })),
   ];
 }

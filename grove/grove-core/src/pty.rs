@@ -73,6 +73,10 @@ struct PtyRuntimeState {
     last_output_at: Option<Instant>,
     /// Set when a hookless tool transitions running→idle. Used for attention timeout.
     idle_since: Option<Instant>,
+    /// Set by read_pty_output on exit (EOF, read error, or contained panic).
+    /// A live session with an exited reader gets no output until re-attach;
+    /// terminal GC reports these instead of silently leaving a frozen pane.
+    reader_exited: bool,
 }
 
 impl PtyRuntimeState {
@@ -94,6 +98,7 @@ impl PtyRuntimeState {
             last_ai_status: None,
             last_output_at: None,
             idle_since: None,
+            reader_exited: false,
         };
 
         if let Some(restore) = restore {
@@ -537,6 +542,7 @@ fn read_pty_output(
             }
         }
     }
+    lock_recover(&tracked).reader_exited = true;
     // Flush any pending tail and terminate the flusher thread on EOF/Err/panic.
     coalescer.close();
 }
@@ -680,19 +686,49 @@ pub fn close_ptys_for_worktree(worktree_path: &str) -> Result<(), String> {
 
 pub fn run_terminal_gc(dry_run: bool) -> Result<TerminalGcReport, String> {
     let referenced_paths = collect_referenced_worktree_paths()?;
-    let session_infos = collect_terminal_gc_session_infos()?;
+    let grove_sessions = list_grove_tmux_sessions()?;
+    let session_infos = collect_terminal_gc_session_infos(&grove_sessions)?;
     let plan = build_terminal_gc_plan(referenced_paths, &session_infos);
+
+    let registry_snapshot: Vec<RegistryReapEntry> = {
+        let reg = lock_recover(registry());
+        reg.iter()
+            .map(|(id, instance)| RegistryReapEntry {
+                pty_id: id.clone(),
+                session_name: instance.session_name.clone(),
+                reader_exited: lock_recover(&instance.tracked).reader_exited,
+            })
+            .collect()
+    };
+    let live_sessions: HashSet<String> = grove_sessions.iter().cloned().collect();
+    let reap_plan = build_registry_reap_plan(&registry_snapshot, &live_sessions);
 
     let mut report = TerminalGcReport {
         stale_worktree_paths: plan.stale_worktree_paths.clone(),
         stale_session_names: plan.stale_session_names.clone(),
         skipped_attached_worktree_paths: plan.skipped_attached_worktree_paths.clone(),
+        dead_reader_pty_ids: reap_plan.dead_reader_pty_ids.clone(),
         ..TerminalGcReport::default()
     };
 
+    for pty_id in &reap_plan.dead_reader_pty_ids {
+        crate::logger::emit_log(
+            "warn",
+            "pty",
+            &format!("terminal GC: PTY {pty_id} has a live session but an exited reader"),
+        );
+    }
+
     if dry_run {
+        report.reaped_pty_ids = reap_plan
+            .reap_candidates
+            .iter()
+            .map(|candidate| candidate.pty_id.clone())
+            .collect();
         return Ok(report);
     }
+
+    report.reaped_pty_ids = reap_dead_registry_entries(&reap_plan.reap_candidates);
 
     let leftover_candidates = collect_process_tree_candidates(&plan.stale_session_pane_pids);
 
@@ -715,6 +751,82 @@ pub fn run_terminal_gc(dry_run: bool) -> Result<TerminalGcReport, String> {
     report.leftover_process_ids = terminate_leftover_processes(&leftover_candidates);
 
     Ok(report)
+}
+
+struct RegistryReapEntry {
+    pty_id: String,
+    session_name: String,
+    reader_exited: bool,
+}
+
+struct RegistryReapPlan {
+    reap_candidates: Vec<RegistryReapCandidate>,
+    dead_reader_pty_ids: Vec<String>,
+}
+
+struct RegistryReapCandidate {
+    pty_id: String,
+    session_name: String,
+}
+
+/// Removes confirmed-dead registry entries and returns the reaped PTY ids.
+fn reap_dead_registry_entries(candidates: &[RegistryReapCandidate]) -> Vec<String> {
+    let mut reaped = Vec::new();
+    for candidate in candidates {
+        // Why: the session list predates the registry snapshot, so a session
+        // created in between would look missing; only reap after tmux itself
+        // confirms the session is gone.
+        match tmux_session_exists(&candidate.session_name) {
+            Ok(false) => {}
+            Ok(true) | Err(_) => continue,
+        }
+        let removed = lock_recover(registry()).remove(&candidate.pty_id);
+        if let Some(instance) = removed {
+            std::thread::spawn(move || {
+                reap_child_after_close(instance.child);
+            });
+            crate::logger::emit_log(
+                "info",
+                "pty",
+                &format!(
+                    "terminal GC: reaped PTY {} (tmux session {} no longer exists)",
+                    candidate.pty_id, candidate.session_name
+                ),
+            );
+            reaped.push(candidate.pty_id.clone());
+        }
+    }
+    reaped
+}
+
+/// Partitions a registry snapshot against the live grove tmux session set.
+/// Grove PTYs only exist inside grove-managed tmux sessions, so an entry whose
+/// session vanished (external kill, tmux server restart, pane exit) is dead:
+/// its master fd, writer, and child handle leak until reaped. An entry whose
+/// session is alive but whose reader exited is report-only — the session (and
+/// the user's shell) must survive; re-attach is a separate concern.
+fn build_registry_reap_plan(
+    snapshot: &[RegistryReapEntry],
+    live_sessions: &HashSet<String>,
+) -> RegistryReapPlan {
+    let mut reap_candidates = Vec::new();
+    let mut dead_reader_pty_ids = Vec::new();
+
+    for entry in snapshot {
+        if !live_sessions.contains(&entry.session_name) {
+            reap_candidates.push(RegistryReapCandidate {
+                pty_id: entry.pty_id.clone(),
+                session_name: entry.session_name.clone(),
+            });
+        } else if entry.reader_exited {
+            dead_reader_pty_ids.push(entry.pty_id.clone());
+        }
+    }
+
+    RegistryReapPlan {
+        reap_candidates,
+        dead_reader_pty_ids,
+    }
 }
 
 pub fn cleanup_stale_tmux_sessions_on_startup() -> Result<(), String> {
@@ -804,10 +916,12 @@ fn collect_referenced_worktree_paths() -> Result<Vec<String>, String> {
     Ok(paths.into_iter().collect())
 }
 
-fn collect_terminal_gc_session_infos() -> Result<Vec<TerminalGcSessionInfo>, String> {
+fn collect_terminal_gc_session_infos(
+    grove_sessions: &[String],
+) -> Result<Vec<TerminalGcSessionInfo>, String> {
     let mut sessions = Vec::new();
 
-    for session_name in list_grove_tmux_sessions()? {
+    for session_name in grove_sessions.iter().cloned() {
         let managed = match tmux_session_option(&session_name, TMUX_GROVE_MANAGED_OPTION) {
             Ok(value) => value,
             Err(error) if tmux_session_missing(&error) => continue,
@@ -4000,6 +4114,90 @@ grove-c 1 notapid
         assert!(write(&id, b"still works").is_ok());
 
         registry().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn read_loop_marks_reader_exited_on_eof() {
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-reader-eof-{}", Uuid::new_v4().simple()),
+            Box::new(io::sink()),
+            new_mock_master(),
+        );
+        let tracked = {
+            let reg = registry().lock().unwrap();
+            Arc::clone(&reg.get(&id).unwrap().tracked)
+        };
+        let sink = Arc::new(CollectingSink::default());
+        let coalescer =
+            OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, id.clone());
+
+        assert!(!tracked.lock().unwrap().reader_exited);
+        read_pty_output(Box::new(io::empty()), coalescer, Arc::clone(&tracked));
+        assert!(tracked.lock().unwrap().reader_exited);
+
+        registry().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn registry_reap_plan_partitions_missing_and_dead_reader_sessions() {
+        let live: HashSet<String> = ["grove-live".to_string()].into_iter().collect();
+        let snapshot = vec![
+            RegistryReapEntry {
+                pty_id: "a".into(),
+                session_name: "grove-live".into(),
+                reader_exited: false,
+            },
+            RegistryReapEntry {
+                pty_id: "b".into(),
+                session_name: "grove-live".into(),
+                reader_exited: true,
+            },
+            RegistryReapEntry {
+                pty_id: "c".into(),
+                session_name: "grove-gone".into(),
+                reader_exited: true,
+            },
+        ];
+
+        let plan = build_registry_reap_plan(&snapshot, &live);
+
+        let candidate_ids: Vec<&str> = plan
+            .reap_candidates
+            .iter()
+            .map(|candidate| candidate.pty_id.as_str())
+            .collect();
+        assert_eq!(candidate_ids, vec!["c"]);
+        assert_eq!(plan.dead_reader_pty_ids, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn terminal_gc_reaps_registry_entry_for_missing_tmux_session() {
+        if Command::new("tmux").arg("-V").output().is_err() {
+            return;
+        }
+
+        let session_name = format!("grove-test-reap-{}", Uuid::new_v4().simple());
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            session_name.clone(),
+            Box::new(io::sink()),
+            new_mock_master(),
+        );
+
+        let reaped = reap_dead_registry_entries(&[RegistryReapCandidate {
+            pty_id: id.clone(),
+            session_name,
+        }]);
+
+        assert_eq!(reaped, vec![id.clone()]);
+        assert!(!registry().lock().unwrap().contains_key(&id));
     }
 
     #[test]

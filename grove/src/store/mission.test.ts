@@ -24,6 +24,8 @@ vi.mock("../lib/platform", () => ({
     killedSessionNames: [],
     skippedAttachedWorktreePaths: [],
     leftoverProcessIds: [],
+    reapedPtyIds: [],
+    deadReaderPtyIds: [],
   }),
 }));
 
