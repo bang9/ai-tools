@@ -73,12 +73,18 @@ impl StreamHub {
         inner.generation
     }
 
-    /// Null the subscriber slot only if it still holds `generation` (fix #2). A
-    /// stale stream task whose subscriber was already replaced is a no-op here.
-    fn clear(&self, generation: u64) {
+    /// Null the subscriber slot only if it still holds `generation` (fix #2), and
+    /// report whether it did. A `true` means THIS stream was the live subscriber
+    /// and no newer one replaced it — i.e. the last client for this generation
+    /// went away, so the caller eagerly resumes any paused producer (design S14).
+    /// A stale stream task whose subscriber was already replaced returns `false`.
+    fn clear(&self, generation: u64) -> bool {
         let mut inner = lock(&self.inner);
         if inner.generation == generation {
             inner.tx = None;
+            true
+        } else {
+            false
         }
     }
 }
@@ -175,6 +181,11 @@ pub struct Daemon {
     /// integration test that asserts concurrent `ensure_connected` callers
     /// coalesce into exactly ONE control connection (design P7).
     control_hellos: AtomicU64,
+    /// LIVE count of currently-connected control clients (design §9b): bumped when
+    /// a control handshake succeeds, dropped when that connection's `run_control`
+    /// returns. Exposed via `getDaemonInfo` so daemon-mode GC can implement "skip
+    /// if any app is currently connected" without touching the tmux partition.
+    connected_controls: AtomicU64,
     /// Disk-backed history + cold restore (design §5). The tick loop is started in
     /// `serve`; attach/close paths drive it (open/register/reopen/close).
     checkpointer: Arc<Checkpointer>,
@@ -196,6 +207,7 @@ impl Daemon {
             shutdown: TokioNotify::new(),
             shutdown_flag: AtomicBool::new(false),
             control_hellos: AtomicU64::new(0),
+            connected_controls: AtomicU64::new(0),
             checkpointer: Checkpointer::new(history_root.clone()),
             history_root,
             checkpointer_shutdown: Arc::new(TokioNotify::new()),
@@ -331,7 +343,14 @@ impl Daemon {
         match hello.kind {
             ClientKind::Control => {
                 self.control_hellos.fetch_add(1, Ordering::SeqCst);
-                self.run_control(reader, write_half).await
+                // Track the LIVE connected-control gauge (design §9b) across the
+                // connection's lifetime so `getDaemonInfo` reports an accurate count
+                // even if `run_control` returns via error/EOF. `run_control` consumes
+                // the `Arc<Self>`, so hold a clone for the post-return decrement.
+                self.connected_controls.fetch_add(1, Ordering::SeqCst);
+                let gauge = Arc::clone(&self);
+                self.run_control(reader, write_half).await;
+                gauge.connected_controls.fetch_sub(1, Ordering::SeqCst);
             }
             ClientKind::Stream => self.run_stream(reader, write_half).await,
         }
@@ -416,8 +435,30 @@ impl Daemon {
             }
         }
         // Fix #2: only clear if we still own the subscriber slot; a newer stream
-        // that replaced us must keep receiving.
-        self.hub.clear(generation);
+        // that replaced us must keep receiving. Eager auto-resume (design S14): if
+        // this WAS the live subscriber (no newer stream replaced it), the last
+        // client just went away — nobody will send `resumePty`, so a paused shell
+        // would sit wedged until its 5s failsafe. Resume every producer now. A
+        // reconnecting client that owed a resume re-sends it (P11), idempotently.
+        if self.hub.clear(generation) {
+            self.resume_all_producers();
+        }
+    }
+
+    /// Eagerly resume every live session's producer (design S14). Called when the
+    /// last stream client disconnects: no host remains to send `resumePty`, so a
+    /// paused reader must be unparked here rather than wait out the failsafe.
+    fn resume_all_producers(&self) {
+        let sessions: Vec<Arc<Session>> = lock(&self.sessions)
+            .values()
+            .filter_map(|slot| match slot {
+                SessionSlot::Live(session) => Some(Arc::clone(session)),
+                SessionSlot::Pending => None,
+            })
+            .collect();
+        for session in sessions {
+            session.resume_producer();
+        }
     }
 
     async fn dispatch_rpc(&self, method: &str, params: Value) -> Result<Value, RpcError> {
@@ -453,6 +494,18 @@ impl Daemon {
                 let session = self.get(&id).ok_or_else(session_not_found)?;
                 Ok(json!({ "title": session.title() }))
             }
+            // Bell + AI status poll (design G9): one entry per LIVE session with its
+            // pending bell (DRAINED on read — swap-false) and current ai_status (read,
+            // NOT drained — it is state, not an event). Replaces the tmux
+            // monitor-bell / `@grove_ai_status` shell-outs; the frontend
+            // `PtyBellEvent{ptyId,bell,aiStatus}` contract is unchanged (design G9).
+            "pollBells" => Ok(self.rpc_poll_bells()),
+            // Daemon liveness/attachment info (design §9b): the live connected-control
+            // count backs daemon-mode GC's "skip if any app is connected" gate.
+            "getDaemonInfo" => Ok(json!({
+                "connectedClients": self.connected_controls.load(Ordering::SeqCst),
+                "sessionCount": self.session_count(),
+            })),
             "getSnapshot" => {
                 let id = str_param(&params, "sessionId")?;
                 let session = self.get(&id).ok_or_else(session_not_found)?;
@@ -466,6 +519,16 @@ impl Daemon {
                     .await
                     .map_err(|e| internal(format!("health probe join: {e}")))?;
                 Ok(json!({ "ok": ok }))
+            }
+            // Sleep/wake (design L12 Tier C): write a final checkpoint for EVERY
+            // live session, AWAITING any in-flight tick, WITHOUT stamping `ended_at`
+            // — leave-unclean so if a child is killed under power management the
+            // wake path can cold-restore it. The host calls this on system suspend
+            // before the OS may freeze/kill the daemon's children. Reuses the P7
+            // `flush_all` machinery verbatim; replies only once the writes land.
+            "checkpointAll" => {
+                self.checkpointer.flush_all().await;
+                Ok(json!({}))
             }
             "shutdown" => {
                 let kill_sessions = params
@@ -731,6 +794,37 @@ impl Daemon {
         }
     }
 
+    /// Live session count (design §9b), reported beside the connected-client gauge.
+    fn session_count(&self) -> usize {
+        lock(&self.sessions)
+            .values()
+            .filter(|slot| matches!(slot, SessionSlot::Live(_)))
+            .count()
+    }
+
+    /// Build the `pollBells` reply (design G9): one `PtyBellEvent`-shaped entry per
+    /// LIVE session. The bell is drained (swap-false) here; ai_status is read.
+    fn rpc_poll_bells(&self) -> Value {
+        let sessions: Vec<Arc<Session>> = lock(&self.sessions)
+            .values()
+            .filter_map(|slot| match slot {
+                SessionSlot::Live(session) => Some(Arc::clone(session)),
+                SessionSlot::Pending => None,
+            })
+            .collect();
+        let events: Vec<Value> = sessions
+            .iter()
+            .map(|session| {
+                json!({
+                    "ptyId": session.id,
+                    "bell": session.take_bell(),
+                    "aiStatus": session.ai_status(),
+                })
+            })
+            .collect();
+        json!(events)
+    }
+
     fn rpc_list_sessions(&self) -> Value {
         let list: Vec<Value> = lock(&self.sessions)
             .values()
@@ -782,6 +876,54 @@ impl Daemon {
                 }
                 if let Some(session) = self.get(id) {
                     let _ = session.resize(cols, rows);
+                }
+            }
+            // Producer flow control (design S14/P11): pause parks the session's PTY
+            // reader (kernel backpressure blocks a flooding child); resume wakes it.
+            // Fire-and-forget notifies so keystroke/scroll latency is never gated on
+            // an ACK; the 5s failsafe + owed-resume-on-reconnect are the correctness
+            // backstops against a lost resume.
+            "pausePty" => {
+                if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
+                    if let Some(session) = self.get(id) {
+                        Session::pause_producer(&session);
+                    }
+                }
+            }
+            "resumePty" => {
+                if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
+                    if let Some(session) = self.get(id) {
+                        session.resume_producer();
+                    }
+                }
+            }
+            // Background bookkeeping (design P6 `set_session_background`): stores a
+            // flag on the session for later keep-tail thinning; no behavior beyond
+            // storage in this cut. Fire-and-forget so a hidden/shown toggle never
+            // blocks the UI.
+            "setSessionBackground" => {
+                if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
+                    let background = params
+                        .get("background")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if let Some(session) = self.get(id) {
+                        session.set_background(background);
+                    }
+                }
+            }
+            // AI status injection (design G9): the daemon-native replacement for a
+            // hook's `tmux set-option @grove_ai_status`. `aiStatus` absent/null
+            // clears the status. Read back via `pollBells`.
+            "setAiStatus" => {
+                if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
+                    let status = params
+                        .get("aiStatus")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if let Some(session) = self.get(id) {
+                        session.set_ai_status(status);
+                    }
                 }
             }
             // P16 sticky cold-restore scaffold: the client clears its per-session
@@ -1026,6 +1168,105 @@ mod tests {
 
         daemon.kill_all_sessions();
         drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn poll_bells_drains_bell_and_reports_ai_status() {
+        // Design G9: pollBells returns one entry per live session with its pending
+        // bell (drained) and current ai_status (read). setAiStatus injects status.
+        let root = temp_root();
+        let daemon = Daemon::new("tok".to_string(), root.clone());
+        daemon
+            .rpc_create_or_attach(json!({ "sessionId": "b1", "cwd": "/tmp", "cols": 80, "rows": 24 }))
+            .await
+            .expect("createOrAttach ok");
+        let session = daemon.get("b1").expect("session b1 live");
+
+        // Inject an AI status via the notify, and ring a bell via a teed BEL.
+        daemon.dispatch_notify(
+            "setAiStatus",
+            json!({ "sessionId": "b1", "aiStatus": "codex:running" }),
+        );
+        session.test_tee(b"beep\x07");
+
+        let events = daemon.rpc_poll_bells();
+        let entry = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["ptyId"] == json!("b1"))
+            .expect("b1 present in pollBells");
+        assert_eq!(entry["bell"], json!(true), "teed BEL must report a bell");
+        assert_eq!(entry["aiStatus"], json!("codex:running"), "ai_status reported");
+
+        // The bell drained on read; ai_status persists (state, not event).
+        let events = daemon.rpc_poll_bells();
+        let entry = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["ptyId"] == json!("b1"))
+            .unwrap();
+        assert_eq!(entry["bell"], json!(false), "bell must drain on poll");
+        assert_eq!(entry["aiStatus"], json!("codex:running"), "ai_status persists");
+
+        daemon.kill_all_sessions();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_daemon_info_reports_session_count_and_zero_clients() {
+        // Design §9b: getDaemonInfo exposes the live session count and the
+        // connected-control gauge. With no sockets attached the gauge is 0.
+        let root = temp_root();
+        let daemon = Daemon::new("tok".to_string(), root.clone());
+        daemon
+            .rpc_create_or_attach(json!({ "sessionId": "d1", "cwd": "/tmp", "cols": 80, "rows": 24 }))
+            .await
+            .expect("createOrAttach ok");
+
+        let info = daemon
+            .dispatch_rpc("getDaemonInfo", Value::Null)
+            .await
+            .expect("getDaemonInfo ok");
+        assert_eq!(info["sessionCount"], json!(1));
+        assert_eq!(
+            info["connectedClients"],
+            json!(0),
+            "no socket attached → zero connected controls"
+        );
+
+        daemon.kill_all_sessions();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn resume_all_producers_unparks_a_paused_session() {
+        // Design S14: when the last stream client disconnects, the daemon eagerly
+        // resumes every producer so a paused shell can't wedge waiting on a resume
+        // no one will send. This drives that server-side path directly.
+        let root = temp_root();
+        let daemon = Daemon::new("tok".to_string(), root.clone());
+        daemon
+            .rpc_create_or_attach(json!({
+                "sessionId": "p1", "cwd": "/tmp", "cols": 80, "rows": 24
+            }))
+            .await
+            .expect("createOrAttach ok");
+        let session = daemon.get("p1").expect("session p1 live");
+
+        Session::pause_producer(&session);
+        assert!(session.is_producer_paused(), "session must be paused");
+
+        // The last-client-disconnect hook resumes all producers.
+        daemon.resume_all_producers();
+        assert!(
+            !session.is_producer_paused(),
+            "resume_all_producers must unpark the paused session"
+        );
+
+        daemon.kill_all_sessions();
         let _ = std::fs::remove_dir_all(&root);
     }
 }

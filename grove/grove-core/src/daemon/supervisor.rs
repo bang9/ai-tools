@@ -112,6 +112,21 @@ pub struct EnsureResult {
     pub token_path: PathBuf,
 }
 
+/// The result of a [`restart_daemon`] (design L8 / §7 first-cut restart).
+///
+/// `prior_session_ids` are the sessions the OLD daemon owned, captured BEFORE it
+/// was told to shut down. **Exit-event contract (design §7):** the daemon does NOT
+/// fan out exit frames when it is killed with `kill_sessions`, so the P9 frontend
+/// MUST synthesize a synthetic exit for each of these panes — and it must do so
+/// BEFORE it tears down its per-pane renderer handlers, or the exits are lost. The
+/// fresh daemon (`result`) is empty on return; the frontend re-creates the panes
+/// (fresh shells) after firing the synthesized exits.
+#[derive(Debug, Clone)]
+pub struct RestartOutcome {
+    pub result: EnsureResult,
+    pub prior_session_ids: Vec<String>,
+}
+
 /// Everything that can go wrong ensuring a daemon.
 #[derive(Debug)]
 pub enum SupervisorError {
@@ -228,7 +243,7 @@ pub async fn ensure_running(cfg: &EnsureRunningConfig) -> Result<EnsureResult, S
                 // Session-free + stale: gracefully retire it, then replace.
                 request_shutdown(&socket_path, &token_path).await;
                 kill_stale_blocking(&cfg.base_dir, &socket_path, &token_path).await;
-                spawn_daemon(cfg, &socket_path, &token_path, &pid_path).await?;
+                spawn_daemon(cfg, &socket_path, &token_path, &pid_path, false).await?;
                 Ok(make_result(EnsureOutcome::Replaced, socket_path, token_path))
             } else {
                 Ok(make_result(
@@ -271,7 +286,7 @@ pub async fn ensure_running(cfg: &EnsureRunningConfig) -> Result<EnsureResult, S
             // Truly dead / rejected / stale-empty: a raw socket can outlive a
             // broken daemon, so kill by verified pid before respawn (design L6).
             let killed = kill_stale_blocking(&cfg.base_dir, &socket_path, &token_path).await;
-            spawn_daemon(cfg, &socket_path, &token_path, &pid_path).await?;
+            spawn_daemon(cfg, &socket_path, &token_path, &pid_path, false).await?;
             let outcome = if killed || matches!(health, DaemonHealth::Rejected) {
                 EnsureOutcome::Replaced
             } else {
@@ -288,6 +303,74 @@ fn make_result(outcome: EnsureOutcome, socket_path: PathBuf, token_path: PathBuf
         socket_path,
         token_path,
     }
+}
+
+// ---------------------------------------------------------------------------
+// restart_daemon — the explicit "Restart daemon" action (design L8 / §7)
+// ---------------------------------------------------------------------------
+
+/// Restart the daemon in place: kill it (and its sessions), re-copy the CURRENT
+/// signed binary, and spawn a fresh one (design L8 + L1-sig + §7 first-cut).
+///
+/// This is the supervisor half of orca's `cleanupDaemonForProtocol` + respawn: it
+/// (1) captures the sessions about to die so the frontend can synthesize their exit
+/// events (see [`RestartOutcome`]); (2) sends the graceful `shutdown{killSessions:
+/// true}` RPC, TOLERATING no reply (the daemon may be wedged/gone); (3) falls back
+/// to the pid-guarded [`kill_stale`]; (4) FORCE re-copies the running bundle's
+/// signed daemon binary — even when byte-identical — so the restart is guaranteed to
+/// run CURRENT code (design L1-sig); (5) spawns fresh + polls readiness.
+///
+/// Unlike [`ensure_running`], this NEVER adopts: it always tears down and respawns.
+/// Use it only for the explicit user "Restart daemon" action, never on normal
+/// launch (that is `ensure_running`, which prefers warm adoption).
+pub async fn restart_daemon(cfg: &EnsureRunningConfig) -> Result<RestartOutcome, SupervisorError> {
+    std::fs::create_dir_all(&cfg.base_dir).map_err(SupervisorError::Io)?;
+    let socket_path = socket_path_for(&cfg.base_dir);
+    let token_path = daemon_token_path(&cfg.base_dir);
+    let pid_path = daemon_pid_path(&cfg.base_dir);
+
+    // (1) Snapshot the sessions the old daemon owns BEFORE we tear it down, so the
+    // P9 frontend can synthesize their exit events (design §7 exit-event contract).
+    let prior_session_ids = list_session_ids(&socket_path, &token_path).await;
+
+    // (2) Graceful shutdown, killing sessions, tolerating no reply; (3) pid-guarded
+    // kill-stale fallback + socket/pid cleanup. Together = client cleanup_for_protocol.
+    request_shutdown(&socket_path, &token_path).await;
+    kill_stale_blocking(&cfg.base_dir, &socket_path, &token_path).await;
+
+    // (4)+(5) FORCE re-copy the current signed binary and spawn a fresh daemon.
+    spawn_daemon(cfg, &socket_path, &token_path, &pid_path, true).await?;
+
+    Ok(RestartOutcome {
+        result: make_result(EnsureOutcome::Replaced, socket_path, token_path),
+        prior_session_ids,
+    })
+}
+
+/// List the daemon's current session ids via a throwaway control probe (design §7).
+/// Best-effort: any failure yields an empty list (a wedged/dead daemon has no
+/// synthesizable panes we can enumerate — the frontend then relies on its own
+/// per-pane state).
+async fn list_session_ids(socket_path: &Path, token_path: &Path) -> Vec<String> {
+    let Some(token) = read_token(token_path) else {
+        return Vec::new();
+    };
+    let Ok(mut ctl) = RawControl::connect(socket_path, &token, CONNECT_HELLO_DEADLINE).await else {
+        return Vec::new();
+    };
+    let Ok(v) = ctl
+        .request("listSessions", Value::Null, PROBE_RPC_TIMEOUT)
+        .await
+    else {
+        return Vec::new();
+    };
+    v.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.get("sessionId").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +609,7 @@ async fn spawn_daemon(
     socket_path: &Path,
     token_path: &Path,
     pid_path: &Path,
+    force_recopy: bool,
 ) -> Result<(), SupervisorError> {
     // Generate + persist the token (0600) BEFORE spawn so a client that races the
     // spawn can already authenticate, and an empty/leftover token can never be
@@ -533,7 +617,7 @@ async fn spawn_daemon(
     let token = generate_token();
     write_secret_file(token_path, token.as_bytes()).map_err(SupervisorError::TokenGen)?;
 
-    let bin = prepare_binary(&cfg.bin_source_path, &cfg.base_dir)?;
+    let bin = prepare_binary(&cfg.bin_source_path, &cfg.base_dir, force_recopy)?;
 
     // The detached daemon has no console; tee stdout+stderr to the log file so a
     // module-load crash during startup is captured, not discarded (design L1).
@@ -610,10 +694,16 @@ async fn try_hello(socket_path: &Path, token: &str) -> bool {
 }
 
 /// Copy the app bundle's signed daemon binary into `base_dir` and verify it.
-/// Byte-identical copy is skipped. On macOS, `codesign --verify` + a Mach-O
-/// magic check gate the copy; on failure the supervisor DEGRADES to spawning
-/// the source path directly with a warning rather than refusing to start.
-fn prepare_binary(source: &Path, base_dir: &Path) -> Result<PathBuf, SupervisorError> {
+/// A byte-identical copy is skipped UNLESS `force` is set. On macOS,
+/// `codesign --verify` + a Mach-O magic check gate the copy; on failure the
+/// supervisor DEGRADES to spawning the source path directly with a warning rather
+/// than refusing to start.
+///
+/// `force` is set by [`restart_daemon`] (design L1-sig): a "Restart daemon" must
+/// re-adopt the CURRENT app bundle's binary even when it happens to be byte-
+/// identical to the previously-copied one, so the restart is guaranteed to run
+/// code from the running bundle (never a stale copy left by a prior version).
+fn prepare_binary(source: &Path, base_dir: &Path, force: bool) -> Result<PathBuf, SupervisorError> {
     if !source.exists() {
         return Err(SupervisorError::BinaryVerify(format!(
             "daemon binary source not found: {}",
@@ -621,7 +711,7 @@ fn prepare_binary(source: &Path, base_dir: &Path) -> Result<PathBuf, SupervisorE
         )));
     }
     let dest = daemon_bin_path(base_dir);
-    if !files_identical(source, &dest) {
+    if force || !files_identical(source, &dest) {
         std::fs::copy(source, &dest).map_err(SupervisorError::Io)?;
         #[cfg(unix)]
         {

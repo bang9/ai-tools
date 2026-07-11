@@ -99,6 +99,13 @@ pub struct ModeState {
     /// (`ESC c`) and any alt-buffer switch — xterm re-initializes DECSTBM per
     /// buffer (design FIX 3).
     scroll_region: Option<(u16, u16)>,
+    /// Count of GROUND-state `BEL` (0x07) bytes seen since the last drain (design
+    /// G9). vt100 has no bell accessor, so the same automaton that owns the tracked
+    /// modes counts real bells here: a BEL is a bell ONLY in ground/text state — a
+    /// BEL that TERMINATES an OSC (e.g. the `\x07` closing an OSC 7 cwd or OSC 0
+    /// title, both extremely common) is consumed in the Osc state and is NOT a
+    /// bell. Drained by [`ModeState::take_bells`] on each poll.
+    bell_count: u32,
 }
 
 impl ModeState {
@@ -134,6 +141,13 @@ impl ModeState {
     /// parser-clean. The restorer writes this LAST, before live chunks.
     pub fn partial_escape_tail(&self) -> &[u8] {
         &self.scan_tail
+    }
+
+    /// Drain the accumulated ground-BEL count (design G9): returns the number of
+    /// real bells seen since the last drain and resets the counter to 0. The
+    /// session flips its per-poll bell flag from this on each ingested chunk.
+    pub fn take_bells(&mut self) -> u32 {
+        std::mem::take(&mut self.bell_count)
     }
 
     /// Ingest one chunk: update every tracked mode and return the split points
@@ -185,16 +199,23 @@ impl ModeState {
         while i < bytes.len() {
             if state == ScanState::Ground {
                 // Fast-skip plain text: Ground transitions only on ESC, so
-                // jumping to the next ESC cannot diverge from stepping.
+                // jumping to the next ESC cannot diverge from stepping. Count any
+                // BEL in the skipped ground run as a real bell (design G9): ground
+                // BELs are never parked (the walk only parks pending escapes), so a
+                // ground BEL is counted exactly once, never across chunk boundaries.
                 match bytes[i..].iter().position(|&b| b == ESC) {
                     Some(k) => {
+                        self.bell_count += count_bel(&bytes[i..i + k]);
                         i += k;
                         seq_start = i;
                         state = ScanState::Esc;
                         i += 1;
                         continue;
                     }
-                    None => return bytes.len(),
+                    None => {
+                        self.bell_count += count_bel(&bytes[i..]);
+                        return bytes.len();
+                    }
                 }
             }
             let code = bytes[i];
@@ -468,6 +489,11 @@ impl ChunkMap {
     }
 }
 
+/// Count `BEL` (0x07) bytes in a ground-state text run (design G9).
+fn count_bel(run: &[u8]) -> u32 {
+    run.iter().filter(|&&b| b == BEL).count() as u32
+}
+
 /// Iterate the numeric params of a CSI (`;`-separated, empty entries skipped).
 fn split_params(params: &[u8]) -> impl Iterator<Item = u32> + '_ {
     params.split(|&b| b == b';').filter_map(|p| {
@@ -711,6 +737,40 @@ mod tests {
         assert!(m.focus() && m.sgr_pixels() && m.kitty_flags() == 7);
         m.scan(b"\x1bc");
         assert!(!m.focus() && !m.sgr_pixels() && m.kitty_flags() == 0);
+    }
+
+    #[test]
+    fn ground_bel_counted_osc_terminator_not() {
+        // A ground BEL (readline/`printf '\a'`) is a real bell; an OSC-terminating
+        // BEL (the `\x07` closing OSC 7 cwd / OSC 0 title) is NOT (design G9).
+        let mut m = ModeState::new();
+        m.scan(b"ding\x07dong\x07"); // two ground bells
+        assert_eq!(m.take_bells(), 2);
+        // Drained: a second take reads zero.
+        assert_eq!(m.take_bells(), 0);
+
+        // OSC terminators must not count as bells.
+        let mut m = ModeState::new();
+        m.scan(b"\x1b]7;file://h/tmp\x07\x1b]0;title\x07");
+        assert_eq!(m.take_bells(), 0, "OSC-terminating BELs are not bells");
+        assert_eq!(m.cwd(), Some("/tmp"));
+        assert_eq!(m.title(), Some("title"));
+
+        // A ground bell interleaved with an OSC: only the ground one counts.
+        let mut m = ModeState::new();
+        m.scan(b"\x07\x1b]0;t\x07after");
+        assert_eq!(m.take_bells(), 1);
+    }
+
+    #[test]
+    fn ground_bel_counted_once_across_chunk_split() {
+        // A ground BEL preceding a parked incomplete escape must be counted exactly
+        // once, never re-counted when the escape completes on the next chunk.
+        let mut m = ModeState::new();
+        m.scan(b"hi\x07\x1b[?100"); // BEL then incomplete CSI (parked)
+        assert_eq!(m.take_bells(), 1);
+        m.scan(b"4h"); // completes the CSI; no new bell
+        assert_eq!(m.take_bells(), 0);
     }
 
     #[test]

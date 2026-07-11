@@ -24,6 +24,11 @@ pub mod protocol;
 #[cfg(unix)]
 pub mod client;
 
+/// Daemon-mode terminal GC partition helpers (design §9). Unix-only: keyed off the
+/// unix-only [`client::SessionInfo`] liveness snapshot.
+#[cfg(unix)]
+pub mod gc;
+
 #[cfg(unix)]
 pub mod supervisor;
 
@@ -63,7 +68,13 @@ pub use global::{ack_cold_restore, set_global_client};
 pub fn ack_cold_restore(_session_id: &str) {}
 
 #[cfg(unix)]
+pub use gc::{
+    known_session_ids, live_session_ids, plan_history_gc, HistoryDirInfo, HistoryGcInput,
+    GC_MIN_AGE,
+};
+
+#[cfg(unix)]
 pub use supervisor::{
-    ensure_running, kill_stale, EnsureOutcome, EnsureResult, EnsureRunningConfig, Supervisor,
-    SupervisorError,
+    ensure_running, kill_stale, restart_daemon, EnsureOutcome, EnsureResult, EnsureRunningConfig,
+    RestartOutcome, Supervisor, SupervisorError,
 };

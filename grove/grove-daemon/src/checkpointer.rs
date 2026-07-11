@@ -256,14 +256,25 @@ impl Checkpointer {
         self.dirty_notify.notify_one();
     }
 
-    /// Stamp a session's `ended_at` on a clean close/exit (design D2), then drop
-    /// it from the registry so the tick never touches it again.
+    /// Clean close/exit (design D2 / §9 self-reap): stamp `ended_at`, drop the
+    /// session from the registry, release its flock, and REMOVE its whole disk dir.
+    /// A cleanly-closed session keeps no history (there is no `keepHistory` concept
+    /// this cut — design D2/§9), so its per-session dir is reaped. Contrast
+    /// [`Checkpointer::remove_session`] (unclean teardown), which PRESERVES the dir
+    /// so the session stays cold-restorable.
     pub fn close_session(&self, id: &str, exit_code: Option<i32>) {
         let entry = lock(&self.sessions).remove(id);
         lock(&self.dirty).remove(id);
         if let Some(entry) = entry {
+            // Stamp ended_at first as a safety net (a cleanly-ended session must be
+            // cold-restore INELIGIBLE even if the dir removal below fails), then drop
+            // the writer to release the `.owner.lock` flock BEFORE removing the dir.
             let _ = lock(&entry.writer).stamp_ended(exit_code);
+            drop(entry);
         }
+        // Self-reap the disk dir (design §9): a cleanly-closed session leaves no
+        // history behind. Best-effort — a missing/locked dir is harmless.
+        let _ = std::fs::remove_dir_all(crate::history::session_dir(&self.root, id));
     }
 
     /// Remove a session without stamping `ended_at` (leaves it cold-restore
@@ -781,6 +792,37 @@ mod tests {
         assert!(
             !HistoryReader::new(&root).has_restorable_history("closing"),
             "clean close stamps ended_at → not cold-restorable (design D2)"
+        );
+        // Design §9 self-reap: a cleanly-closed session's disk dir is removed.
+        assert!(
+            !crate::history::session_dir(&root, "closing").exists(),
+            "clean close must remove the per-session history dir (design §9)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn remove_session_preserves_unclean_dir_for_cold_restore() {
+        // Design §9: an UNCLEAN teardown (daemon going down mid-flight) must
+        // PRESERVE the session dir so the session stays cold-restorable — unlike a
+        // clean close, which reaps it.
+        let root = temp_root();
+        let ckpt = Checkpointer::new(&root);
+        let src = FakeSource::new("crashy");
+        src.feed(b"unsaved work");
+        ckpt.open_session(src as Arc<dyn CheckpointSource>, &SessionMeta::new(None, 80, 24))
+            .expect("open");
+        ckpt.tick().await; // anchor checkpoint on disk
+
+        ckpt.remove_session("crashy");
+        assert_eq!(ckpt.session_count(), 0, "removed session dropped from registry");
+        assert!(
+            crate::history::session_dir(&root, "crashy").exists(),
+            "unclean removal must PRESERVE the dir (design §9)"
+        );
+        assert!(
+            HistoryReader::new(&root).has_restorable_history("crashy"),
+            "unclean removal leaves the session cold-restorable (ended_at null)"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

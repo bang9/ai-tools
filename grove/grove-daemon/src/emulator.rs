@@ -189,6 +189,13 @@ impl DaemonEmulator {
         self.modes.kitty_flags()
     }
 
+    /// Drain the ground-BEL count accumulated by `process` (design G9). The
+    /// session reads this right after feeding a chunk and flips its per-poll bell
+    /// flag; drained here so the emulator never double-reports a bell.
+    pub fn take_bells(&mut self) -> u32 {
+        self.modes.take_bells()
+    }
+
     /// Serialize the current VT state into a warm-reattach snapshot (S6/S9/S15).
     /// `output_sequence` is stamped by the caller (Session owns the counter).
     pub fn snapshot(&self, opts: SnapshotOptions, output_sequence: u64) -> DaemonSnapshot {

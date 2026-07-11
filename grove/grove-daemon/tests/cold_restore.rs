@@ -342,13 +342,19 @@ async fn clean_close_suppresses_cold_restore() {
     let r = create_or_attach(&mut creader, &mut cwriter, 1, "s1").await;
     assert_eq!(r["isNew"], json!(true));
 
-    // A deliberate close (kill RPC) stamps ended_at SYNCHRONOUSLY (design D2).
+    // A deliberate close (kill RPC) is a clean teardown (design D2): it stamps
+    // ended_at AND self-reaps the whole per-session history dir (design §9), so no
+    // meta remains — the session is cold-restore INELIGIBLE by absence.
     let reply = rpc(&mut creader, &mut cwriter, 2, "kill", json!({ "sessionId": "s1" })).await;
     assert!(reply.error.is_none(), "kill errored: {:?}", reply.error);
     assert_eq!(
         meta_ended_is_null(&base_dir, "s1"),
-        Some(false),
-        "a clean close must stamp ended_at"
+        None,
+        "a clean close must self-reap the session dir (design §9)"
+    );
+    assert!(
+        !session_dir(&history_root(&base_dir), "s1").exists(),
+        "a clean close removes the whole per-session history dir"
     );
 
     daemon_a.sigkill();

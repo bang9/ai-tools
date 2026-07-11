@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use grove_core::daemon::framing::{ExitStatus as FrameExit, StreamFrame};
@@ -39,6 +39,12 @@ const WRITE_DEADLINE: Duration = Duration::from_secs(30);
 const RING_CAP_BYTES: usize = 256 * 1024;
 /// Force-dispose timer after a graceful kill (orca session.ts KILL_TIMEOUT_MS).
 const KILL_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Producer-pause lost-resume failsafe (design S14/P11, orca
+/// `PRODUCER_PAUSE_FAILSAFE_MS`). Pause is requested over a fire-and-forget
+/// notify, so the matching resume can be lost (host crash, dropped socket). A
+/// lost resume must NEVER wedge a shell permanently: auto-resume after this
+/// window. Re-pausing re-arms it (a still-flooded host re-asserts the pause).
+const PRODUCER_PAUSE_FAILSAFE: Duration = Duration::from_secs(5);
 /// Pending-output overflow cap (design S4): past this the accumulated records are
 /// dropped and `overflowed` is flagged, forcing the checkpointer to take a full
 /// snapshot instead of an incremental append.
@@ -50,6 +56,36 @@ const PENDING_SEGMENT_CAP: usize = 64 * 1024;
 struct Ring {
     buf: VecDeque<u8>,
     truncated: bool,
+}
+
+/// Producer flow-control gate (design S14/P11). When paused, the per-session PTY
+/// read loop PARKS on this condvar before its next `read()`, so it stops draining
+/// the PTY: the kernel PTY buffer fills and a flooding child blocks in `write()` —
+/// natural backpressure, no data dropped. Resume wakes the loop.
+///
+/// `generation` is bumped on every pause AND every resume; the 5s failsafe thread
+/// armed at pause time captures the value and only force-resumes if it is still
+/// current — so a resume or a re-pause in the meantime cancels/re-arms it cleanly.
+struct Producer {
+    state: Mutex<ProducerState>,
+    cv: Condvar,
+}
+
+struct ProducerState {
+    paused: bool,
+    generation: u64,
+}
+
+impl Default for Producer {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(ProducerState {
+                paused: false,
+                generation: 0,
+            }),
+            cv: Condvar::new(),
+        }
+    }
 }
 
 /// Accumulated output records drained by the checkpointer's incremental append
@@ -178,6 +214,26 @@ pub struct Session {
     /// Removes this session from the daemon's map on reader exit (fix #3), so a
     /// dead session never leaks its master fd or lingers as a zombie map entry.
     reaper: SessionReaper,
+    /// Producer flow-control gate (design S14/P11): the reader parks here while
+    /// paused so a flooding child hits kernel-buffer backpressure.
+    producer: Producer,
+    /// The lost-resume failsafe window in ms (design S14). Defaults to
+    /// [`PRODUCER_PAUSE_FAILSAFE`]; a test hook shortens it so the auto-resume can
+    /// be observed without a 5s wall-clock wait.
+    failsafe_ms: AtomicU64,
+    /// Pending terminal-bell flag (design G9): set when the emulator sees a real
+    /// ground-state `BEL` in output; DRAINED on each `poll_bells` read (swap-false).
+    /// Replaces the tmux window-bell flag — no shell-out.
+    bell: AtomicBool,
+    /// AI tool status in `tool:status` form (design G9 / grove `@grove_ai_status`).
+    /// Set out-of-band by the hook path (`setAiStatus` notify) and transitioned
+    /// idle→running on an Enter keypress (`enqueue_write` seeing `\r`), replicating
+    /// `pty.rs::run_enter_detection` minus the tmux `set-option` shell-out. Read
+    /// (NOT drained) by `poll_bells` — it is current state, not an event.
+    ai_status: Mutex<Option<String>>,
+    /// Background bookkeeping flag (design P6 `set_session_background`): stored for
+    /// later keep-tail thinning. No behavior beyond storage in this cut.
+    background: AtomicBool,
 }
 
 enum ReadStep {
@@ -272,6 +328,11 @@ impl Session {
             pending: Mutex::new(PendingOutput::default()),
             history_enabled: AtomicBool::new(false),
             reaper,
+            producer: Producer::default(),
+            failsafe_ms: AtomicU64::new(PRODUCER_PAUSE_FAILSAFE.as_millis() as u64),
+            bell: AtomicBool::new(false),
+            ai_status: Mutex::new(None),
+            background: AtomicBool::new(false),
         });
 
         let reader_session = Arc::clone(&session);
@@ -347,10 +408,24 @@ impl Session {
         let Some(emu) = guard.as_mut() else {
             return;
         };
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| emu.process(chunk)));
-        if outcome.is_err() {
-            *guard = None;
-            self.emulator_poisoned.store(true, Ordering::SeqCst);
+        // Process + drain any ground BEL in ONE isolated section (design G9): a
+        // real bell flips the session's pending flag, latched until `poll_bells`
+        // drains it. Kept inside the catch_unwind so a vt100 panic still degrades
+        // the emulator without leaving a half-updated bell state.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            emu.process(chunk);
+            emu.take_bells()
+        }));
+        match outcome {
+            Ok(bells) => {
+                if bells > 0 {
+                    self.bell.store(true, Ordering::SeqCst);
+                }
+            }
+            Err(_) => {
+                *guard = None;
+                self.emulator_poisoned.store(true, Ordering::SeqCst);
+            }
         }
     }
 
@@ -412,6 +487,9 @@ impl Session {
     /// the "resize on a dead session is skipped" path.
     #[cfg(test)]
     pub fn test_mark_dead(&self) {
+        // Resume first so a parked reader would observe the dropped master (mirrors
+        // the real teardown paths).
+        self.resume_producer();
         self.alive.store(false, Ordering::SeqCst);
         let _ = lock(&self.master).take();
     }
@@ -431,7 +509,60 @@ impl Session {
     /// single-consumer channel guarantees write order == enqueue (notify-receive)
     /// order. A send error means the session was already torn down; drop silently.
     pub fn enqueue_write(&self, data: &[u8]) {
+        // Enter-detection (design G9): an input batch carrying `\r` flips a hookless
+        // tool's status idle→running, replicating `pty.rs::run_enter_detection`
+        // minus the tmux `set-option` shell-out. Done at enqueue time (vs the write
+        // thread) — the transition is about the user pressing Enter, observable from
+        // the input bytes; ordering against the actual PTY write is immaterial to
+        // the status.
+        if data.contains(&b'\r') {
+            self.detect_enter();
+        }
         let _ = self.write_tx.send(data.to_vec());
+    }
+
+    /// Idle→running transition on an Enter keypress for a hookless tool (design G9,
+    /// mirrors `pty.rs::run_enter_detection`). A no-op unless the current status is
+    /// a hookless tool that is not already running.
+    fn detect_enter(&self) {
+        let mut st = lock(&self.ai_status);
+        let current = st.as_deref();
+        if grove_core::tool_hooks::needs_idle_detection(current)
+            && !grove_core::tool_hooks::is_running(current)
+        {
+            let running = grove_core::tool_hooks::to_running(current.unwrap());
+            *st = Some(running);
+        }
+    }
+
+    /// Set the session's AI tool status out-of-band (design G9). The daemon-native
+    /// equivalent of a hook's `tmux set-option @grove_ai_status`: the P9 hook path
+    /// forwards status here via the `setAiStatus` notify.
+    pub fn set_ai_status(&self, status: Option<String>) {
+        *lock(&self.ai_status) = status;
+    }
+
+    /// The current AI tool status (design G9), read (not drained) by `poll_bells`.
+    pub fn ai_status(&self) -> Option<String> {
+        lock(&self.ai_status).clone()
+    }
+
+    /// Drain the pending terminal-bell flag (design G9): returns whether a real
+    /// bell was seen since the last poll and clears it (swap-false), so a bell is
+    /// reported exactly once per `poll_bells`.
+    pub fn take_bell(&self) -> bool {
+        self.bell.swap(false, Ordering::SeqCst)
+    }
+
+    /// Store the background bookkeeping flag (design P6 `set_session_background`).
+    /// No behavior beyond storage in this cut (future keep-tail thinning reads it).
+    pub fn set_background(&self, background: bool) {
+        self.background.store(background, Ordering::SeqCst);
+    }
+
+    /// Whether the session is currently flagged background (diagnostics/tests).
+    pub fn is_background(&self) -> bool {
+        self.background.load(Ordering::SeqCst)
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
@@ -491,10 +622,95 @@ impl Session {
         self.alive.load(Ordering::SeqCst)
     }
 
+    /// Producer-side flow control (design S14/P11): stop draining the PTY so the
+    /// flooding child blocks on `write()` (kernel backpressure). Arms the 5s
+    /// lost-resume failsafe; re-pausing re-arms it (a still-flooded host re-asserts
+    /// the pause on its next watermark check). Takes `&Arc<Session>` so the failsafe
+    /// thread can hold a `Weak` and force-resume without keeping the session alive.
+    pub fn pause_producer(session: &Arc<Session>) {
+        // A dead/exited session has nothing to pause; skip so we never arm a
+        // failsafe thread that outlives the session for no reason.
+        if !session.is_alive() {
+            return;
+        }
+        let gen = {
+            let mut st = lock(&session.producer.state);
+            st.paused = true;
+            st.generation = st.generation.wrapping_add(1);
+            st.generation
+        };
+        let failsafe = Duration::from_millis(session.failsafe_ms.load(Ordering::SeqCst));
+        let weak = Arc::downgrade(session);
+        // The failsafe runs on its own std thread (no tokio-context dependency, so
+        // it works uniformly from the notify path and from tests). It force-resumes
+        // ONLY if the generation is unchanged — a resume or re-pause since arm time
+        // bumped it, cancelling this failsafe (the re-pause armed a fresh one).
+        std::thread::Builder::new()
+            .name(format!("grove-daemon-failsafe-{}", session.id))
+            .spawn(move || {
+                std::thread::sleep(failsafe);
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
+                let mut st = lock(&session.producer.state);
+                if st.generation == gen && st.paused {
+                    st.paused = false;
+                    st.generation = st.generation.wrapping_add(1);
+                    session.producer.cv.notify_all();
+                }
+            })
+            .ok();
+    }
+
+    /// Resume the reader (design S14/P11). Bumps the generation so any pending
+    /// failsafe from the pause it cancels no-ops. Idempotent: a resume on an
+    /// already-running session still invalidates a stray armed failsafe.
+    pub fn resume_producer(&self) {
+        let mut st = lock(&self.producer.state);
+        st.generation = st.generation.wrapping_add(1);
+        if st.paused {
+            st.paused = false;
+            self.producer.cv.notify_all();
+        }
+    }
+
+    /// Called by the reader loop before each `read()`: block while paused (design
+    /// S14). The condvar releases the state lock while parked, so `resume_producer`
+    /// / the failsafe can flip the flag and wake us. Poison-recovering so a panic
+    /// elsewhere never bricks the gate.
+    fn producer_wait_if_paused(&self) {
+        let mut st = self.producer.state.lock().unwrap_or_else(|e| e.into_inner());
+        while st.paused {
+            st = self
+                .producer
+                .cv
+                .wait(st)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_producer_paused(&self) -> bool {
+        lock(&self.producer.state).paused
+    }
+
+    /// Shorten the failsafe window so a test can observe the auto-resume without a
+    /// 5s wait (design S14). Read at arm time, so it affects the NEXT pause.
+    #[cfg(test)]
+    pub fn set_failsafe_ms_for_test(&self, ms: u64) {
+        self.failsafe_ms.store(ms, Ordering::SeqCst);
+    }
+
     /// Kill the session's child, then arm a 5s force-dispose watchdog that drops
     /// the master fd if the child hasn't died — so a wedged child can never keep
     /// the session (and its reader thread) alive forever.
     pub fn kill(session: &Arc<Session>) {
+        // Resume-before-kill (design S14, mustReplicate): unpark the reader BEFORE
+        // signalling the child. A parked reader would otherwise miss the master's
+        // EOF (a condvar park is not woken by a dropped fd) and the session would
+        // linger until the 5s failsafe. Resuming also lets a child blocked in
+        // write() against a full PTY buffer drain + run its signal handler and exit.
+        session.resume_producer();
         {
             let mut child = lock(&session.child);
             let _ = child.kill();
@@ -504,7 +720,10 @@ impl Session {
             std::thread::sleep(KILL_FORCE_TIMEOUT);
             if watch.alive.load(Ordering::SeqCst) {
                 // Force-dispose: a second kill, then drop the master fd so the
-                // blocked reader unblocks with EOF and emits the Exit frame.
+                // blocked reader unblocks with EOF and emits the Exit frame. Resume
+                // again first in case a re-pause slipped in during teardown — a
+                // parked reader would not observe the dropped master otherwise.
+                watch.resume_producer();
                 {
                     let mut child = lock(&watch.child);
                     let _ = child.kill();
@@ -616,6 +835,12 @@ fn run_reader(
 ) {
     let mut buf = [0u8; 4096];
     loop {
+        // Producer flow control (design S14): park here while paused so we stop
+        // draining the PTY (kernel backpressure blocks a flooding child). A resume
+        // / the 5s failsafe / any teardown path (which resumes before dropping the
+        // master) wakes us. Outside catch_unwind: the gate is poison-recovering and
+        // a park is not a read-path panic hazard.
+        session.producer_wait_if_paused();
         // Why (design L11): a panic anywhere in the read path must never escape
         // this detached thread and take down siblings. catch_unwind contains it;
         // the coalescer is still drained + Exit still emitted below.
@@ -788,6 +1013,116 @@ mod tests {
             session.output_sequence(),
             (marker.len() + more.len()) as u64
         );
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn bell_set_by_bel_byte_and_drained_on_poll() {
+        // Design G9: a ground BEL in output latches the bell flag; poll drains it.
+        let session = spawn_test_session();
+        assert!(!session.take_bell(), "no bell before any output");
+        session.feed_emulator(b"ding\x07");
+        assert!(session.take_bell(), "BEL byte must set the pending bell");
+        assert!(!session.take_bell(), "bell must drain on poll (swap-false)");
+        // An OSC-terminating BEL must NOT ring the bell.
+        session.feed_emulator(b"\x1b]7;file://h/tmp\x07");
+        assert!(!session.take_bell(), "OSC-terminator BEL is not a bell");
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn ai_status_transitions_to_running_on_enter() {
+        // Design G9: an Enter keypress flips a hookless tool idle→running, mirroring
+        // run_enter_detection. A non-hookless / unset status is untouched.
+        let session = spawn_test_session();
+        assert_eq!(session.ai_status(), None);
+
+        // Seed an idle hookless status (the hook path / setAiStatus does this).
+        session.set_ai_status(Some("codex:idle".to_string()));
+        session.enqueue_write(b"\r");
+        assert_eq!(
+            session.ai_status().as_deref(),
+            Some("codex:running"),
+            "Enter must transition a hookless idle tool to running"
+        );
+
+        // Already running: Enter is a no-op (idempotent).
+        session.enqueue_write(b"\r");
+        assert_eq!(session.ai_status().as_deref(), Some("codex:running"));
+
+        // A non-Enter write does not transition.
+        session.set_ai_status(Some("codex:idle".to_string()));
+        session.enqueue_write(b"ls");
+        assert_eq!(session.ai_status().as_deref(), Some("codex:idle"));
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn background_flag_is_stored() {
+        // Design P6 set_session_background: pure bookkeeping — stored, no behavior.
+        let session = spawn_test_session();
+        assert!(!session.is_background(), "default is foreground");
+        session.set_background(true);
+        assert!(session.is_background());
+        session.set_background(false);
+        assert!(!session.is_background());
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn pause_sets_flag_and_resume_clears_it() {
+        // Design S14: pause parks the reader (flag set); resume clears it and wakes.
+        let session = spawn_test_session();
+        assert!(!session.is_producer_paused());
+        Session::pause_producer(&session);
+        assert!(session.is_producer_paused(), "pause must set the paused flag");
+        session.resume_producer();
+        assert!(!session.is_producer_paused(), "resume must clear the paused flag");
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn failsafe_auto_resumes_after_timeout() {
+        // Design S14/P11: a lost resume must never wedge a shell — the failsafe
+        // force-resumes after its window. Real const is 5s; the test shortens it.
+        assert_eq!(
+            PRODUCER_PAUSE_FAILSAFE.as_secs(),
+            5,
+            "the production failsafe window must stay 5s"
+        );
+        let session = spawn_test_session();
+        session.set_failsafe_ms_for_test(120);
+        Session::pause_producer(&session);
+        assert!(session.is_producer_paused(), "paused immediately after pause");
+        // No resume is ever sent — only the failsafe can clear it.
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            !session.is_producer_paused(),
+            "the 5s failsafe (shortened) must auto-resume a session with a lost resume"
+        );
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn re_pause_rearms_failsafe_and_stale_one_noops() {
+        // Design S14: re-pausing bumps the generation so the FIRST failsafe (armed
+        // by the first pause) no-ops when it fires; the second pause's failsafe is
+        // the one that resumes. We arm a short first failsafe, immediately re-pause
+        // with a longer one, and assert the session stays paused past the first
+        // window (the stale failsafe did not resume it).
+        let session = spawn_test_session();
+        session.set_failsafe_ms_for_test(80);
+        Session::pause_producer(&session); // arms failsafe A (80ms), gen g1
+        session.set_failsafe_ms_for_test(5000);
+        Session::pause_producer(&session); // arms failsafe B (5s), gen g2 > g1
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            session.is_producer_paused(),
+            "the re-pause must re-arm; the stale 80ms failsafe must not resume"
+        );
+        // An explicit resume then wins (and invalidates failsafe B).
+        session.resume_producer();
+        assert!(!session.is_producer_paused());
         Session::kill(&session);
     }
 }

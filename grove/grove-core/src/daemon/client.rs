@@ -371,6 +371,20 @@ struct Shared {
     /// reconnect, any believed-alive session absent from `listSessions` died
     /// while disconnected → synthesize its `Exit` (design P8).
     known_alive: Mutex<HashSet<String>>,
+    /// Sessions the client has paused and not yet resumed (design P11). On a socket
+    /// disconnect these move into `producer_resumes_owed`; an exited session leaves
+    /// this set (via `dispatch_frame`/`resync`).
+    producer_paused: Mutex<HashSet<String>>,
+    /// Producer resumes OWED across a reconnect (design P11): sessions that were
+    /// paused when the socket dropped. On the next fresh connect the client re-sends
+    /// `resumePty` for each so a reconnect never leaves a reader parked. An exited
+    /// session leaves this set.
+    producer_resumes_owed: Mutex<HashSet<String>>,
+    /// Sessions marked sleep-restorable by the caller for Tier-C wake (design L12,
+    /// orca `sleepRestoreSessionIds`). Purely client-side bookkeeping the host
+    /// populates around `checkpoint_all` on suspend and consults on resume; the
+    /// client never mutates it except through the public accessors.
+    sleep_restore_session_ids: Mutex<HashSet<String>>,
 }
 
 /// The async daemon client. Cheap to clone (`Arc` inside); every clone shares one
@@ -398,6 +412,9 @@ impl DaemonClient {
                 cold_cache: ColdRestoreCache::default(),
                 seq: Mutex::new(HashMap::new()),
                 known_alive: Mutex::new(HashSet::new()),
+                producer_paused: Mutex::new(HashSet::new()),
+                producer_resumes_owed: Mutex::new(HashSet::new()),
+                sleep_restore_session_ids: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -541,15 +558,36 @@ impl DaemonClient {
             // seq tracker is meaningless past Exit and would otherwise leak one
             // entry per session that ever died while disconnected.
             lock(&self.shared.seq).remove(&id);
+            // P11: an exited session leaves both producer sets, so we never send a
+            // stray resume for a session that died in the disconnected gap.
+            lock(&self.shared.producer_paused).remove(&id);
+            lock(&self.shared.producer_resumes_owed).remove(&id);
             let sub = lock(&self.shared.subscribers).get(&id).cloned();
             if let Some(sub) = sub {
                 sub.on_exit(ExitStatus { code: None, signal: None });
             }
         }
 
-        let mut known = lock(&self.shared.known_alive);
-        for id in live {
-            known.insert(id);
+        {
+            let mut known = lock(&self.shared.known_alive);
+            for id in live {
+                known.insert(id);
+            }
+        }
+
+        // Flush owed producer resumes (design P11): every session paused when the
+        // socket dropped gets a fresh `resumePty` on this new connection, so a
+        // reconnect can never leave a reader parked. Dead sessions were already
+        // pruned above, so only live ones remain here. Sent on the CURRENT
+        // connection (send_notify_raw — no re-entrant ensure_connected). We clear
+        // both sets: the session is no longer paused after the resume lands.
+        let owed: Vec<String> = {
+            let mut owed = lock(&self.shared.producer_resumes_owed);
+            owed.drain().collect()
+        };
+        for id in owed {
+            let _ = self.send_notify_raw("resumePty", json!({ "sessionId": id }));
+            lock(&self.shared.producer_paused).remove(&id);
         }
     }
 
@@ -654,6 +692,20 @@ impl DaemonClient {
         }
     }
 
+    /// Encode + send a notify on the CURRENT connection WITHOUT `ensure_connected`
+    /// (design P8). Used by `resync`, which already runs inside `ensure_connected`
+    /// on a freshly-established connection — calling the public `notify` there would
+    /// re-enter connection setup.
+    fn send_notify_raw(&self, method: &str, params: Value) -> Result<(), ClientError> {
+        let msg = ControlMessage::Notify(Notify {
+            method: method.to_string(),
+            params,
+        });
+        let line =
+            encode_ndjson_line(&msg).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        self.send_control(line.into_bytes())
+    }
+
     // -- typed operations ---------------------------------------------------
 
     /// `createOrAttach` (design P9) with sticky cold-restore handling (P16). A
@@ -741,6 +793,66 @@ impl DaemonClient {
         Ok((cols, rows))
     }
 
+    /// The session's OSC7-tracked cwd (design S11/P15/G8) — replaces the tmux cwd
+    /// shell-out. Served from the emulator's ModeState without composing a full
+    /// snapshot; `None` when the shell has emitted no OSC 7 yet.
+    pub async fn cwd(&self, session_id: &str) -> Result<Option<String>, ClientError> {
+        let result = self.request("getCwd", json!({ "sessionId": session_id })).await?;
+        Ok(result
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::to_string))
+    }
+
+    /// Poll pending bell + current AI-status events, one per live session (design
+    /// G9). Each session's bell is DRAINED daemon-side on this read; `ai_status` is
+    /// current state. Replaces the tmux monitor-bell / `@grove_ai_status` polls; the
+    /// frontend `PtyBellEvent` contract is unchanged.
+    pub async fn poll_bells(&self) -> Result<Vec<crate::PtyBellEvent>, ClientError> {
+        let result = self.request("pollBells", Value::Null).await?;
+        serde_json::from_value(result).map_err(|e| ClientError::Protocol(e.to_string()))
+    }
+
+    /// Inject a session's AI tool status (design G9): the daemon-native replacement
+    /// for a hook's `tmux set-option @grove_ai_status`. `None` clears it. Notify —
+    /// status delivery is not latency-gated on an ACK.
+    pub async fn set_ai_status(
+        &self,
+        session_id: &str,
+        status: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.notify(
+            "setAiStatus",
+            json!({ "sessionId": session_id, "aiStatus": status }),
+        )
+        .await
+    }
+
+    /// Flag a session background/foreground (design P6 `set_session_background`):
+    /// pure daemon-side bookkeeping for later keep-tail thinning. Notify.
+    pub async fn set_session_background(
+        &self,
+        session_id: &str,
+        background: bool,
+    ) -> Result<(), ClientError> {
+        self.notify(
+            "setSessionBackground",
+            json!({ "sessionId": session_id, "background": background }),
+        )
+        .await
+    }
+
+    /// The daemon's LIVE connected-control count (design §9b) — backs daemon-mode
+    /// GC's "skip if any app is connected" gate. Note the caller's own control
+    /// connection is included in the count.
+    pub async fn connected_clients(&self) -> Result<u64, ClientError> {
+        let result = self.request("getDaemonInfo", Value::Null).await?;
+        Ok(result
+            .get("connectedClients")
+            .and_then(Value::as_u64)
+            .unwrap_or(0))
+    }
+
     /// Kill a session's child (design L8/S14 semantics live daemon-side).
     pub async fn kill(&self, session_id: &str) -> Result<(), ClientError> {
         self.request("kill", json!({ "sessionId": session_id })).await?;
@@ -787,6 +899,81 @@ impl DaemonClient {
         self.shared.cold_cache.ack(session_id);
         self.notify("ackColdRestore", json!({ "sessionId": session_id }))
             .await
+    }
+
+    /// Pause a session's PTY producer (design S14/P11 notify): the daemon parks the
+    /// reader so a flooding child hits kernel backpressure. Records the session as
+    /// paused so a socket drop before the matching resume queues an owed resume
+    /// (`producer_resumes_owed`) that is re-sent on the next fresh connect. The
+    /// paused flag is only recorded once the notify was actually queued — if the
+    /// send failed the daemon never paused, so there is nothing to owe.
+    pub async fn pause_pty(&self, session_id: &str) -> Result<(), ClientError> {
+        self.notify("pausePty", json!({ "sessionId": session_id }))
+            .await?;
+        lock(&self.shared.producer_paused).insert(session_id.to_string());
+        Ok(())
+    }
+
+    /// Resume a session's PTY producer (design S14/P11 notify). Clears the local
+    /// paused + owed state regardless of the send outcome: the intent is now
+    /// "running", and the daemon's own eager auto-resume on last-client-disconnect
+    /// plus the 5s failsafe cover a dropped notify.
+    pub async fn resume_pty(&self, session_id: &str) -> Result<(), ClientError> {
+        let result = self
+            .notify("resumePty", json!({ "sessionId": session_id }))
+            .await;
+        lock(&self.shared.producer_paused).remove(session_id);
+        lock(&self.shared.producer_resumes_owed).remove(session_id);
+        result
+    }
+
+    /// Checkpoint EVERY live session without ending them (design L12 Tier C): the
+    /// daemon writes a final checkpoint per session, awaiting any in-flight tick,
+    /// and does NOT stamp `ended_at` — so a child killed under power management can
+    /// still cold-restore on wake. The host calls this on system suspend. Awaits
+    /// the daemon reply, so on return the checkpoints are durable.
+    pub async fn checkpoint_all(&self) -> Result<(), ClientError> {
+        self.request("checkpointAll", Value::Null).await?;
+        Ok(())
+    }
+
+    /// Mark a session sleep-restorable for the Tier-C wake path (design L12). Pure
+    /// client-side bookkeeping the host populates on suspend (alongside
+    /// `checkpoint_all`) and consults on resume; see orca `sleepRestoreSessionIds`.
+    pub fn mark_sleep_restore(&self, session_id: &str) {
+        lock(&self.shared.sleep_restore_session_ids).insert(session_id.to_string());
+    }
+
+    /// Drop a session's sleep-restore mark (design L12): the host clears it once the
+    /// pane has been reattached/cold-restored on wake, or on an explicit close.
+    pub fn clear_sleep_restore(&self, session_id: &str) {
+        lock(&self.shared.sleep_restore_session_ids).remove(session_id);
+    }
+
+    /// Is a session currently marked sleep-restorable (design L12)?
+    pub fn is_sleep_restore(&self, session_id: &str) -> bool {
+        lock(&self.shared.sleep_restore_session_ids).contains(session_id)
+    }
+
+    /// Force the current connection down so the NEXT op reconnects (design P7/P11).
+    /// This is exactly what a transient socket drop does — it rejects in-flight
+    /// RPCs with `ConnectionLost`, tears down both sockets, and (via
+    /// `handle_disconnect`) moves any paused sessions into `producer_resumes_owed`.
+    /// Used to recover a wedged connection and to simulate a transient drop in
+    /// tests; harmless in production (a reconnect follows on the next op).
+    pub fn reset_connection(&self) {
+        let generation = self.shared.generation.load(Ordering::SeqCst);
+        handle_disconnect(&self.shared, generation);
+    }
+
+    /// The set of sessions with an owed producer-resume (diagnostics/tests).
+    pub fn producer_resumes_owed_len(&self) -> usize {
+        lock(&self.shared.producer_resumes_owed).len()
+    }
+
+    /// Is a session currently locally recorded as paused (diagnostics/tests)?
+    pub fn is_producer_paused(&self, session_id: &str) -> bool {
+        lock(&self.shared.producer_paused).contains(session_id)
     }
 }
 
@@ -879,6 +1066,10 @@ fn dispatch_frame(shared: &Arc<Shared>, frame: StreamFrame) {
             // FIX 3: prune the per-session seq tracker now the session is dead;
             // past Exit it is meaningless and would otherwise leak per session.
             lock(&shared.seq).remove(&frame.session_id);
+            // P11: an exited session leaves both producer sets — never re-send a
+            // resume for a session whose child is gone.
+            lock(&shared.producer_paused).remove(&frame.session_id);
+            lock(&shared.producer_resumes_owed).remove(&frame.session_id);
             // Why the cold-restore cache is NOT evicted here: a cold-restore
             // payload describes a DEAD session by definition — it is the disk seed
             // the renderer replays for a session whose daemon-side child is gone.
@@ -916,6 +1107,22 @@ fn handle_disconnect(shared: &Arc<Shared>, generation: u64) {
         }
         st.connected = false;
         st.control_tx = None; // dropping the sender ends the writer task
+    }
+    // Owed-resume (design P11): every session paused when this socket dropped moves
+    // into `producer_resumes_owed` so the next fresh connect re-sends its resume. A
+    // session that exits while disconnected is pruned from the owed set on the
+    // reconnect resync (or an Exit frame), so no stray resume is ever sent.
+    {
+        let paused: Vec<String> = {
+            let mut paused = lock(&shared.producer_paused);
+            paused.drain().collect()
+        };
+        if !paused.is_empty() {
+            let mut owed = lock(&shared.producer_resumes_owed);
+            for id in paused {
+                owed.insert(id);
+            }
+        }
     }
     // Reject the in-flight RPCs bound to THIS generation so no caller hangs on a
     // dead socket. A request registered against a newer generation (already
@@ -1054,6 +1261,34 @@ impl ClientHandle {
         self.block(self.client.applied_size(session_id))
     }
 
+    pub fn cwd_blocking(&self, session_id: &str) -> Result<Option<String>, BridgeError> {
+        self.block(self.client.cwd(session_id))
+    }
+
+    pub fn poll_bells_blocking(&self) -> Result<Vec<crate::PtyBellEvent>, BridgeError> {
+        self.block(self.client.poll_bells())
+    }
+
+    pub fn set_ai_status_blocking(
+        &self,
+        session_id: &str,
+        status: Option<&str>,
+    ) -> Result<(), BridgeError> {
+        self.block(self.client.set_ai_status(session_id, status))
+    }
+
+    pub fn set_session_background_blocking(
+        &self,
+        session_id: &str,
+        background: bool,
+    ) -> Result<(), BridgeError> {
+        self.block(self.client.set_session_background(session_id, background))
+    }
+
+    pub fn connected_clients_blocking(&self) -> Result<u64, BridgeError> {
+        self.block(self.client.connected_clients())
+    }
+
     pub fn write_blocking(&self, session_id: &str, data: &[u8]) -> Result<(), BridgeError> {
         self.block(self.client.write(session_id, data))
     }
@@ -1069,6 +1304,18 @@ impl ClientHandle {
 
     pub fn ack_cold_restore_blocking(&self, session_id: &str) -> Result<(), BridgeError> {
         self.block(self.client.ack_cold_restore(session_id))
+    }
+
+    pub fn pause_pty_blocking(&self, session_id: &str) -> Result<(), BridgeError> {
+        self.block(self.client.pause_pty(session_id))
+    }
+
+    pub fn resume_pty_blocking(&self, session_id: &str) -> Result<(), BridgeError> {
+        self.block(self.client.resume_pty(session_id))
+    }
+
+    pub fn checkpoint_all_blocking(&self) -> Result<(), BridgeError> {
+        self.block(self.client.checkpoint_all())
     }
 
     pub fn kill_blocking(&self, session_id: &str) -> Result<(), BridgeError> {
@@ -1321,6 +1568,59 @@ mod tests {
         // client if one is installed, else no-ops. No global is set in this test
         // binary, so the call must return without panicking.
         crate::daemon::ack_cold_restore("no-such-session");
+    }
+
+    #[test]
+    fn disconnect_moves_paused_into_owed() {
+        // Design P11: sessions paused when the socket drops move into the owed set
+        // so the next fresh connect re-sends their resume. `reset_connection` drives
+        // the exact `handle_disconnect` teardown a transient socket drop triggers.
+        let client = DaemonClient::new(dead_endpoint_options());
+        // Simulate a live connection so handle_disconnect runs its teardown (it
+        // early-returns when already disconnected).
+        lock(&client.shared.state).connected = true;
+        lock(&client.shared.producer_paused).insert("s1".to_string());
+        lock(&client.shared.producer_paused).insert("s2".to_string());
+
+        client.reset_connection();
+
+        assert!(
+            lock(&client.shared.producer_paused).is_empty(),
+            "paused set must drain into owed on disconnect"
+        );
+        let owed = lock(&client.shared.producer_resumes_owed);
+        assert!(
+            owed.contains("s1") && owed.contains("s2"),
+            "both paused sessions must owe a resume after disconnect"
+        );
+    }
+
+    #[test]
+    fn exit_prunes_producer_sets() {
+        // Design P11: an exited session leaves BOTH producer sets so no stray resume
+        // is ever sent for a session whose child is gone.
+        let client = DaemonClient::new(dead_endpoint_options());
+        lock(&client.shared.known_alive).insert("s1".to_string());
+        lock(&client.shared.producer_paused).insert("s1".to_string());
+        lock(&client.shared.producer_resumes_owed).insert("s1".to_string());
+
+        let exit = StreamFrame::exit("s1", 0, &ExitStatus { code: Some(0), signal: None });
+        dispatch_frame(&client.shared, exit);
+
+        assert!(!lock(&client.shared.producer_paused).contains("s1"));
+        assert!(!lock(&client.shared.producer_resumes_owed).contains("s1"));
+    }
+
+    #[test]
+    fn sleep_restore_ids_are_caller_managed() {
+        // Design L12: the sleep-restore set is pure client-side bookkeeping the host
+        // populates on suspend and clears on wake.
+        let client = DaemonClient::new(dead_endpoint_options());
+        assert!(!client.is_sleep_restore("s1"));
+        client.mark_sleep_restore("s1");
+        assert!(client.is_sleep_restore("s1"));
+        client.clear_sleep_restore("s1");
+        assert!(!client.is_sleep_restore("s1"));
     }
 
     fn dead_endpoint_options() -> DaemonClientOptions {

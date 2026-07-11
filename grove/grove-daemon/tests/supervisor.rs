@@ -18,7 +18,8 @@ use grove_core::daemon::protocol::{
     DaemonPidFile,
 };
 use grove_core::daemon::supervisor::{
-    ensure_running, kill_stale, EnsureOutcome, EnsureResult, EnsureRunningConfig, SupervisorError,
+    ensure_running, kill_stale, restart_daemon, EnsureOutcome, EnsureResult, EnsureRunningConfig,
+    SupervisorError,
 };
 
 // --- harness --------------------------------------------------------------
@@ -68,6 +69,41 @@ fn signal(name: &str, pid: u32) {
         .arg(pid.to_string())
         .status()
         .expect("send signal");
+}
+
+/// Is `pid` a LIVE running process (not gone, not a zombie)? The supervisor
+/// detaches the daemon and drops its Child handle without reaping, so a killed
+/// daemon lingers as a ZOMBIE (parent = this test process) — `kill -0` still
+/// succeeds on it. `ps -o stat=` reports the process state; a leading `Z` is a
+/// zombie (already dead), and no output means the pid is gone.
+fn pid_running(pid: u32) -> bool {
+    let out = Command::new("ps")
+        .arg("-o")
+        .arg("stat=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let stat = String::from_utf8_lossy(&o.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        }
+        _ => false,
+    }
+}
+
+async fn wait_pid_dead(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !pid_running(pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// An async `DaemonClient` bound to the endpoint an `ensure_running` resolved to —
@@ -273,6 +309,70 @@ async fn spawn_regenerates_token() {
         "token must be hex; got {token:?}"
     );
 
+    cleanup(&base);
+}
+
+/// Restart orchestration (design L8 / §7): a daemon owning a live session is torn
+/// down (old pid dies, its session is killed) and a FRESH daemon is spawned on a
+/// new pid that serves the socket. `prior_session_ids` carries the killed session
+/// so the P9 frontend can synthesize its exit event before teardown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_daemon_kills_sessions_and_respawns_fresh() {
+    let base = unique_base();
+    let cfg = cfg_for(&base);
+
+    let first = ensure_running(&cfg).await.expect("initial spawn");
+    assert_eq!(first.outcome, EnsureOutcome::Spawned);
+    let pid1 = read_pid(&base);
+    let killer1 = DaemonKiller(pid1);
+
+    // A live session on the old daemon.
+    let client = client_for(&first);
+    client
+        .create_or_attach(attach("restart-a"))
+        .await
+        .expect("createOrAttach restart-a");
+    assert!(
+        wait_session_alive(&client, "restart-a", Duration::from_secs(5)).await,
+        "session should be alive before restart"
+    );
+
+    // Restart: kill the old daemon + its sessions, spawn a fresh one.
+    let outcome = restart_daemon(&cfg).await.expect("restart");
+    assert_eq!(outcome.result.outcome, EnsureOutcome::Replaced);
+    let pid2 = read_pid(&base);
+    let _killer2 = DaemonKiller(pid2);
+
+    assert_ne!(pid2, pid1, "restart must spawn a NEW daemon pid");
+    assert!(
+        wait_pid_dead(pid1, Duration::from_secs(5)).await,
+        "the old daemon pid must be dead (gone or zombie) after restart"
+    );
+    // The pre-restart session is surfaced so the frontend can synthesize its exit.
+    assert!(
+        outcome.prior_session_ids.contains(&"restart-a".to_string()),
+        "prior_session_ids must carry the killed session for exit synthesis, got {:?}",
+        outcome.prior_session_ids
+    );
+
+    // The fresh daemon serves: the old session is GONE (kill_sessions), and a new
+    // createOrAttach on the new endpoint succeeds.
+    let client2 = client_for(&outcome.result);
+    assert!(
+        !session_alive(&client2, "restart-a").await,
+        "the old session must be gone after a kill_sessions restart"
+    );
+    client2
+        .create_or_attach(attach("restart-b"))
+        .await
+        .expect("fresh daemon must serve createOrAttach");
+    assert!(
+        wait_session_alive(&client2, "restart-b", Duration::from_secs(5)).await,
+        "the fresh daemon must run new sessions"
+    );
+
+    // pid1 was already killed by the restart; its killer drop is a harmless no-op.
+    drop(killer1);
     cleanup(&base);
 }
 
