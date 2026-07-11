@@ -1,6 +1,6 @@
 {
   "name": "rewind",
-  "version": "v2.17.0",
+  "version": "v2.17.1",
   "description": "Session transcript timeline viewer for Claude Code and Codex agent sessions",
   "category": "development",
   "author": {
