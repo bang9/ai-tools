@@ -191,6 +191,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const suggestRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
 
   // Programmatic value + selection changes flow through here. React won't
@@ -623,9 +624,16 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
         : "No results";
   }
 
+  const suggestionsShowing = suggestOpen && rows.length > 0;
+
   // Keep the native webview positioned over the host area whenever it is the
   // active, visible tab. Also runs on remount (worktree switch) so a persisted
   // native webview snaps back to the right place.
+  //
+  // When the suggestions dropdown is open we do NOT hide the webview (that
+  // blanks the whole page); instead we push the webview's top DOWN past the
+  // dropdown's bottom edge, so the DOM dropdown shows in the reclaimed strip
+  // and the page stays visible below it.
   useEffect(() => {
     if (!hasNav || !isActive) return;
     const el = hostRef.current;
@@ -634,12 +642,15 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     const sync = () => {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0) return; // hidden — skip
-      syncBrowserBounds(tabId, {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-      });
+      let top = rect.y;
+      let height = rect.height;
+      const dd = suggestionsShowing ? suggestRef.current?.getBoundingClientRect() : null;
+      if (dd) {
+        const offset = Math.max(0, Math.min(dd.bottom - rect.y, rect.height));
+        top = rect.y + offset;
+        height = rect.height - offset;
+      }
+      syncBrowserBounds(tabId, { x: rect.x, y: top, width: rect.width, height });
     };
     const schedule = () => {
       cancelAnimationFrame(rafId);
@@ -654,28 +665,21 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       observer.disconnect();
       window.removeEventListener("resize", schedule);
     };
-  }, [hasNav, isActive, tabId]);
+  }, [hasNav, isActive, tabId, suggestionsShowing, rows.length]);
 
   // Drive native webview visibility. Hidden when inactive, when no page is
-  // loaded, when an overlay covers it, when the URL suggestions dropdown is
-  // open (it renders in the DOM, under the native view), or when the OS
-  // window is hidden.
+  // loaded, when an overlay covers it, or when the OS window is hidden. The
+  // suggestions dropdown no longer hides it (see the bounds effect above).
   //
   // This is also where a missing webview gets recreated (idle eviction, native
   // crash): recreation must retrigger on every signal that can end a hide —
-  // tab activation, overlay/suggestions closing, the OS window becoming
-  // visible again — and this effect is the one place that already watches all
-  // of them. It never fights commit(), which flips isBrowserWebviewCreated
-  // synchronously before the store update lands.
-  const suggestionsShowing = suggestOpen && rows.length > 0;
+  // tab activation, overlay closing, the OS window becoming visible again —
+  // and this effect is the one place that already watches all of them. It never
+  // fights commit(), which flips isBrowserWebviewCreated synchronously before
+  // the store update lands.
   useEffect(() => {
     const apply = () => {
-      const visible =
-        isActive &&
-        hasNav &&
-        !overlayOpen &&
-        !suggestionsShowing &&
-        document.visibilityState === "visible";
+      const visible = isActive && hasNav && !overlayOpen && document.visibilityState === "visible";
       if (visible && url && !isBrowserWebviewCreated(tabId)) {
         // Created visible over the host; the bounds-sync effect snaps it into
         // place right after.
@@ -689,7 +693,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     return () => {
       document.removeEventListener("visibilitychange", apply);
     };
-  }, [hasNav, isActive, overlayOpen, suggestionsShowing, tabId, url]);
+  }, [hasNav, isActive, overlayOpen, tabId, url]);
 
   // Hide the native webview when this panel unmounts (e.g. tab closed or
   // worktree switched away). The webview itself persists until closeTab.
@@ -818,6 +822,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
 
           {suggestOpen && rows.length > 0 && (
             <div
+              ref={suggestRef}
               className={cn(
                 "absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-md",
               )}
