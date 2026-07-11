@@ -1,8 +1,4 @@
-export type EnvValueSource =
-  | "process"
-  | "launchctl"
-  | "ancestorProcess"
-  | "interactiveShell";
+export type EnvValueSource = "process" | "launchctl" | "ancestorProcess" | "interactiveShell";
 
 export interface SubprocessEnvVar {
   key: string;

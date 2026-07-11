@@ -68,21 +68,9 @@ interface DiffState {
   stageHunk: (path: string, hunkIndex: number) => Promise<void>;
   unstageHunk: (path: string, hunkIndex: number) => Promise<void>;
   discardHunk: (path: string, hunkIndex: number) => Promise<void>;
-  stageLines: (
-    path: string,
-    hunkIndex: number,
-    lineIndices: number[],
-  ) => Promise<void>;
-  unstageLines: (
-    path: string,
-    hunkIndex: number,
-    lineIndices: number[],
-  ) => Promise<void>;
-  discardLines: (
-    path: string,
-    hunkIndex: number,
-    lineIndices: number[],
-  ) => Promise<void>;
+  stageLines: (path: string, hunkIndex: number, lineIndices: number[]) => Promise<void>;
+  unstageLines: (path: string, hunkIndex: number, lineIndices: number[]) => Promise<void>;
+  discardLines: (path: string, hunkIndex: number, lineIndices: number[]) => Promise<void>;
 }
 
 export const useDiffStore = create<DiffState>((set, get) => ({
@@ -150,11 +138,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   refreshAll: async () => {
     const state = get();
     if (!state.worktreePath) return;
-    await Promise.all([
-      state.loadStatus(),
-      state.loadCommits(),
-      state.loadBehindCount(),
-    ]);
+    await Promise.all([state.loadStatus(), state.loadCommits(), state.loadBehindCount()]);
     // If a file is selected in changes view, keep its diff fresh too
     const after = get();
     if (after.selectedFile && after.selectedView === "changes") {
@@ -286,10 +270,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
 }));
 
 function createMutationActions() {
-  const runMutation = async (
-    action: () => Promise<void>,
-    errorToast: string,
-  ) => {
+  const runMutation = async (action: () => Promise<void>, errorToast: string) => {
     await runCommandSafely(action, { errorToast });
   };
 
@@ -387,11 +368,7 @@ function createMutationActions() {
         await refresh();
       }, "Failed to discard hunk");
     },
-    stageLines: async (
-      path: string,
-      hunkIndex: number,
-      lineIndices: number[],
-    ) => {
+    stageLines: async (path: string, hunkIndex: number, lineIndices: number[]) => {
       const wp = useDiffStore.getState().worktreePath;
       if (!wp) return;
       await runMutation(async () => {
@@ -399,11 +376,7 @@ function createMutationActions() {
         await refresh();
       }, "Failed to stage selected lines");
     },
-    unstageLines: async (
-      path: string,
-      hunkIndex: number,
-      lineIndices: number[],
-    ) => {
+    unstageLines: async (path: string, hunkIndex: number, lineIndices: number[]) => {
       const wp = useDiffStore.getState().worktreePath;
       if (!wp) return;
       await runMutation(async () => {
@@ -411,11 +384,7 @@ function createMutationActions() {
         await refresh();
       }, "Failed to unstage selected lines");
     },
-    discardLines: async (
-      path: string,
-      hunkIndex: number,
-      lineIndices: number[],
-    ) => {
+    discardLines: async (path: string, hunkIndex: number, lineIndices: number[]) => {
       const wp = useDiffStore.getState().worktreePath;
       if (!wp) return;
       await runMutation(async () => {

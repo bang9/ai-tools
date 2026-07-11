@@ -6,13 +6,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import type { TerminalTheme } from "../types";
 import { subscribeTerminalLayoutSync } from "./terminal-layout-sync";
-import {
-  clearPtyScrollback,
-  platform,
-  ptyOutputTransport,
-  resizePty,
-  writePty,
-} from "./platform";
+import { clearPtyScrollback, platform, ptyOutputTransport, resizePty, writePty } from "./platform";
 import { useTerminalStore } from "../store/terminal";
 import { isSafeExternalUrl, openUrl } from "./url-open";
 import { PtyInputQueue } from "./terminal-input-queue";
@@ -47,7 +41,6 @@ export interface TerminalPaneActivity {
   ptyId: string;
   source: ActivitySource;
 }
-
 
 function toXtermTheme(theme: TerminalTheme | null) {
   if (!theme) {
@@ -101,10 +94,7 @@ let ptyOutputListenerStarted = false;
  * currently visible. Keeping this a pure predicate makes the "don't double-load
  * on repeated reveals" contract testable without a live GPU context.
  */
-export function shouldLoadWebglAddon(
-  hasLoadedWebgl: boolean,
-  visible: boolean,
-): boolean {
+export function shouldLoadWebglAddon(hasLoadedWebgl: boolean, visible: boolean): boolean {
   return !hasLoadedWebgl && visible;
 }
 
@@ -112,10 +102,7 @@ export function shouldLoadWebglAddon(
  * A hidden pane's WebGL context may be freed only when one is loaded and the
  * pane is not focused — the focused pane is never suspended.
  */
-export function shouldSuspendWebglAddon(
-  hasLoadedWebgl: boolean,
-  focused: boolean,
-): boolean {
+export function shouldSuspendWebglAddon(hasLoadedWebgl: boolean, focused: boolean): boolean {
   return hasLoadedWebgl && !focused;
 }
 
@@ -153,19 +140,14 @@ function emitTerminalPaneActivity(activity: TerminalPaneActivity) {
   }
 }
 
-export function subscribeTerminalPaneActivity(
-  listener: (activity: TerminalPaneActivity) => void,
-) {
+export function subscribeTerminalPaneActivity(listener: (activity: TerminalPaneActivity) => void) {
   activityListeners.add(listener);
   return () => {
     activityListeners.delete(listener);
   };
 }
 
-export function primeTerminalPane(
-  paneId: string,
-  seed: TerminalPaneSeed,
-) {
+export function primeTerminalPane(paneId: string, seed: TerminalPaneSeed) {
   const runtime = runtimes.get(paneId);
   if (runtime) {
     runtime.applySeed(seed);
@@ -184,10 +166,7 @@ export function primeTerminalPane(
   });
 }
 
-export function acquireTerminalRuntime(
-  paneId: string,
-  theme: TerminalTheme | null,
-) {
+export function acquireTerminalRuntime(paneId: string, theme: TerminalTheme | null) {
   ensurePtyOutputListener();
   let runtime = runtimes.get(paneId);
   if (!runtime) {
@@ -253,15 +232,14 @@ function ensurePtyOutputListener() {
   }
 
   ptyOutputListenerStarted = true;
-  void platform.listen<{ id: string; data: Uint8Array }>(
-    "pty-output",
-    (payload) => {
+  void platform
+    .listen<{ id: string; data: Uint8Array }>("pty-output", (payload) => {
       routePtyOutput(payload.id, payload.data);
-    },
-  ).catch((error) => {
-    ptyOutputListenerStarted = false;
-    console.error("pty-output listen failed:", error);
-  });
+    })
+    .catch((error) => {
+      ptyOutputListenerStarted = false;
+      console.error("pty-output listen failed:", error);
+    });
 }
 
 class TerminalPaneRuntime {
@@ -325,11 +303,7 @@ class TerminalPaneRuntime {
     },
   });
 
-  constructor(
-    paneId: string,
-    seed: TerminalPaneSeed | undefined,
-    theme: TerminalTheme | null,
-  ) {
+  constructor(paneId: string, seed: TerminalPaneSeed | undefined, theme: TerminalTheme | null) {
     this.paneId = paneId;
     this.ptyId = seed?.ptyId ?? "";
     this.launchCwd = seed?.launchCwd;
@@ -660,11 +634,7 @@ class TerminalPaneRuntime {
     }
 
     if (this.ownerDocument && this.onTrackpadMouseMoveCapture) {
-      this.ownerDocument.removeEventListener(
-        "mousemove",
-        this.onTrackpadMouseMoveCapture,
-        true,
-      );
+      this.ownerDocument.removeEventListener("mousemove", this.onTrackpadMouseMoveCapture, true);
       this.onTrackpadMouseMoveCapture = null;
     }
 
@@ -712,11 +682,7 @@ class TerminalPaneRuntime {
 
     container.addEventListener("mousedown", this.onTrackpadMouseDown, true);
     this.ownerDocument.addEventListener("mouseup", this.onTrackpadMouseUp, true);
-    this.ownerDocument.addEventListener(
-      "mousemove",
-      this.onTrackpadMouseMoveCapture,
-      true,
-    );
+    this.ownerDocument.addEventListener("mousemove", this.onTrackpadMouseMoveCapture, true);
     container.addEventListener("focusin", this.onFocusIn);
 
     this.resizeObserver = new ResizeObserver(() => {
@@ -742,8 +708,7 @@ class TerminalPaneRuntime {
 
       this.ensureTerminalHost();
       if (!this.canFitTerminal()) {
-        const until =
-          deadline ?? performance.now() + LAYOUT_SYNC_RECONCILE_DEADLINE_MS;
+        const until = deadline ?? performance.now() + LAYOUT_SYNC_RECONCILE_DEADLINE_MS;
         if (performance.now() < until) {
           this.scheduleLayoutSync(until);
         }

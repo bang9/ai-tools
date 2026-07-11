@@ -175,9 +175,7 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const theme = useTerminalStore((s) => s.theme);
   const isFocused = useTerminalStore((s) => s.focusedPtyId === ptyId);
-  const isActiveWorktree = useTerminalStore(
-    (s) => s.activeWorktree === worktreePath,
-  );
+  const isActiveWorktree = useTerminalStore((s) => s.activeWorktree === worktreePath);
   const setFocusedPtyId = useTerminalStore((s) => s.setFocusedPtyId);
   const setPaneLabel = useTerminalStore((s) => s.setPaneLabel);
   const mirrorSession = useBroadcastStore((s) => s.mirrors[ptyId] ?? null);
@@ -212,9 +210,12 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
     runtimeRef.current?.focus();
   }, [ptyId, setFocusedPtyId]);
 
-  const handlePaneLabelChange = useCallback((nextLabel: string | undefined) => {
-    setPaneLabel(worktreePath, paneId, nextLabel);
-  }, [paneId, setPaneLabel, worktreePath]);
+  const handlePaneLabelChange = useCallback(
+    (nextLabel: string | undefined) => {
+      setPaneLabel(worktreePath, paneId, nextLabel);
+    },
+    [paneId, setPaneLabel, worktreePath],
+  );
 
   useLayoutEffect(() => {
     const container = termRef.current;
@@ -267,9 +268,7 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
 
   if (error) {
     return (
-      <div className={cn("absolute inset-0 p-3 text-sm text-[var(--color-danger)]")}>
-        {error}
-      </div>
+      <div className={cn("absolute inset-0 p-3 text-sm text-[var(--color-danger)]")}>{error}</div>
     );
   }
 
@@ -292,7 +291,9 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
       />
       {searchOpen && (
         <div
-          className={cn("absolute top-2 right-4 z-20 flex items-center gap-1 rounded-md border border-border bg-sidebar px-2 py-1 shadow-lg")}
+          className={cn(
+            "absolute top-2 right-4 z-20 flex items-center gap-1 rounded-md border border-border bg-sidebar px-2 py-1 shadow-lg",
+          )}
           onClick={(e) => e.stopPropagation()}
         >
           <input
@@ -318,7 +319,9 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
                 }
               }
             }}
-            className={cn("h-6 w-40 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground")}
+            className={cn(
+              "h-6 w-40 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground",
+            )}
             placeholder="Search..."
           />
           <IconButton
@@ -335,11 +338,7 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
           >
             <ChevronDown className={cn("h-3 w-3")} />
           </IconButton>
-          <IconButton
-            className={cn("h-5 w-5")}
-            onClick={closeSearch}
-            title="Close (Esc)"
-          >
+          <IconButton className={cn("h-5 w-5")} onClick={closeSearch} title="Close (Esc)">
             <X className={cn("h-3 w-3")} />
           </IconButton>
         </div>
@@ -349,15 +348,13 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
         <div className={cn("absolute inset-0 z-10")}>
           {/* Frozen terminal snapshot */}
           {snapshot && (
-            <img
-              src={snapshot}
-              alt=""
-              className={cn("absolute inset-4 pointer-events-none")}
-            />
+            <img src={snapshot} alt="" className={cn("absolute inset-4 pointer-events-none")} />
           )}
           {/* Blurred overlay on top of snapshot */}
           <div
-            className={cn("absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40 backdrop-blur-[1.3px]")}
+            className={cn(
+              "absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40 backdrop-blur-[1.3px]",
+            )}
           >
             <Radio className={cn("size-10 text-white animate-pulse")} />
             <span className={cn("text-lg font-black text-white tracking-wide")}>Broadcasting</span>
@@ -396,9 +393,11 @@ function TerminalInstance({ paneId, ptyId, worktreePath, label }: Props) {
   );
 }
 
-export default memo(TerminalInstance, (prev, next) =>
-  prev.paneId === next.paneId &&
-  prev.ptyId === next.ptyId &&
-  prev.worktreePath === next.worktreePath &&
-  prev.label === next.label,
+export default memo(
+  TerminalInstance,
+  (prev, next) =>
+    prev.paneId === next.paneId &&
+    prev.ptyId === next.ptyId &&
+    prev.worktreePath === next.worktreePath &&
+    prev.label === next.label,
 );

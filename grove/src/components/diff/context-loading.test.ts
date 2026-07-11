@@ -52,16 +52,13 @@ describe("context-loading", () => {
   });
 
   it("plans middle loads symmetrically without overlap", () => {
-    const middlePlan = planGapMiddleLoad(
-      sampleGap,
-      {
-        ...EMPTY_GAP_STATE,
-        headLines: createLoadedContextLines(sampleGap, 0, ["a", "b"]),
-        tailLines: createLoadedContextLines(sampleGap, 9, ["j", "k", "l"]),
-        headLoadedCount: 2,
-        tailLoadedCount: 3,
-      },
-    );
+    const middlePlan = planGapMiddleLoad(sampleGap, {
+      ...EMPTY_GAP_STATE,
+      headLines: createLoadedContextLines(sampleGap, 0, ["a", "b"]),
+      tailLines: createLoadedContextLines(sampleGap, 9, ["j", "k", "l"]),
+      headLoadedCount: 2,
+      tailLoadedCount: 3,
+    });
 
     expect(middlePlan).toEqual({
       head: {

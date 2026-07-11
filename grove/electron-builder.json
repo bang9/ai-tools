@@ -4,14 +4,8 @@
   "directories": {
     "output": "dist-electron"
   },
-  "files": [
-    "dist/**/*",
-    ".electron/**/*",
-    "package.json"
-  ],
-  "asarUnpack": [
-    ".electron/native/*.node"
-  ],
+  "files": ["dist/**/*", ".electron/**/*", "package.json"],
+  "asarUnpack": [".electron/native/*.node"],
   "mac": {
     "category": "public.app-category.developer-tools",
     "icon": "resources/icons/icon.icns"

@@ -105,10 +105,7 @@ describe("applyOrgProjectOrder", () => {
   });
 
   it("returns the existing order when the provided org ids are invalid", () => {
-    const projects = [
-      makeProject("p1", "sendbird", "desk"),
-      makeProject("p2", "bang9", "grove"),
-    ];
+    const projects = [makeProject("p1", "sendbird", "desk"), makeProject("p2", "bang9", "grove")];
 
     expect(applyOrgProjectOrder(projects, "sendbird", ["missing"])).toEqual(["p1", "p2"]);
   });
@@ -130,9 +127,6 @@ describe("moveProjectOrg", () => {
   });
 
   it("returns the existing order at list boundaries", () => {
-    expect(moveProjectOrg(["sendbird", "bang9"], "sendbird", "up")).toEqual([
-      "sendbird",
-      "bang9",
-    ]);
+    expect(moveProjectOrg(["sendbird", "bang9"], "sendbird", "up")).toEqual(["sendbird", "bang9"]);
   });
 });

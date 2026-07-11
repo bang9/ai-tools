@@ -18,10 +18,7 @@ export class CommandExecutionError extends Error {
   }
 }
 
-function formatErrorToast(
-  prefix: string | false | undefined,
-  message: string,
-): string | null {
+function formatErrorToast(prefix: string | false | undefined, message: string): string | null {
   if (prefix === false) return null;
   if (typeof prefix === "string" && prefix.length > 0) {
     return `${prefix}: ${message}`;
@@ -29,9 +26,7 @@ function formatErrorToast(
   return message;
 }
 
-export function isHandledCommandError(
-  error: unknown,
-): error is CommandExecutionError {
+export function isHandledCommandError(error: unknown): error is CommandExecutionError {
   return error instanceof CommandExecutionError && error.toastHandled;
 }
 

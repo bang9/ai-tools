@@ -151,11 +151,7 @@ function formatCompletedAt(iso: string): string {
   });
 }
 
-function ReportStatus({
-  summary,
-}: {
-  summary: RunSummary;
-}) {
+function ReportStatus({ summary }: { summary: RunSummary }) {
   const headline = buildReportHeadline(summary);
   const statusBadgeLabel = (() => {
     if (headline.tone === "warning") {
@@ -261,7 +257,9 @@ function ReportLog({
                   </span>
                   <Badge
                     variant={toneToBadgeVariant(entry.tone)}
-                    className={cn("mt-0.5 rounded-sm px-1.5 py-0 text-[10px] uppercase tracking-wider")}
+                    className={cn(
+                      "mt-0.5 rounded-sm px-1.5 py-0 text-[10px] uppercase tracking-wider",
+                    )}
                   >
                     {entry.kind}
                   </Badge>
@@ -309,9 +307,7 @@ export default function DeveloperTab() {
     setRunningMode(mode);
     const dryRun = mode === "dry-run";
     const nextReport = await runTerminalGcNow(dryRun, {
-      errorToast: dryRun
-        ? "Failed to run terminal GC dry run"
-        : "Failed to run terminal GC",
+      errorToast: dryRun ? "Failed to run terminal GC dry run" : "Failed to run terminal GC",
     });
     setRunningMode(null);
 
@@ -351,11 +347,10 @@ export default function DeveloperTab() {
       <h3 className={cn("text-sm font-semibold text-foreground mb-6")}>Developer</h3>
 
       <section>
-        <h4 className={cn("text-[12px] font-medium text-foreground mb-1.5")}>
-          Window Controls
-        </h4>
+        <h4 className={cn("text-[12px] font-medium text-foreground mb-1.5")}>Window Controls</h4>
         <p className={cn("text-[11px] text-muted-foreground/70 mb-4")}>
-          Open the current renderer dev console or reload the current Grove window without leaving the app.
+          Open the current renderer dev console or reload the current Grove window without leaving
+          the app.
         </p>
 
         <div className={cn("flex items-center gap-2")}>
@@ -366,7 +361,9 @@ export default function DeveloperTab() {
             disabled={runningWindowAction !== null}
             onClick={() => void handleWindowAction("dev-console")}
           >
-            {runningWindowAction === "dev-console" ? <Loader2 className={cn("animate-spin")} /> : null}
+            {runningWindowAction === "dev-console" ? (
+              <Loader2 className={cn("animate-spin")} />
+            ) : null}
             Open Dev Console
           </Button>
           <Button
@@ -396,7 +393,8 @@ export default function DeveloperTab() {
           Terminal Garbage Collection
         </h4>
         <p className={cn("text-[11px] text-muted-foreground/70 mb-4")}>
-          Reconcile stale terminal layouts and tmux sessions whose mission or worktree path no longer exists.
+          Reconcile stale terminal layouts and tmux sessions whose mission or worktree path no
+          longer exists.
         </p>
 
         <div className={cn("rounded-md border border-border bg-secondary/20 px-3 py-2 mb-4")}>
@@ -404,7 +402,8 @@ export default function DeveloperTab() {
             Auto GC runs every {intervalMinutes} minutes
           </p>
           <p className={cn("text-[11px] text-muted-foreground/70 mt-1")}>
-            Attached sessions are skipped automatically. Process cleanup only runs as a fallback after tmux session cleanup.
+            Attached sessions are skipped automatically. Process cleanup only runs as a fallback
+            after tmux session cleanup.
           </p>
         </div>
 
@@ -445,7 +444,9 @@ export default function DeveloperTab() {
             />
           </>
         ) : (
-          <div className={cn("rounded-md border border-dashed border-border bg-background px-3 py-4")}>
+          <div
+            className={cn("rounded-md border border-dashed border-border bg-background px-3 py-4")}
+          >
             <p className={cn("text-[12px] text-foreground")}>No report yet</p>
             <p className={cn("mt-1 text-[11px] text-muted-foreground/70")}>
               Run a dry run or apply GC to generate a report.

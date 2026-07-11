@@ -81,10 +81,7 @@ export function createWorktreePrLookupKey(
   return `${org}/${repo}:${branch}`;
 }
 
-export function selectWorktreePrEntry(
-  state: WorktreePrState,
-  key: string | null,
-): WorktreePrEntry {
+export function selectWorktreePrEntry(state: WorktreePrState, key: string | null): WorktreePrEntry {
   if (!key) {
     return EMPTY_ENTRY;
   }
@@ -118,10 +115,9 @@ export const useWorktreePrStore = create<WorktreePrState>((set, get) => ({
     }));
 
     const request = (async () => {
-      const pullRequest = await runCommandSafely(
-        () => getWorktreePrUrl(worktreePath),
-        { errorToast: false },
-      );
+      const pullRequest = await runCommandSafely(() => getWorktreePrUrl(worktreePath), {
+        errorToast: false,
+      });
 
       set((state) => ({
         entries: {
@@ -163,11 +159,7 @@ export function resetWorktreePrLookupState(): void {
 }
 
 export function useWorktreePrUrl(input: WorktreePrLookupInput) {
-  const key = createWorktreePrLookupKey(
-    input.projectOrg,
-    input.projectRepo,
-    input.worktreeBranch,
-  );
+  const key = createWorktreePrLookupKey(input.projectOrg, input.projectRepo, input.worktreeBranch);
   const entry = useWorktreePrStore((state) => selectWorktreePrEntry(state, key));
 
   useEffect(() => {
@@ -179,13 +171,7 @@ export function useWorktreePrUrl(input: WorktreePrLookupInput) {
     }
 
     void useWorktreePrStore.getState().ensureWorktreePrUrl(key, input.worktreePath);
-  }, [
-    entry.fetchedAt,
-    entry.loading,
-    entry.pullRequest,
-    input.worktreePath,
-    key,
-  ]);
+  }, [entry.fetchedAt, entry.loading, entry.pullRequest, input.worktreePath, key]);
 
   useEffect(() => {
     if (!key || entry.fetchedAt == null) {

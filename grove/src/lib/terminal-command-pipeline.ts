@@ -42,16 +42,11 @@ export interface TerminalCommandContext {
   activeWorktree: string | null;
   focusedPtyId: string | null;
   terminalCount: number;
-  splitTerminal: (
-    direction: "horizontal" | "vertical",
-  ) => Promise<void> | void;
+  splitTerminal: (direction: "horizontal" | "vertical") => Promise<void> | void;
   closeTerminal: () => Promise<void> | void;
   refreshTerminal: () => Promise<void> | void;
   mirrorTerminal: () => void;
-  sendText: (
-    text: string,
-    options?: { addNewline?: boolean },
-  ) => Promise<void> | void;
+  sendText: (text: string, options?: { addNewline?: boolean }) => Promise<void> | void;
 }
 
 export function isTerminalCommandEnabled(

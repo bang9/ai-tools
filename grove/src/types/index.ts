@@ -8,11 +8,7 @@ export type {
   StartCloneResult,
 } from "./project";
 export type { Mission, MissionProject } from "./mission";
-export type {
-  TerminalTheme,
-  PtySession,
-  SplitNode,
-} from "./terminal";
+export type { TerminalTheme, PtySession, SplitNode } from "./terminal";
 export type {
   BehindInfo,
   CommitInfo,
@@ -31,10 +27,7 @@ export type {
   SubprocessEnvVar,
 } from "./env";
 
-export type TerminalLinkOpenMode =
-  | "external"
-  | "internal"
-  | "external-with-localhost-internal";
+export type TerminalLinkOpenMode = "external" | "internal" | "external-with-localhost-internal";
 
 export type ProjectViewMode = "default" | "group-by-orgs";
 

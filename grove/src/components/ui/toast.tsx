@@ -1,13 +1,7 @@
 import * as React from "react";
 import * as ToastPrimitives from "@radix-ui/react-toast";
 import { cva, type VariantProps } from "class-variance-authority";
-import {
-  AlertCircle,
-  CheckCircle2,
-  Info,
-  X,
-  XCircle,
-} from "lucide-react";
+import { AlertCircle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useToastStore, type ToastItem } from "../../store/toast";
 import { Button } from "./button";
@@ -53,8 +47,7 @@ const toastVariants = cva(
 
 const Toast = React.forwardRef<
   React.ElementRef<typeof ToastPrimitives.Root>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Root> &
-    VariantProps<typeof toastVariants>
+  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Root> & VariantProps<typeof toastVariants>
 >(({ className, variant, ...props }, ref) => {
   return (
     <ToastPrimitives.Root
@@ -213,14 +206,13 @@ function ToastCard({ toast }: { toast: ToastItem }) {
         config.borderClass,
         {
           "animate-in fade-in-0 slide-in-from-right-full zoom-in-95 duration-300": !exiting,
-          "animate-out fade-out-0 slide-out-to-right-full zoom-out-95 duration-200 fill-mode-forwards": exiting,
+          "animate-out fade-out-0 slide-out-to-right-full zoom-out-95 duration-200 fill-mode-forwards":
+            exiting,
         },
       )}
     >
       {/* Left accent bar */}
-      <div
-        className={cn("absolute inset-y-0 left-0 w-[2.5px]", config.accentClass)}
-      />
+      <div className={cn("absolute inset-y-0 left-0 w-[2.5px]", config.accentClass)} />
 
       {/* Icon */}
       <div
@@ -276,11 +268,7 @@ export function ToastContainer() {
   }
 
   return (
-    <div
-      className={cn(
-        "pointer-events-none fixed right-4 top-4 z-50 flex flex-col gap-2",
-      )}
-    >
+    <div className={cn("pointer-events-none fixed right-4 top-4 z-50 flex flex-col gap-2")}>
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} />
       ))}

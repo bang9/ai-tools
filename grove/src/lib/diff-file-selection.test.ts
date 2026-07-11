@@ -15,15 +15,11 @@ const files = [
 
 describe("diff file selection", () => {
   it("selects an inclusive path range from the anchor to the target", () => {
-    expect(selectFilePathRange(files, "b.ts", "d.ts")).toEqual(
-      new Set(["b.ts", "c.ts", "d.ts"]),
-    );
+    expect(selectFilePathRange(files, "b.ts", "d.ts")).toEqual(new Set(["b.ts", "c.ts", "d.ts"]));
   });
 
   it("selects ranges in reverse order", () => {
-    expect(selectFilePathRange(files, "d.ts", "b.ts")).toEqual(
-      new Set(["b.ts", "c.ts", "d.ts"]),
-    );
+    expect(selectFilePathRange(files, "d.ts", "b.ts")).toEqual(new Set(["b.ts", "c.ts", "d.ts"]));
   });
 
   it("returns null when the range anchor is unavailable", () => {

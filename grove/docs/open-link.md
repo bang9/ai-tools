@@ -22,10 +22,10 @@ Terminal process (Claude Code, shell, etc.)
 
 ## Two Link-Click Paths
 
-| Context | Handler | Path |
-|---|---|---|
+| Context                                      | Handler        | Path                                                                |
+| -------------------------------------------- | -------------- | ------------------------------------------------------------------- |
 | **Claude Code** (fullscreen, `NO_FLICKER=1`) | `open` wrapper | Claude Code mouse click → `open` command → wrapper → socket → Grove |
-| **Regular terminal / Codex** | WebLinksAddon | xterm click handler → `openUrl()` → preference routing |
+| **Regular terminal / Codex**                 | WebLinksAddon  | xterm click handler → `openUrl()` → preference routing              |
 
 The WebLinksAddon handler checks `aiSessions[ptyId].tool`; when the active tool is `"claude"`, the addon skips opening (the wrapper handles it) to avoid duplicates.
 
@@ -33,10 +33,10 @@ The WebLinksAddon handler checks `aiSessions[ptyId].tool`; when the active tool 
 
 Stored in `~/.grove/config.json` under `preferences.terminalLinkOpenMode`. Default: `external-with-localhost-internal`.
 
-| Mode | Behavior |
-|---|---|
-| `external` | All URLs open in system browser |
-| `internal` | All URLs open in Grove (not yet implemented, falls back to external) |
+| Mode                               | Behavior                                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| `external`                         | All URLs open in system browser                                                            |
+| `internal`                         | All URLs open in Grove (not yet implemented, falls back to external)                       |
 | `external-with-localhost-internal` | localhost/127.0.0.1/::1 open in Grove (not yet implemented), others open in system browser |
 
 ## Components

@@ -48,13 +48,7 @@ describe("pip floating geometry", () => {
   });
 
   it("hides the PiP when dragged far enough past the left edge", () => {
-    expect(
-      resolvePipPresentationAfterDrag(
-        { x: -120, y: 300 },
-        VIEWPORT,
-        MIN_PIP_WIDTH,
-      ),
-    ).toEqual({
+    expect(resolvePipPresentationAfterDrag({ x: -120, y: 300 }, VIEWPORT, MIN_PIP_WIDTH)).toEqual({
       dockSide: "left",
       hidden: true,
       requestedWidth: MIN_PIP_WIDTH,
@@ -63,13 +57,7 @@ describe("pip floating geometry", () => {
   });
 
   it("snaps to the nearest visible edge when the drag stays in bounds", () => {
-    expect(
-      resolvePipPresentationAfterDrag(
-        { x: 900, y: 240 },
-        VIEWPORT,
-        MIN_PIP_WIDTH,
-      ),
-    ).toEqual({
+    expect(resolvePipPresentationAfterDrag({ x: 900, y: 240 }, VIEWPORT, MIN_PIP_WIDTH)).toEqual({
       dockSide: "right",
       hidden: false,
       requestedWidth: MIN_PIP_WIDTH,
@@ -78,13 +66,7 @@ describe("pip floating geometry", () => {
   });
 
   it("clamps dragging to the hidden edge range and visible vertical range", () => {
-    expect(
-      clampDraggingPipPosition(
-        { x: 9999, y: 9999 },
-        VIEWPORT,
-        MIN_PIP_WIDTH,
-      ),
-    ).toEqual({
+    expect(clampDraggingPipPosition({ x: 9999, y: 9999 }, VIEWPORT, MIN_PIP_WIDTH)).toEqual({
       x: 1372,
       y: 730,
     });

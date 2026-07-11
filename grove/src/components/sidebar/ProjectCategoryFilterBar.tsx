@@ -9,11 +9,7 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  horizontalListSortingStrategy,
-  useSortable,
-} from "@dnd-kit/sortable";
+import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
 import type { Project, ProjectCategory } from "../../types";
@@ -95,8 +91,9 @@ interface SortableCategoryBadgeProps extends CategoryBadgeProps {
 }
 
 function SortableCategoryBadge({ id, ...badgeProps }: SortableCategoryBadgeProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+  });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -122,18 +119,15 @@ export default function ProjectCategoryFilterBar({
   const setProjectCategories = usePreferencesStore((state) => state.setProjectCategories);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-  );
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   if (projectCategories.length === 0 && !hasFocusedProjects(projects)) {
     return null;
   }
 
   const countFor = (categoryId: string) =>
-    projects.filter(
-      (project) => resolveProjectCategoryId(project.categoryId) === categoryId,
-    ).length;
+    projects.filter((project) => resolveProjectCategoryId(project.categoryId) === categoryId)
+      .length;
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveDragId(null);
@@ -191,10 +185,7 @@ export default function ProjectCategoryFilterBar({
                   id={category.id}
                   category={category}
                   projectCount={countFor(category.id)}
-                  isActive={
-                    activeDragId !== category.id &&
-                    activeCategoryIds.includes(category.id)
-                  }
+                  isActive={activeDragId !== category.id && activeCategoryIds.includes(category.id)}
                   onToggle={() => onToggleCategory(category.id)}
                 />
               ))}

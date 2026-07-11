@@ -13,9 +13,7 @@ export function buildTerminalPaneSeed(
       launchCwd: pane.launchCwd,
       initialScrollback: createResult.initialHydration?.text,
       initialScrollbackSource:
-        createResult.initialHydration?.source === "tmuxCapture"
-          ? "tmuxCapture"
-          : undefined,
+        createResult.initialHydration?.source === "tmuxCapture" ? "tmuxCapture" : undefined,
     };
   }
 
@@ -23,8 +21,6 @@ export function buildTerminalPaneSeed(
     ptyId,
     launchCwd: pane.launchCwd,
     initialScrollback: pane.scrollback || undefined,
-    initialScrollbackSource: pane.scrollback
-      ? "snapshotFallback"
-      : undefined,
+    initialScrollbackSource: pane.scrollback ? "snapshotFallback" : undefined,
   };
 }

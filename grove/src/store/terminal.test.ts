@@ -91,9 +91,7 @@ describe("useTerminalStore bell state", () => {
       },
     });
 
-    useTerminalStore
-      .getState()
-      .removeSession("/tmp/feature", "/tmp/source");
+    useTerminalStore.getState().removeSession("/tmp/feature", "/tmp/source");
 
     expect(useTerminalStore.getState().sessions["/tmp/feature"]).toBeUndefined();
     expect(useTerminalStore.getState().activeWorktree).toBe("/tmp/source");
@@ -221,8 +219,6 @@ describe("useTerminalStore bell state", () => {
 
     useTerminalStore.getState().setPaneLabel("/tmp/a", "pane-a-1", undefined);
 
-    expect(useTerminalStore.getState().sessions["/tmp/a"]).toEqual(
-      makeLeaf("pane-a-1", "pty-a-1"),
-    );
+    expect(useTerminalStore.getState().sessions["/tmp/a"]).toEqual(makeLeaf("pane-a-1", "pty-a-1"));
   });
 });

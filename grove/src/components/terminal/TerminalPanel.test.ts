@@ -24,10 +24,7 @@ const layout: SplitNode = {
 describe("buildPtyIdToWorktreeIndex", () => {
   it("maps every pty id to its owning worktree path", () => {
     const sessions = {
-      "/tmp/project-a": restoreLayoutWithPtyIds(
-        layout,
-        new Map([["pane-a", "pty-a"]]),
-      ),
+      "/tmp/project-a": restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]])),
       "/tmp/project-b": restoreLayoutWithPtyIds(
         layout,
         new Map([
@@ -54,10 +51,7 @@ describe("buildPtyIdToWorktreeIndex", () => {
   });
 
   it("re-resolves a ptyId rebound to a different worktree after a rebuild", () => {
-    const movedLayout = restoreLayoutWithPtyIds(
-      layout,
-      new Map([["pane-a", "pty-a"]]),
-    );
+    const movedLayout = restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]]));
 
     const before = buildPtyIdToWorktreeIndex({
       "/tmp/project-a": movedLayout,

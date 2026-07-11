@@ -39,9 +39,7 @@ export default function TerminalTab() {
 
       {/* Link Open Mode */}
       <div className={cn("mb-6")}>
-        <h4 className={cn("text-[12px] font-medium text-foreground mb-1.5")}>
-          Link Open Mode
-        </h4>
+        <h4 className={cn("text-[12px] font-medium text-foreground mb-1.5")}>Link Open Mode</h4>
         <p className={cn("text-[11px] text-muted-foreground/70 mb-2")}>
           Where links open when clicked in the terminal
         </p>

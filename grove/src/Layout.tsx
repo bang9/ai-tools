@@ -22,9 +22,7 @@ function TitleBar() {
       {...windowDragRegionProps}
     >
       {/* Traffic light spacer (macOS) / padding in fullscreen */}
-      {!isFullscreen && (
-        <div className={cn("w-[86px] shrink-0")} {...windowDragRegionProps} />
-      )}
+      {!isFullscreen && <div className={cn("w-[86px] shrink-0")} {...windowDragRegionProps} />}
 
       {/* Logo */}
       <div
@@ -57,11 +55,7 @@ function Layout() {
   return (
     <div className={cn("flex flex-col h-full w-full bg-background")}>
       <TitleBar />
-      <ResizablePanelGroup
-        className={cn("flex-1 min-h-0")}
-        ratios={main}
-        onCommit={updateMain}
-      >
+      <ResizablePanelGroup className={cn("flex-1 min-h-0")} ratios={main} onCommit={updateMain}>
         <ResizablePanelGroup.Pane minSize={180}>
           <Sidebar />
         </ResizablePanelGroup.Pane>

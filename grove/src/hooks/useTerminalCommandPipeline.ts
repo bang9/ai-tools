@@ -35,8 +35,7 @@ export function useTerminalCommandPipeline() {
         return;
       }
 
-      const payload =
-        options?.addNewline === false ? text : `${text}\r`;
+      const payload = options?.addNewline === false ? text : `${text}\r`;
       const bytes = new TextEncoder().encode(payload);
 
       await runCommandSafely(() => writePty(focusedPtyId, bytes), {
@@ -58,7 +57,10 @@ export function useTerminalCommandPipeline() {
     let paneId = "";
     for (const node of Object.values(sessions)) {
       for (const pane of collectTerminalPanes(node)) {
-        if (pane.ptyId === ptyId) { paneId = pane.paneId; break; }
+        if (pane.ptyId === ptyId) {
+          paneId = pane.paneId;
+          break;
+        }
       }
       if (paneId) break;
     }

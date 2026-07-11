@@ -19,11 +19,7 @@ import {
   Database,
   Wrench,
 } from "lucide-react";
-import type {
-  ProjectCategory,
-  ProjectCategoryIcon,
-  ProjectCategoryIconId,
-} from "../types";
+import type { ProjectCategory, ProjectCategoryIcon, ProjectCategoryIconId } from "../types";
 import { cn } from "./cn";
 
 export const DEFAULT_PROJECT_CATEGORY_ID = "default";
@@ -97,9 +93,7 @@ export const FOCUSING_PROJECT_CATEGORY: ProjectCategory = {
   icon: { type: "lucide", value: "star" },
 };
 
-export function getProjectCategories(
-  projectCategories: ProjectCategory[],
-): ProjectCategory[] {
+export function getProjectCategories(projectCategories: ProjectCategory[]): ProjectCategory[] {
   return [DEFAULT_PROJECT_CATEGORY, ...projectCategories];
 }
 
@@ -121,15 +115,10 @@ export function resolveProjectCategory(
   projectCategories: ProjectCategory[],
 ): ProjectCategory {
   const allCategories = getProjectCategories(projectCategories);
-  return (
-    allCategories.find((category) => category.id === categoryId) ??
-    DEFAULT_PROJECT_CATEGORY
-  );
+  return allCategories.find((category) => category.id === categoryId) ?? DEFAULT_PROJECT_CATEGORY;
 }
 
-export function resolveProjectCategoryId(
-  categoryId: string | null | undefined,
-): string {
+export function resolveProjectCategoryId(categoryId: string | null | undefined): string {
   return categoryId ?? DEFAULT_PROJECT_CATEGORY_ID;
 }
 
@@ -142,18 +131,12 @@ export function sanitizeProjectCategoryEmoji(value: string): string {
 }
 
 export function getProjectCategoryEmojiOptions(selectedEmoji?: string) {
-  const normalizedSelected = selectedEmoji
-    ? sanitizeProjectCategoryEmoji(selectedEmoji)
-    : "";
+  const normalizedSelected = selectedEmoji ? sanitizeProjectCategoryEmoji(selectedEmoji) : "";
   if (!normalizedSelected) {
     return PROJECT_CATEGORY_EMOJI_OPTIONS;
   }
 
-  if (
-    PROJECT_CATEGORY_EMOJI_OPTIONS.some(
-      (option) => option.value === normalizedSelected,
-    )
-  ) {
+  if (PROJECT_CATEGORY_EMOJI_OPTIONS.some((option) => option.value === normalizedSelected)) {
     return PROJECT_CATEGORY_EMOJI_OPTIONS;
   }
 
@@ -169,10 +152,7 @@ export function getProjectCategoryEmojiOptions(selectedEmoji?: string) {
   ];
 }
 
-export function buildProjectCategoryId(
-  name: string,
-  existingIds: Iterable<string>,
-): string {
+export function buildProjectCategoryId(name: string, existingIds: Iterable<string>): string {
   const base =
     sanitizeProjectCategoryName(name)
       .toLowerCase()
@@ -255,9 +235,7 @@ export function ProjectCategoryIconGlyph({
 }) {
   if (icon.type === "emoji") {
     return (
-      <span className={cn("inline-flex items-center justify-center", className)}>
-        {icon.value}
-      </span>
+      <span className={cn("inline-flex items-center justify-center", className)}>{icon.value}</span>
     );
   }
 

@@ -60,10 +60,14 @@ function FileItem({
           "text-muted-foreground hover:bg-muted": !selected,
         },
       )}
-      style={selected ? {
-        background: "rgba(99, 163, 255, 0.08)",
-        borderLeft: "2px solid rgba(99, 163, 255, 0.5)",
-      } : { borderLeft: "2px solid transparent" }}
+      style={
+        selected
+          ? {
+              background: "rgba(99, 163, 255, 0.08)",
+              borderLeft: "2px solid rgba(99, 163, 255, 0.5)",
+            }
+          : { borderLeft: "2px solid transparent" }
+      }
       onClick={onClick}
     >
       <FileText className={cn("size-3 shrink-0", statusColors[file.status])} />
@@ -73,12 +77,7 @@ function FileItem({
           {actions}
         </div>
       )}
-      <span
-        className={cn(
-          "shrink-0 text-[10px] uppercase font-medium",
-          statusColors[file.status],
-        )}
-      >
+      <span className={cn("shrink-0 text-[10px] uppercase font-medium", statusColors[file.status])}>
         {file.status[0]}
       </span>
     </div>
@@ -165,9 +164,7 @@ function FileSection({
         )}
       >
         <span
-          className={cn(
-            "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground",
-          )}
+          className={cn("text-[10px] font-semibold uppercase tracking-wider text-muted-foreground")}
         >
           {title}
         </span>
@@ -236,9 +233,7 @@ function FileSection({
             )}
           </div>
         </ContextMenuTrigger>
-        {contextMenuContent && (
-          <ContextMenuContent>{contextMenuContent}</ContextMenuContent>
-        )}
+        {contextMenuContent && <ContextMenuContent>{contextMenuContent}</ContextMenuContent>}
       </ContextMenu>
     </div>
   );
@@ -292,7 +287,9 @@ function WorkingChangesView({
       setDiffs(results.filter((d): d is FileDiff => d !== null));
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPaths, selectedSection, worktreePath, fileStatuses]);
 
   // Clear line selection when file selection or section changes
@@ -328,24 +325,27 @@ function WorkingChangesView({
 
   const isStaged = selectedSection === "staged";
   const allUntracked = useMemo(
-    () => selectedSection === "unstaged"
-      && selectedPaths.size > 0
-      && [...selectedPaths].every((path) => unstaged.find((f) => f.path === path)?.status === "untracked"),
+    () =>
+      selectedSection === "unstaged" &&
+      selectedPaths.size > 0 &&
+      [...selectedPaths].every(
+        (path) => unstaged.find((f) => f.path === path)?.status === "untracked",
+      ),
     [selectedSection, selectedPaths, unstaged],
   );
   const hasConflictedSelection = useMemo(
-    () => selectedSection === "unstaged"
-      && [...selectedPaths].some((path) => unstaged.find((f) => f.path === path)?.status === "conflicted"),
+    () =>
+      selectedSection === "unstaged" &&
+      [...selectedPaths].some(
+        (path) => unstaged.find((f) => f.path === path)?.status === "conflicted",
+      ),
     [selectedSection, selectedPaths, unstaged],
   );
 
-  const handleMarqueeSelect = useCallback(
-    (section: "staged" | "unstaged", ids: Set<string>) => {
-      setSelectedPaths(ids);
-      setSelectedSection(section);
-    },
-    [],
-  );
+  const handleMarqueeSelect = useCallback((section: "staged" | "unstaged", ids: Set<string>) => {
+    setSelectedPaths(ids);
+    setSelectedSection(section);
+  }, []);
 
   // Keyboard
   const handleKeyDown = useCallback(
@@ -379,9 +379,19 @@ function WorkingChangesView({
   }, [selectedPaths]);
 
   const runDestructiveAction = useCallback(
-    async (title: string, description: string, confirmLabel: string, action: (paths: string[]) => Promise<void>) => {
+    async (
+      title: string,
+      description: string,
+      confirmLabel: string,
+      action: (paths: string[]) => Promise<void>,
+    ) => {
       const paths = [...selectedPaths];
-      const confirmed = await overlay.confirm({ title, description, confirmLabel, variant: "destructive" });
+      const confirmed = await overlay.confirm({
+        title,
+        description,
+        confirmLabel,
+        variant: "destructive",
+      });
       if (!confirmed) return;
       setSelectedPaths(new Set());
       await action(paths);
@@ -389,14 +399,17 @@ function WorkingChangesView({
     [selectedPaths],
   );
 
-  const handleContextMenuFile = useCallback((section: "staged" | "unstaged", path: string) => {
-    if (selectedSection === section && selectedPaths.has(path)) {
-      return;
-    }
-    setSelectedPaths(new Set([path]));
-    setSelectedSection(section);
-    lastClickedRef.current = { section, path };
-  }, [selectedPaths, selectedSection]);
+  const handleContextMenuFile = useCallback(
+    (section: "staged" | "unstaged", path: string) => {
+      if (selectedSection === section && selectedPaths.has(path)) {
+        return;
+      }
+      setSelectedPaths(new Set([path]));
+      setSelectedSection(section);
+      lastClickedRef.current = { section, path };
+    },
+    [selectedPaths, selectedSection],
+  );
 
   return (
     <ResizablePanelGroup className={cn("h-full")} ratios={ratios} onCommit={onCommit}>
@@ -415,21 +428,25 @@ function WorkingChangesView({
               onSelectFile={(path, shiftKey) => handleSelectFile("staged", staged, path, shiftKey)}
               onMarqueeSelect={(ids) => handleMarqueeSelect("staged", ids)}
               onContextMenuFile={(path) => handleContextMenuFile("staged", path)}
-              contextMenuContent={selectedSection === "staged" && selectedPaths.size > 0
-                ? (
-                    <ContextMenuItem
-                      onSelect={async () => {
-                        const paths = [...selectedPaths];
-                        setSelectedPaths(new Set());
-                        await store.unstageFiles(paths);
-                      }}
-                    >
-                      Unstage
-                    </ContextMenuItem>
-                  )
-                : undefined}
+              contextMenuContent={
+                selectedSection === "staged" && selectedPaths.size > 0 ? (
+                  <ContextMenuItem
+                    onSelect={async () => {
+                      const paths = [...selectedPaths];
+                      setSelectedPaths(new Set());
+                      await store.unstageFiles(paths);
+                    }}
+                  >
+                    Unstage
+                  </ContextMenuItem>
+                ) : undefined
+              }
               renderActions={(file) => (
-                <ActionButton icon={Minus} title="Unstage" onClick={() => store.unstageFile(file.path)} />
+                <ActionButton
+                  icon={Minus}
+                  title="Unstage"
+                  onClick={() => store.unstageFile(file.path)}
+                />
               )}
             />
           </div>
@@ -438,53 +455,59 @@ function WorkingChangesView({
               title="Unstaged"
               files={unstaged}
               selectedPaths={selectedSection === "unstaged" ? selectedPaths : new Set()}
-              onSelectFile={(path, shiftKey) => handleSelectFile("unstaged", unstaged, path, shiftKey)}
+              onSelectFile={(path, shiftKey) =>
+                handleSelectFile("unstaged", unstaged, path, shiftKey)
+              }
               onMarqueeSelect={(ids) => handleMarqueeSelect("unstaged", ids)}
               onContextMenuFile={(path) => handleContextMenuFile("unstaged", path)}
-              contextMenuContent={selectedSection === "unstaged" && selectedPaths.size > 0
-                ? (
-                    <>
-                      <ContextMenuItem
-                        onSelect={async () => {
-                          const paths = [...selectedPaths];
-                          setSelectedPaths(new Set());
-                          await store.stageFiles(paths);
-                        }}
-                      >
-                        Stage
-                      </ContextMenuItem>
-                      {!hasConflictedSelection && (
-                        <>
-                          <ContextMenuSeparator />
-                          <ContextMenuItem
-                            className={cn("text-destructive focus:text-destructive")}
-                            onSelect={() => runDestructiveAction(
+              contextMenuContent={
+                selectedSection === "unstaged" && selectedPaths.size > 0 ? (
+                  <>
+                    <ContextMenuItem
+                      onSelect={async () => {
+                        const paths = [...selectedPaths];
+                        setSelectedPaths(new Set());
+                        await store.stageFiles(paths);
+                      }}
+                    >
+                      Stage
+                    </ContextMenuItem>
+                    {!hasConflictedSelection && (
+                      <>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem
+                          className={cn("text-destructive focus:text-destructive")}
+                          onSelect={() =>
+                            runDestructiveAction(
                               "Discard Changes",
                               `Discard changes to ${selectedPaths.size} file${selectedPaths.size > 1 ? "s" : ""}?`,
                               "Discard",
                               store.discardFiles,
-                            )}
-                          >
-                            Discard
-                          </ContextMenuItem>
-                        </>
-                      )}
-                      {allUntracked && (
-                        <ContextMenuItem
-                          className={cn("text-destructive focus:text-destructive")}
-                          onSelect={() => runDestructiveAction(
+                            )
+                          }
+                        >
+                          Discard
+                        </ContextMenuItem>
+                      </>
+                    )}
+                    {allUntracked && (
+                      <ContextMenuItem
+                        className={cn("text-destructive focus:text-destructive")}
+                        onSelect={() =>
+                          runDestructiveAction(
                             "Remove Files",
                             `Remove ${selectedPaths.size} untracked file${selectedPaths.size > 1 ? "s" : ""}?`,
                             "Remove",
                             store.removeUntrackedFiles,
-                          )}
-                        >
-                          Remove
-                        </ContextMenuItem>
-                      )}
-                    </>
-                  )
-                : undefined}
+                          )
+                        }
+                      >
+                        Remove
+                      </ContextMenuItem>
+                    )}
+                  </>
+                ) : undefined
+              }
               renderActions={(file) => {
                 const isUntracked = file.status === "untracked";
                 const isConflicted = file.status === "conflicted";
@@ -494,7 +517,11 @@ function WorkingChangesView({
 
                 return (
                   <>
-                    <ActionButton icon={Plus} title="Stage" onClick={() => store.stageFile(file.path)} />
+                    <ActionButton
+                      icon={Plus}
+                      title="Stage"
+                      onClick={() => store.stageFile(file.path)}
+                    />
                     {!isConflicted && (
                       <ActionButton
                         icon={Undo2}
@@ -537,11 +564,12 @@ function CommitChangesView({
   onCommit: (ratios: number[]) => void;
 }) {
   const files: FileStatus[] = useMemo(
-    () => store.commitDiffs.map((d) => ({
-      path: d.path,
-      status: d.status as FileStatus["status"],
-      staged: false,
-    })),
+    () =>
+      store.commitDiffs.map((d) => ({
+        path: d.path,
+        status: d.status as FileStatus["status"],
+        staged: false,
+      })),
     [store.commitDiffs],
   );
 
@@ -619,11 +647,7 @@ export default function ChangesPanel() {
 
   if (!worktreePath) {
     return (
-      <div
-        className={cn(
-          "flex items-center justify-center h-full text-sm text-muted-foreground",
-        )}
-      >
+      <div className={cn("flex items-center justify-center h-full text-sm text-muted-foreground")}>
         Select a worktree to view changes
       </div>
     );

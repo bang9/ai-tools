@@ -7,10 +7,7 @@ export interface WorktreeTreeNode {
   children: WorktreeTreeNode[];
 }
 
-function hasParentCycle(
-  start: string,
-  parentByChild: Map<string, string>,
-): boolean {
+function hasParentCycle(start: string, parentByChild: Map<string, string>): boolean {
   const seen = new Set<string>();
   let current = start;
 
@@ -33,28 +30,19 @@ export function buildWorktreeTree(worktrees: Worktree[]): WorktreeTreeNode[] {
     worktrees
       .filter((worktree) => {
         const parentName = worktree.stackParentName ?? null;
-        return (
-          parentName != null &&
-          parentName !== worktree.name &&
-          worktreeByName.has(parentName)
-        );
+        return parentName != null && parentName !== worktree.name && worktreeByName.has(parentName);
       })
       .map((worktree) => [worktree.name, worktree.stackParentName as string]),
   );
   const invalidChildren = new Set(
-    Array.from(parentByChild.keys()).filter((child) =>
-      hasParentCycle(child, parentByChild),
-    ),
+    Array.from(parentByChild.keys()).filter((child) => hasParentCycle(child, parentByChild)),
   );
   const childrenByParent = new Map<string, Worktree[]>();
   const roots: Worktree[] = [];
 
   for (const worktree of worktrees) {
     const parentName = parentByChild.get(worktree.name) ?? null;
-    if (
-      parentName &&
-      !invalidChildren.has(worktree.name)
-    ) {
+    if (parentName && !invalidChildren.has(worktree.name)) {
       const siblings = childrenByParent.get(parentName) ?? [];
       siblings.push(worktree);
       childrenByParent.set(parentName, siblings);
@@ -80,10 +68,7 @@ export function buildWorktreeTree(worktrees: Worktree[]): WorktreeTreeNode[] {
       .filter((child) => !nextAncestors.has(child.name))
       .map((child) => buildNode(child, depth + 1, nextAncestors));
 
-    const descendantCount = children.reduce(
-      (count, child) => count + 1 + child.descendantCount,
-      0,
-    );
+    const descendantCount = children.reduce((count, child) => count + 1 + child.descendantCount, 0);
 
     return {
       worktree,

@@ -2,11 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { GitPullRequest, Globe, Loader2, Plus, Settings, X } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
-import {
-  useTabStore,
-  selectActiveTabIdForWorktree,
-  selectTabsForWorktree,
-} from "../../store/tab";
+import { useTabStore, selectActiveTabIdForWorktree, selectTabsForWorktree } from "../../store/tab";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
 import { usePreferencesUiStore } from "../../store/preferences-ui";
 import { useMissionStore } from "../../store/mission";
@@ -18,9 +14,11 @@ import { createWorktreePr, openExternal } from "../../lib/platform";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import PreferencesModal from "../preferences/PreferencesModal";
 
-const ADD_TAB_OPTIONS: { type: Exclude<AppTabType, "terminal" | "changes">; label: string; icon: typeof Globe }[] = [
-  { type: "browser", label: "Browser", icon: Globe },
-];
+const ADD_TAB_OPTIONS: {
+  type: Exclude<AppTabType, "terminal" | "changes">;
+  label: string;
+  icon: typeof Globe;
+}[] = [{ type: "browser", label: "Browser", icon: Globe }];
 
 function SelectedWorktreePrAction({ worktreePath }: { worktreePath: string | null }) {
   const projects = useProjectStore((state) => state.projects);
@@ -38,11 +36,7 @@ function SelectedWorktreePrAction({ worktreePath }: { worktreePath: string | nul
       );
       const project = projects.find((item) => item.id === missionSelectedItem.projectId);
 
-      if (
-        missionProject &&
-        project &&
-        missionProject.path === worktreePath
-      ) {
+      if (missionProject && project && missionProject.path === worktreePath) {
         return {
           kind: "worktree" as const,
           projectOrg: project.org,
@@ -76,20 +70,20 @@ function SelectedWorktreePrAction({ worktreePath }: { worktreePath: string | nul
     return null;
   }, [missionSelectedItem, missions, projects, worktreePath]);
   const { isLoading, hasFetchedBefore, pullRequest, refresh } = useWorktreePrUrl(
-    target?.kind === "worktree" ? target : {
-      projectOrg: "",
-      projectRepo: "",
-      worktreeBranch: "",
-      worktreePath: "",
-    },
+    target?.kind === "worktree"
+      ? target
+      : {
+          projectOrg: "",
+          projectRepo: "",
+          worktreeBranch: "",
+          worktreePath: "",
+        },
   );
 
   const isSource = target?.kind === "source";
   const canCreate = target?.kind === "worktree" && !isLoading && !pullRequest;
   const disabled = isLoading || isSource || !target;
-  const disabledOpacityClass = isSource || !target
-    ? "disabled:opacity-30"
-    : "disabled:opacity-100";
+  const disabledOpacityClass = isSource || !target ? "disabled:opacity-30" : "disabled:opacity-100";
   let label = "Create PR";
   let title = "Create pull request";
   let colorClass = "border-transparent bg-[#1f883d] text-white hover:bg-[#1a7f37]";
@@ -161,9 +155,7 @@ function SelectedWorktreePrAction({ worktreePath }: { worktreePath: string | nul
 function AppTabBar() {
   const { worktreePath } = useResolvedSidebarSelection();
   const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
-  const activeTabId = useTabStore((state) =>
-    selectActiveTabIdForWorktree(state, worktreePath),
-  );
+  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, worktreePath));
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const closeTab = useTabStore((s) => s.closeTab);
   const addTab = useTabStore((s) => s.addTab);
@@ -200,8 +192,10 @@ function AppTabBar() {
                 "group flex items-center gap-1.5 h-6 px-2 rounded-md shrink-0 text-xs font-medium",
                 "backdrop-blur-sm border border-white/10 shadow-sm transition-all duration-200 ease-out",
                 {
-                  "bg-white/15 text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)] -translate-y-0.5 scale-105": isActive,
-                  "bg-white/30 text-muted-foreground border-white/45 shadow-[0_1px_6px_rgba(0,0,0,0.3)] translate-y-0 scale-100 hover:-translate-y-0.5 hover:scale-105 hover:bg-white/35 hover:text-foreground hover:shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)]": !isActive,
+                  "bg-white/15 text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)] -translate-y-0.5 scale-105":
+                    isActive,
+                  "bg-white/30 text-muted-foreground border-white/45 shadow-[0_1px_6px_rgba(0,0,0,0.3)] translate-y-0 scale-100 hover:-translate-y-0.5 hover:scale-105 hover:bg-white/35 hover:text-foreground hover:shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)]":
+                    !isActive,
                 },
               )}
             >

@@ -62,8 +62,7 @@ export class PtyInputQueue {
 
   constructor(options: PtyInputQueueOptions) {
     this.flush = options.flush;
-    this.schedule =
-      options.schedule ?? ((drain) => queueMicrotask(drain));
+    this.schedule = options.schedule ?? ((drain) => queueMicrotask(drain));
     this.maxBytes = options.maxBytes ?? COALESCE_MAX;
   }
 

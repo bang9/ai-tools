@@ -9,17 +9,11 @@ interface Props {
   onClose: () => void;
 }
 
-function AddProjectToMissionDialog({
-  missionId,
-  existingProjectIds,
-  onClose,
-}: Props) {
+function AddProjectToMissionDialog({ missionId, existingProjectIds, onClose }: Props) {
   const projects = useProjectStore((s) => s.projects);
   const addProject = useMissionStore((s) => s.addProject);
 
-  const available = projects.filter(
-    (p) => !existingProjectIds.includes(p.id),
-  );
+  const available = projects.filter((p) => !existingProjectIds.includes(p.id));
 
   const handleSelect = (projectId: string) => {
     // Close the selection list immediately; the mission tree shows a loading
@@ -53,12 +47,7 @@ function AddProjectToMissionDialog({
         ))
       )}
       <div className={cn("flex justify-end px-1 pt-1")}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className={cn("text-[11px] h-6")}
-        >
+        <Button variant="ghost" size="sm" onClick={onClose} className={cn("text-[11px] h-6")}>
           Cancel
         </Button>
       </div>

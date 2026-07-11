@@ -36,21 +36,31 @@ export default function DiffLine({ line }: Props) {
     >
       {/* Old line number gutter */}
       <span
-        className={cn("w-[40px] text-right pr-2 text-[11px] text-[var(--color-text-tertiary)] shrink-0 select-none", gutterBg)}
+        className={cn(
+          "w-[40px] text-right pr-2 text-[11px] text-[var(--color-text-tertiary)] shrink-0 select-none",
+          gutterBg,
+        )}
       >
         {line.oldLineNumber ?? ""}
       </span>
 
       {/* New line number gutter */}
       <span
-        className={cn("w-[40px] text-right pr-2 text-[11px] text-[var(--color-text-tertiary)] shrink-0 select-none", gutterBg)}
+        className={cn(
+          "w-[40px] text-right pr-2 text-[11px] text-[var(--color-text-tertiary)] shrink-0 select-none",
+          gutterBg,
+        )}
       >
         {line.newLineNumber ?? ""}
       </span>
 
       {/* Prefix (+/-/space) */}
       <span
-        className={cn("w-[18px] text-center shrink-0 select-none font-medium", prefixColor, gutterBg)}
+        className={cn(
+          "w-[18px] text-center shrink-0 select-none font-medium",
+          prefixColor,
+          gutterBg,
+        )}
       >
         {prefix}
       </span>

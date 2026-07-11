@@ -31,8 +31,7 @@ export function getGlobalTerminalMirrorTitle(
 
   const project = findProjectForWorktreePath(projects, worktree.path);
   const label = project ? getProjectRepoLabel(project) : "Terminal";
-  const suffix =
-    project?.sourcePath === worktree.path ? worktree.branch : worktree.name;
+  const suffix = project?.sourcePath === worktree.path ? worktree.branch : worktree.name;
 
   return `${label} > ${suffix}`;
 }

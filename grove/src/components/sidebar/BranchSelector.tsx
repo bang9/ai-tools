@@ -58,11 +58,7 @@ export function BranchSelector({
       errorToast: false,
     })
       .then(setBranches)
-      .catch((err) =>
-        setError(
-          err instanceof Error ? err.message : "Failed to load branches",
-        ),
-      )
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load branches"))
       .finally(() => setLoading(false));
   }, [projectId]);
 
@@ -90,27 +86,17 @@ export function BranchSelector({
   }, []);
 
   const filtered = branches.filter(
-    (b) =>
-      b !== resolvedDefaultBranch &&
-      b.toLowerCase().includes(search.toLowerCase()),
+    (b) => b !== resolvedDefaultBranch && b.toLowerCase().includes(search.toLowerCase()),
   );
 
   return createPortal(
     <div
       ref={containerRef}
       style={{ top: position.top, left: position.left }}
-      className={cn(
-        "fixed z-50 w-64 rounded-md border border-border bg-popover shadow-lg",
-      )}
+      className={cn("fixed z-50 w-64 rounded-md border border-border bg-popover shadow-lg")}
     >
-      <div
-        className={cn(
-          "flex items-center gap-2 border-b border-border px-2 py-1.5",
-        )}
-      >
-        <Search
-          className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground")}
-        />
+      <div className={cn("flex items-center gap-2 border-b border-border px-2 py-1.5")}>
+        <Search className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground")} />
         <input
           ref={inputRef}
           type="text"
@@ -129,9 +115,7 @@ export function BranchSelector({
       <div className={cn("max-h-48 overflow-y-auto py-1")}>
         {loading && (
           <div className={cn("flex items-center justify-center py-4")}>
-            <Loader2
-              className={cn("h-4 w-4 animate-spin text-muted-foreground")}
-            />
+            <Loader2 className={cn("h-4 w-4 animate-spin text-muted-foreground")} />
           </div>
         )}
 
@@ -158,9 +142,7 @@ export function BranchSelector({
                 "opacity-0": currentBranch !== null,
               })}
             />
-            <span className={cn("truncate")}>
-              {resolvedDefaultBranch} (default)
-            </span>
+            <span className={cn("truncate")}>{resolvedDefaultBranch} (default)</span>
           </button>
         )}
 
@@ -186,9 +168,7 @@ export function BranchSelector({
           ))}
 
         {!loading && !error && filtered.length === 0 && (
-          <div className={cn("px-3 py-2 text-xs text-muted-foreground")}>
-            No branches found
-          </div>
+          <div className={cn("px-3 py-2 text-xs text-muted-foreground")}>No branches found</div>
         )}
       </div>
     </div>,

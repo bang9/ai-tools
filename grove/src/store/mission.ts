@@ -7,13 +7,9 @@ import { useProjectStore } from "./project";
 import { runTerminalGcNow } from "../lib/terminal-gc";
 
 function projectAddLabel(projectId: string): string {
-  const project = useProjectStore
-    .getState()
-    .projects.find((p) => p.id === projectId);
+  const project = useProjectStore.getState().projects.find((p) => p.id === projectId);
   if (!project) return "project";
-  return project.name !== project.repo
-    ? project.name
-    : `${project.org}/${project.repo}`;
+  return project.name !== project.repo ? project.name : `${project.org}/${project.repo}`;
 }
 
 interface MissionState {
@@ -57,28 +53,26 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   },
 
   createMission: async (name: string, branchName?: string | null) => {
-    const mission = await runCommand(
-      () => tauri.createMission(name, branchName),
-      {
-        errorToast: "Failed to create mission",
-      },
-    );
+    const mission = await runCommand(() => tauri.createMission(name, branchName), {
+      errorToast: "Failed to create mission",
+    });
     set((state) => ({ missions: [...state.missions, mission] }));
     return mission;
   },
 
   deleteMission: async (id: string) => {
-      set((state) => ({
-        deletingMissions: { ...state.deletingMissions, [id]: true },
-        deletingMissionProjects: {
-          ...state.deletingMissionProjects,
-          ...Object.fromEntries(
-            (state.missions.find((mission) => mission.id === id)?.projects ?? []).map(
-              (project) => [`${id}:${project.projectId}`, true],
-            ),
-          ),
-        },
-      }));
+    set((state) => ({
+      deletingMissions: { ...state.deletingMissions, [id]: true },
+      deletingMissionProjects: {
+        ...state.deletingMissionProjects,
+        ...Object.fromEntries(
+          (state.missions.find((mission) => mission.id === id)?.projects ?? []).map((project) => [
+            `${id}:${project.projectId}`,
+            true,
+          ]),
+        ),
+      },
+    }));
 
     try {
       const mission = get().missions.find((m) => m.id === id);
@@ -100,8 +94,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
             ([key]) => !key.startsWith(`${id}:`),
           ),
         );
-        const nextSelected =
-          state.selectedItem?.missionId === id ? null : state.selectedItem;
+        const nextSelected = state.selectedItem?.missionId === id ? null : state.selectedItem;
         return {
           missions: state.missions.filter((m) => m.id !== id),
           selectedItem: nextSelected,
@@ -142,21 +135,17 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         { errorToast: `Failed to add ${projectAddLabel(projectId)} to mission` },
       );
       set((state) => {
-        const { [addingKey]: _, ...remainingAdding } =
-          state.addingMissionProjects;
+        const { [addingKey]: _, ...remainingAdding } = state.addingMissionProjects;
         return {
           addingMissionProjects: remainingAdding,
           missions: state.missions.map((m) =>
-            m.id === missionId
-              ? { ...m, projects: [...m.projects, missionProject] }
-              : m,
+            m.id === missionId ? { ...m, projects: [...m.projects, missionProject] } : m,
           ),
         };
       });
     } catch (error) {
       set((state) => {
-        const { [addingKey]: _, ...remainingAdding } =
-          state.addingMissionProjects;
+        const { [addingKey]: _, ...remainingAdding } = state.addingMissionProjects;
         return { addingMissionProjects: remainingAdding };
       });
       throw error;
@@ -166,15 +155,10 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   removeProject: async (missionId: string, projectId: string) => {
     const deletionKey = `${missionId}:${projectId}`;
     const mission = get().missions.find((m) => m.id === missionId);
-    const removedProject = mission?.projects.find(
-      (p) => p.projectId === projectId,
-    );
+    const removedProject = mission?.projects.find((p) => p.projectId === projectId);
     const wasSelected =
-      get().selectedItem?.missionId === missionId &&
-      get().selectedItem?.projectId === projectId;
-    const nextActiveWorktree = wasSelected
-      ? (mission?.missionDir ?? null)
-      : null;
+      get().selectedItem?.missionId === missionId && get().selectedItem?.projectId === projectId;
+    const nextActiveWorktree = wasSelected ? (mission?.missionDir ?? null) : null;
 
     set((state) => ({
       deletingMissionProjects: {
@@ -185,15 +169,12 @@ export const useMissionStore = create<MissionState>((set, get) => ({
 
     try {
       if (removedProject) {
-        useTerminalStore
-          .getState()
-          .removeSession(removedProject.path, nextActiveWorktree);
+        useTerminalStore.getState().removeSession(removedProject.path, nextActiveWorktree);
       }
 
-      await runCommand(
-        () => tauri.removeProjectFromMission(missionId, projectId),
-        { errorToast: "Failed to remove project from mission" },
-      );
+      await runCommand(() => tauri.removeProjectFromMission(missionId, projectId), {
+        errorToast: "Failed to remove project from mission",
+      });
 
       set((state) => {
         const nextMissions = state.missions.map((m) =>
@@ -205,11 +186,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         const shouldFallbackSelection =
           state.selectedItem?.missionId === missionId &&
           state.selectedItem?.projectId === projectId;
-        const nextSelected = shouldFallbackSelection
-          ? { missionId }
-          : state.selectedItem;
-        const { [deletionKey]: _, ...remainingDeletingProjects } =
-          state.deletingMissionProjects;
+        const nextSelected = shouldFallbackSelection ? { missionId } : state.selectedItem;
+        const { [deletionKey]: _, ...remainingDeletingProjects } = state.deletingMissionProjects;
 
         return {
           missions: nextMissions,
@@ -220,8 +198,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
       void runTerminalGcNow();
     } catch (error) {
       set((state) => {
-        const { [deletionKey]: _, ...remainingDeletingProjects } =
-          state.deletingMissionProjects;
+        const { [deletionKey]: _, ...remainingDeletingProjects } = state.deletingMissionProjects;
         return { deletingMissionProjects: remainingDeletingProjects };
       });
       throw error;
@@ -239,9 +216,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     if (!mission) return;
     const collapsed = !mission.collapsed;
     set((state) => ({
-      missions: state.missions.map((m) =>
-        m.id === missionId ? { ...m, collapsed } : m,
-      ),
+      missions: state.missions.map((m) => (m.id === missionId ? { ...m, collapsed } : m)),
     }));
     tauri.setMissionCollapsed(missionId, collapsed).catch(() => {});
   },
@@ -254,9 +229,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     if (!mission) return null;
 
     if (selectedItem.projectId) {
-      const project = mission.projects.find(
-        (p) => p.projectId === selectedItem.projectId,
-      );
+      const project = mission.projects.find((p) => p.projectId === selectedItem.projectId);
       return project?.path ?? null;
     }
 

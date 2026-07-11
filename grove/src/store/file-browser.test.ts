@@ -63,9 +63,7 @@ describe("useFileBrowserStore", () => {
   it("resets entries when the root changes", () => {
     useFileBrowserStore.setState({
       entriesByParent: {
-        "": [
-          { path: "src", name: "src", entryType: "directory", depth: 0 },
-        ],
+        "": [{ path: "src", name: "src", entryType: "directory", depth: 0 }],
       },
       loadedParents: {
         "": true,

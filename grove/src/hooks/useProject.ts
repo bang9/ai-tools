@@ -13,11 +13,7 @@ export function useProject() {
   const loadProjects = useProjectStore((state) => state.loadProjects);
 
   useEffect(() => {
-    registerSyncJob(
-      "projects",
-      () => useProjectStore.getState().syncProjects(),
-      10_000,
-    );
+    registerSyncJob("projects", () => useProjectStore.getState().syncProjects(), 10_000);
     registerSyncJob(
       TERMINAL_GC_JOB_KEY,
       async () => {
@@ -44,29 +40,33 @@ export function useProject() {
     let cancelled = false;
     const cleanups: (() => void)[] = [];
 
-    tauri.onCloneCompleted(({ id, project }) => {
-      if (cancelled) return;
-      const completed = useProjectStore.getState().completeClone(id, project);
-      if (!completed) return;
-      useToastStore.getState().addToast("success", "Project cloned successfully");
-    }).then((fn) => {
-      if (cancelled) fn();
-      else cleanups.push(fn);
-    });
+    tauri
+      .onCloneCompleted(({ id, project }) => {
+        if (cancelled) return;
+        const completed = useProjectStore.getState().completeClone(id, project);
+        if (!completed) return;
+        useToastStore.getState().addToast("success", "Project cloned successfully");
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else cleanups.push(fn);
+      });
 
-    tauri.onCloneFailed(({ id, error }) => {
-      if (cancelled) return;
-      const { cloningProjects } = useProjectStore.getState();
-      if (!cloningProjects.some((c) => c.id === id)) return;
+    tauri
+      .onCloneFailed(({ id, error }) => {
+        if (cancelled) return;
+        const { cloningProjects } = useProjectStore.getState();
+        if (!cloningProjects.some((c) => c.id === id)) return;
 
-      useProjectStore.setState((state) => ({
-        cloningProjects: state.cloningProjects.filter((c) => c.id !== id),
-      }));
-      useToastStore.getState().addToast("error", `Clone failed: ${error}`);
-    }).then((fn) => {
-      if (cancelled) fn();
-      else cleanups.push(fn);
-    });
+        useProjectStore.setState((state) => ({
+          cloningProjects: state.cloningProjects.filter((c) => c.id !== id),
+        }));
+        useToastStore.getState().addToast("error", `Clone failed: ${error}`);
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else cleanups.push(fn);
+      });
 
     return () => {
       cancelled = true;

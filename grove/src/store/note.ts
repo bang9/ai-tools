@@ -66,5 +66,4 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     const note = get().notes[key];
     return note !== undefined && note.trim().length > 0;
   },
-
 }));

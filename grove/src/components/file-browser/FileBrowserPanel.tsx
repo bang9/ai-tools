@@ -1,12 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  ChevronDown,
-  ChevronRight,
-  FileText,
-  Folder,
-  FolderOpen,
-  Loader2,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { DirectoryFileEntry } from "../../types";
@@ -236,7 +229,11 @@ export default function FileBrowserPanel({
         <span className={cn("text-xs font-medium uppercase tracking-wider text-muted-foreground")}>
           File Browser
         </span>
-        <span className={cn("rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-muted-foreground")}>
+        <span
+          className={cn(
+            "rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-muted-foreground",
+          )}
+        >
           {visibleEntries.length}
         </span>
         {loading && (
@@ -244,7 +241,9 @@ export default function FileBrowserPanel({
         )}
       </div>
       {visibleEntries.length === 0 ? (
-        <div className={cn("flex flex-1 items-center justify-center text-sm text-muted-foreground")}>
+        <div
+          className={cn("flex flex-1 items-center justify-center text-sm text-muted-foreground")}
+        >
           {loading ? "Loading files" : "No files"}
         </div>
       ) : (
@@ -255,10 +254,7 @@ export default function FileBrowserPanel({
           onKeyDown={handleKeyDown}
           onDragStart={(event) => event.preventDefault()}
         >
-          <div
-            className={cn("relative w-full")}
-            style={{ height: rowVirtualizer.getTotalSize() }}
-          >
+          <div className={cn("relative w-full")} style={{ height: rowVirtualizer.getTotalSize() }}>
             {virtualRows.map((virtualRow) => {
               const entry = visibleEntries[virtualRow.index];
               const isFile = entry.entryType === "file";
@@ -335,9 +331,11 @@ export default function FileBrowserPanel({
                             "text-muted-foreground": !isFile,
                           })}
                         />
-                        <span className={cn("min-w-0 flex-1 truncate", {
-                          "font-medium": selected,
-                        })}>
+                        <span
+                          className={cn("min-w-0 flex-1 truncate", {
+                            "font-medium": selected,
+                          })}
+                        >
                           {entry.name}
                         </span>
                       </div>

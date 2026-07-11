@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  useTabStore,
-  selectActiveTabIdForWorktree,
-  selectTabsForWorktree,
-} from "../../store/tab";
+import { useTabStore, selectActiveTabIdForWorktree, selectTabsForWorktree } from "../../store/tab";
 import { useTerminalStore } from "../../store/terminal";
 import { usePanelLayoutStore } from "../../store/panel-layout";
 import { useBroadcastStore } from "../../store/broadcast";
@@ -14,17 +10,11 @@ import {
   getRuntimeSize,
   captureRuntimeSnapshot,
 } from "../../lib/terminal-runtime";
-import {
-  buildBroadcastSessionKey,
-  restoreBroadcastSessionSize,
-} from "../../lib/broadcast-session";
+import { buildBroadcastSessionKey, restoreBroadcastSessionSize } from "../../lib/broadcast-session";
 import { collectTerminalPanes } from "../../lib/terminal-session";
 import { shouldStartPipBroadcast } from "../../lib/broadcast-policy";
 import { cn } from "../../lib/cn";
-import {
-  DEFAULT_PIP_PRESENTATION,
-  type PipPresentationState,
-} from "../../lib/pip-floating";
+import { DEFAULT_PIP_PRESENTATION, type PipPresentationState } from "../../lib/pip-floating";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
 import { initBrowserWebviewBridge } from "../../lib/browser-webview";
 import TerminalPanel from "../terminal/TerminalPanel";
@@ -59,9 +49,7 @@ function AppTabContent() {
     initBrowserWebviewBridge();
   }, []);
 
-  const activeTabId = useTabStore((state) =>
-    selectActiveTabIdForWorktree(state, worktreePath),
-  );
+  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, worktreePath));
   const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
   const browserTabs = tabs.filter((tab) => tab.type === "browser");
   const isTerminal = activeTabId === "terminal";
@@ -71,9 +59,7 @@ function AppTabContent() {
   const theme = useTerminalStore((s) => s.theme);
   const focusedPtyId = useTerminalStore((s) => s.focusedPtyId);
   const pips = useBroadcastStore((s) => s.pips);
-  const pip = useBroadcastStore((s) =>
-    worktreePath ? (s.pips[worktreePath] ?? null) : null,
-  );
+  const pip = useBroadcastStore((s) => (worktreePath ? (s.pips[worktreePath] ?? null) : null));
   const isFocusedPtyMirroring = useBroadcastStore((s) =>
     focusedPtyId ? Boolean(s.mirrors[focusedPtyId]) : false,
   );
@@ -151,10 +137,7 @@ function AppTabContent() {
     stopPip,
   ]);
 
-  const hasPipBroadcast =
-    !isTerminal &&
-    !!worktreePath &&
-    !!pip;
+  const hasPipBroadcast = !isTerminal && !!worktreePath && !!pip;
 
   useEffect(() => {
     const runtimeMap = pipRuntimeMapRef.current;
@@ -200,9 +183,8 @@ function AppTabContent() {
 
   useEffect(() => {
     const runtimeMap = pipRuntimeMapRef.current;
-    const activeSessionKey = pip && worktreePath
-      ? buildBroadcastSessionKey(worktreePath, pip)
-      : null;
+    const activeSessionKey =
+      pip && worktreePath ? buildBroadcastSessionKey(worktreePath, pip) : null;
     const attachedSession = attachedPipSessionRef.current;
     if (
       attachedSession &&
@@ -233,14 +215,17 @@ function AppTabContent() {
     requestTerminalLayoutSync({ paneId: entry.paneId, source: "attach" });
   }, [hasPipBroadcast, pip?.paneId, pip?.ptyId, worktreePath]);
 
-  useEffect(() => () => {
-    for (const { runtime } of pipRuntimeMapRef.current.values()) {
-      runtime.detach(pipContainerRef.current);
-      runtime.release();
-    }
-    pipRuntimeMapRef.current.clear();
-    attachedPipSessionRef.current = null;
-  }, []);
+  useEffect(
+    () => () => {
+      for (const { runtime } of pipRuntimeMapRef.current.values()) {
+        runtime.detach(pipContainerRef.current);
+        runtime.release();
+      }
+      pipRuntimeMapRef.current.clear();
+      attachedPipSessionRef.current = null;
+    },
+    [],
+  );
 
   const {
     tabs: globalTabs,
@@ -293,19 +278,20 @@ function AppTabContent() {
 
   const setActiveTab = useTabStore((s) => s.setActiveTab);
 
-  const updatePipPresentation = useCallback((next: PipPresentationState) => {
-    if (!worktreePath) {
-      return;
-    }
-    setPipPresentationByWorktree((state) => ({
-      ...state,
-      [worktreePath]: next,
-    }));
-  }, [worktreePath]);
+  const updatePipPresentation = useCallback(
+    (next: PipPresentationState) => {
+      if (!worktreePath) {
+        return;
+      }
+      setPipPresentationByWorktree((state) => ({
+        ...state,
+        [worktreePath]: next,
+      }));
+    },
+    [worktreePath],
+  );
 
-  const activePipKey = pip && worktreePath
-    ? buildBroadcastSessionKey(worktreePath, pip)
-    : null;
+  const activePipKey = pip && worktreePath ? buildBroadcastSessionKey(worktreePath, pip) : null;
 
   const pipElement = hasPipBroadcast && !activeTabIsBrowser && (
     <PipTerminal
@@ -352,10 +338,7 @@ function AppTabContent() {
   if (!hasGlobalPanel || collapsed) {
     return (
       <div className={cn("flex flex-col flex-1 min-h-0")}>
-        <div
-          ref={pipBoundsRef}
-          className={cn("flex-1 relative overflow-hidden")}
-        >
+        <div ref={pipBoundsRef} className={cn("flex-1 relative overflow-hidden")}>
           {tabContent}
         </div>
         {globalPanel}
@@ -374,16 +357,11 @@ function AppTabContent() {
       onCommit={handleRatioCommit}
     >
       <ResizablePanelGroup.Pane>
-        <div
-          ref={pipBoundsRef}
-          className={cn("relative h-full overflow-hidden")}
-        >
+        <div ref={pipBoundsRef} className={cn("relative h-full overflow-hidden")}>
           {tabContent}
         </div>
       </ResizablePanelGroup.Pane>
-      <ResizablePanelGroup.Pane>
-        {globalPanel}
-      </ResizablePanelGroup.Pane>
+      <ResizablePanelGroup.Pane>{globalPanel}</ResizablePanelGroup.Pane>
     </ResizablePanelGroup>
   );
 }

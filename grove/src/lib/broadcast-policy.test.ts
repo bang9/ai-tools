@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  shouldAttachPrimaryRuntime,
-  shouldStartPipBroadcast,
-} from "./broadcast-policy";
+import { shouldAttachPrimaryRuntime, shouldStartPipBroadcast } from "./broadcast-policy";
 
 describe("broadcast policy", () => {
   describe("shouldAttachPrimaryRuntime", () => {

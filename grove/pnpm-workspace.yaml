@@ -3,4 +3,4 @@ onlyBuiltDependencies:
   - esbuild
 
 patchedDependencies:
-  '@xterm/xterm': patches/@xterm__xterm.patch
+  "@xterm/xterm": patches/@xterm__xterm.patch

@@ -141,8 +141,12 @@ function FileDiffSection({
   selectedLines: Set<number>;
   containerRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const { handleGutterClick: rawGutterClick, handleGutterMouseDown, handleGutterMouseEnter, handleGutterMouseUp } =
-    useLineSelection(diff.path);
+  const {
+    handleGutterClick: rawGutterClick,
+    handleGutterMouseDown,
+    handleGutterMouseEnter,
+    handleGutterMouseUp,
+  } = useLineSelection(diff.path);
 
   const handleGutterClick = useCallback(
     (lineIndex: number, shiftKey: boolean) => {
@@ -172,7 +176,16 @@ function FileDiffSection({
           gap ? [gap.slot, gap.count, gap.displayStart, gap.oldStart, gap.newStart] : null,
         ),
       }),
-    [commitHash, diff.displayLineCount, diff.oldPath, diff.path, diff.status, gapSlots, isCommitView, isStaged],
+    [
+      commitHash,
+      diff.displayLineCount,
+      diff.oldPath,
+      diff.path,
+      diff.status,
+      gapSlots,
+      isCommitView,
+      isStaged,
+    ],
   );
   const gapStateIdentityRef = useRef(gapStateIdentity);
 
@@ -185,11 +198,14 @@ function FileDiffSection({
     setGapStates({});
   }, [gapStateIdentity]);
 
-  const updateGapStates = useCallback((updater: (prev: Record<number, GapLoadState>) => Record<number, GapLoadState>) => {
-    const next = updater(gapStatesRef.current);
-    gapStatesRef.current = next;
-    setGapStates(next);
-  }, []);
+  const updateGapStates = useCallback(
+    (updater: (prev: Record<number, GapLoadState>) => Record<number, GapLoadState>) => {
+      const next = updater(gapStatesRef.current);
+      gapStatesRef.current = next;
+      setGapStates(next);
+    },
+    [],
+  );
 
   const fetchGapLines = useCallback(
     (startLine: number, count: number) => {
@@ -201,10 +217,22 @@ function FileDiffSection({
         if (!commitHash) {
           return Promise.resolve<string[]>([]);
         }
-        return getCommitDiffContext(worktreePath, commitHash, diff.path, diff.oldPath ?? null, startLine, count);
+        return getCommitDiffContext(
+          worktreePath,
+          commitHash,
+          diff.path,
+          diff.oldPath ?? null,
+          startLine,
+          count,
+        );
       }
 
-      return getWorkingDiffContext(worktreePath, isStaged ? `staged:${diff.path}` : diff.path, startLine, count);
+      return getWorkingDiffContext(
+        worktreePath,
+        isStaged ? `staged:${diff.path}` : diff.path,
+        startLine,
+        count,
+      );
     },
     [commitHash, diff.oldPath, diff.path, isCommitView, isStaged, worktreePath],
   );
@@ -227,9 +255,12 @@ function FileDiffSection({
       }));
 
       const startLine = gap.displayStart + requestPlan.startOffset;
-      const loaded = await runCommandSafely(() => fetchGapLines(startLine, requestPlan.requestedCount), {
-        errorToast: "Failed to load diff context",
-      });
+      const loaded = await runCommandSafely(
+        () => fetchGapLines(startLine, requestPlan.requestedCount),
+        {
+          errorToast: "Failed to load diff context",
+        },
+      );
 
       updateGapStates((prev) => {
         const nextState = getGapState(prev, gap.slot);
@@ -280,13 +311,21 @@ function FileDiffSection({
       const [loadedHead, loadedTail] = await Promise.all([
         requestPlan.head
           ? runCommandSafely(
-              () => fetchGapLines(gap.displayStart + requestPlan.head!.startOffset, requestPlan.head!.requestedCount),
+              () =>
+                fetchGapLines(
+                  gap.displayStart + requestPlan.head!.startOffset,
+                  requestPlan.head!.requestedCount,
+                ),
               { errorToast: "Failed to load diff context" },
             )
           : Promise.resolve(null),
         requestPlan.tail
           ? runCommandSafely(
-              () => fetchGapLines(gap.displayStart + requestPlan.tail!.startOffset, requestPlan.tail!.requestedCount),
+              () =>
+                fetchGapLines(
+                  gap.displayStart + requestPlan.tail!.startOffset,
+                  requestPlan.tail!.requestedCount,
+                ),
               { errorToast: "Failed to load diff context" },
             )
           : Promise.resolve(null),
@@ -325,7 +364,10 @@ function FileDiffSection({
   );
 
   const added = diff.hunks.reduce((s, h) => s + h.lines.filter((l) => l.type === "add").length, 0);
-  const removed = diff.hunks.reduce((s, h) => s + h.lines.filter((l) => l.type === "remove").length, 0);
+  const removed = diff.hunks.reduce(
+    (s, h) => s + h.lines.filter((l) => l.type === "remove").length,
+    0,
+  );
   const diffStatSquares = useMemo(() => buildDiffStatSquares(added, removed), [added, removed]);
 
   const handleCopyPath = useCallback(
@@ -348,10 +390,7 @@ function FileDiffSection({
   );
 
   return (
-    <div
-      className={cn({ "mt-2": !isFirst })}
-      style={{ border: `1px solid ${GITHUB_DIFF_BORDER}` }}
-    >
+    <div className={cn({ "mt-2": !isFirst })} style={{ border: `1px solid ${GITHUB_DIFF_BORDER}` }}>
       <div
         className={cn("sticky top-0 z-10 flex items-center gap-3 px-2 py-1.5")}
         style={{
@@ -361,7 +400,9 @@ function FileDiffSection({
       >
         <button
           type="button"
-          className={cn("flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-sm transition-colors cursor-pointer")}
+          className={cn(
+            "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-sm transition-colors cursor-pointer",
+          )}
           style={{ color: GITHUB_DIFF_MUTED }}
           onClick={() => setCollapsed((prev) => !prev)}
           aria-label={collapsed ? "Expand file" : "Collapse file"}
@@ -374,18 +415,27 @@ function FileDiffSection({
             event.currentTarget.style.color = GITHUB_DIFF_MUTED;
           }}
         >
-          {collapsed ? <ChevronRight size={15} strokeWidth={2.2} /> : <ChevronDown size={15} strokeWidth={2.2} />}
+          {collapsed ? (
+            <ChevronRight size={15} strokeWidth={2.2} />
+          ) : (
+            <ChevronDown size={15} strokeWidth={2.2} />
+          )}
         </button>
 
         <div className={cn("min-w-0 flex flex-1 items-center gap-1 overflow-hidden")}>
           <h3 className={cn("min-w-0 flex-1 truncate")}>
-            <code className={cn("block truncate font-mono text-[11px]")} style={{ color: GITHUB_DIFF_FOREGROUND }}>
+            <code
+              className={cn("block truncate font-mono text-[11px]")}
+              style={{ color: GITHUB_DIFF_FOREGROUND }}
+            >
               {diff.path}
             </code>
           </h3>
           <button
             type="button"
-            className={cn("flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-sm transition-colors cursor-pointer")}
+            className={cn(
+              "flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-sm transition-colors cursor-pointer",
+            )}
             style={{ color: GITHUB_DIFF_MUTED }}
             onClick={handleCopyPath}
             aria-label="Copy file path"
@@ -404,10 +454,16 @@ function FileDiffSection({
 
         <div className={cn("ml-auto flex shrink-0 items-center gap-2")}>
           <div className={cn("flex items-center gap-1.5")}>
-            <span className={cn("text-[11px] font-semibold tabular-nums")} style={{ color: "rgba(63, 185, 80, 0.95)" }}>
+            <span
+              className={cn("text-[11px] font-semibold tabular-nums")}
+              style={{ color: "rgba(63, 185, 80, 0.95)" }}
+            >
               +{added}
             </span>
-            <span className={cn("text-[11px] font-semibold tabular-nums")} style={{ color: "rgba(248, 81, 73, 0.95)" }}>
+            <span
+              className={cn("text-[11px] font-semibold tabular-nums")}
+              style={{ color: "rgba(248, 81, 73, 0.95)" }}
+            >
               -{removed}
             </span>
           </div>
@@ -518,7 +574,12 @@ function ContextGapSection({
       <div>
         {state.headLines.length > 0 && <ContextRows lines={state.headLines} />}
         {hasRemaining && (
-          <ContextExpandRow direction="down" loadCount={nextLoadCount} onClick={onLoadHead} disabled={loading} />
+          <ContextExpandRow
+            direction="down"
+            loadCount={nextLoadCount}
+            onClick={onLoadHead}
+            disabled={loading}
+          />
         )}
       </div>
     );
@@ -546,7 +607,12 @@ function ContextGapSection({
         />
       )}
       {isMiddle && hasRemaining && hasPartialMiddleContext && state.tailLines.length > 0 && (
-        <ContextExpandRow direction="up" loadCount={nextLoadCount} onClick={onLoadTail} disabled={loading} />
+        <ContextExpandRow
+          direction="up"
+          loadCount={nextLoadCount}
+          onClick={onLoadTail}
+          disabled={loading}
+        />
       )}
       {state.tailLines.length > 0 && <ContextRows lines={state.tailLines} />}
     </div>
@@ -609,7 +675,10 @@ function ContextExpandRow({
       >
         <Icon size={14} strokeWidth={2} />
       </button>
-      <span className={cn("min-w-0 flex-1 truncate font-mono text-[11px]")} style={{ color: GITHUB_DIFF_MUTED }}>
+      <span
+        className={cn("min-w-0 flex-1 truncate font-mono text-[11px]")}
+        style={{ color: GITHUB_DIFF_MUTED }}
+      >
         {label}
       </span>
     </div>
@@ -655,7 +724,9 @@ function ContextRows({ lines }: { lines: LoadedContextLine[] }) {
           {lines.map((line) => (
             <div
               key={line.key}
-              className={cn("min-h-[20px] w-full leading-[20px] font-mono text-[12px] whitespace-pre pr-3")}
+              className={cn(
+                "min-h-[20px] w-full leading-[20px] font-mono text-[12px] whitespace-pre pr-3",
+              )}
               style={{ color: GITHUB_DIFF_FOREGROUND }}
             >
               {line.content}

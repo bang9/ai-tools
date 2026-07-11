@@ -31,7 +31,9 @@ export default function FileList({
         <span className={cn("text-xs font-medium uppercase tracking-wider text-muted-foreground")}>
           {title}
         </span>
-        <span className={cn("rounded-full bg-accent/20 px-2 py-0.5 text-xs font-medium text-accent")}>
+        <span
+          className={cn("rounded-full bg-accent/20 px-2 py-0.5 text-xs font-medium text-accent")}
+        >
           {fileStatuses.length}
         </span>
       </div>
@@ -50,9 +52,11 @@ export default function FileList({
             onClick={() => onSelectFile(file.path, file.staged)}
           >
             <FileText className={cn("h-3.5 w-3.5 shrink-0")} />
-            <span className={cn("min-w-0 truncate", {
-              "font-medium": selectedFile === file.path,
-            })}>
+            <span
+              className={cn("min-w-0 truncate", {
+                "font-medium": selectedFile === file.path,
+              })}
+            >
               {file.path}
             </span>
             <span

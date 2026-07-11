@@ -1,10 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
-import {
-  terminalThemes,
-  themeDisplayNames,
-  DEFAULT_THEME_KEY,
-} from "../../lib/terminal-themes";
+import { terminalThemes, themeDisplayNames, DEFAULT_THEME_KEY } from "../../lib/terminal-themes";
 import { useTerminalStore } from "../../store/terminal";
 import { saveAppConfig, getAppConfig } from "../../lib/platform";
 import { runCommandSafely } from "../../lib/command";
@@ -48,40 +44,44 @@ export default function TerminalAppearance() {
         ...(detectedTheme ? [["system", detectedTheme] as [string, TerminalTheme]] : []),
       ];
       const match = allPresets.find(
-        ([, preset]) => preset.background === theme.background && preset.foreground === theme.foreground,
+        ([, preset]) =>
+          preset.background === theme.background && preset.foreground === theme.foreground,
       );
       setActivePreset(match ? match[0] : null);
     }
   }, [theme, detectedTheme]);
 
-  const updateDraft = useCallback(
-    (key: keyof TerminalTheme, value: string | number) => {
-      setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
-      setActivePreset(null);
-    },
-    [],
-  );
+  const updateDraft = useCallback((key: keyof TerminalTheme, value: string | number) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setActivePreset(null);
+  }, []);
 
-  const selectPreset = useCallback((key: string) => {
-    const preset = key === "system" ? detectedTheme : terminalThemes[key];
-    if (!preset) return;
-    setDraft((prev) => ({
-      ...preset,
-      fontFamily: prev?.fontFamily ?? preset.fontFamily,
-      fontSize: prev?.fontSize ?? preset.fontSize,
-    }));
-    setActivePreset(key);
-  }, [detectedTheme]);
+  const selectPreset = useCallback(
+    (key: string) => {
+      const preset = key === "system" ? detectedTheme : terminalThemes[key];
+      if (!preset) return;
+      setDraft((prev) => ({
+        ...preset,
+        fontFamily: prev?.fontFamily ?? preset.fontFamily,
+        fontSize: prev?.fontSize ?? preset.fontSize,
+      }));
+      setActivePreset(key);
+    },
+    [detectedTheme],
+  );
 
   const handleApply = useCallback(async () => {
     if (!draft) return;
     loadTheme(draft);
-    await runCommandSafely(async () => {
-      const config = await getAppConfig();
-      await saveAppConfig({ ...config, terminalTheme: draft });
-    }, {
-      errorToast: "Failed to save terminal theme",
-    });
+    await runCommandSafely(
+      async () => {
+        const config = await getAppConfig();
+        await saveAppConfig({ ...config, terminalTheme: draft });
+      },
+      {
+        errorToast: "Failed to save terminal theme",
+      },
+    );
   }, [draft, loadTheme]);
 
   const handleReset = useCallback(() => {
@@ -98,14 +98,16 @@ export default function TerminalAppearance() {
 
   return (
     <div>
-      <h4 className={cn("text-[12px] font-medium text-foreground mb-4")}>
-        Appearance
-      </h4>
+      <h4 className={cn("text-[12px] font-medium text-foreground mb-4")}>Appearance</h4>
 
       <div className={cn("flex flex-col gap-5")}>
         {/* Preset Themes */}
         <section>
-          <h5 className={cn("text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2")}>
+          <h5
+            className={cn(
+              "text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2",
+            )}
+          >
             Presets
           </h5>
           <div className={cn("grid grid-cols-3 gap-1.5")}>
@@ -131,7 +133,9 @@ export default function TerminalAppearance() {
                   )}
                 >
                   <div
-                    className={cn("w-5 h-5 rounded-[3px] border border-[var(--color-border)] shrink-0")}
+                    className={cn(
+                      "w-5 h-5 rounded-[3px] border border-[var(--color-border)] shrink-0",
+                    )}
                     style={{ backgroundColor: preset.background }}
                   >
                     <span
@@ -152,7 +156,11 @@ export default function TerminalAppearance() {
 
         {/* Font Settings */}
         <section>
-          <h5 className={cn("text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2")}>
+          <h5
+            className={cn(
+              "text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2",
+            )}
+          >
             Font
           </h5>
           <div className={cn("flex flex-col gap-2.5")}>
@@ -164,14 +172,14 @@ export default function TerminalAppearance() {
                 type="text"
                 value={draft.fontFamily}
                 onChange={(e) => updateDraft("fontFamily", e.target.value)}
-                className={cn("w-full max-w-[280px] px-2.5 py-1.5 text-[12px] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:border-[var(--color-primary)] transition-colors")}
+                className={cn(
+                  "w-full max-w-[280px] px-2.5 py-1.5 text-[12px] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:border-[var(--color-primary)] transition-colors",
+                )}
               />
             </div>
             <div>
               <div className={cn("flex items-center justify-between mb-1 max-w-[280px]")}>
-                <label className={cn("text-[11px] text-muted-foreground")}>
-                  Font Size
-                </label>
+                <label className={cn("text-[11px] text-muted-foreground")}>Font Size</label>
                 <span className={cn("text-[11px] text-[var(--color-text-tertiary)] tabular-nums")}>
                   {draft.fontSize}px
                 </span>
@@ -182,10 +190,10 @@ export default function TerminalAppearance() {
                 max={20}
                 step={1}
                 value={draft.fontSize}
-                onChange={(e) =>
-                  updateDraft("fontSize", Number(e.target.value))
-                }
-                className={cn("w-full max-w-[280px] h-1 accent-[var(--color-primary)] cursor-pointer")}
+                onChange={(e) => updateDraft("fontSize", Number(e.target.value))}
+                className={cn(
+                  "w-full max-w-[280px] h-1 accent-[var(--color-primary)] cursor-pointer",
+                )}
               />
             </div>
           </div>
@@ -193,13 +201,29 @@ export default function TerminalAppearance() {
 
         {/* Core Colors */}
         <section>
-          <h5 className={cn("text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2")}>
+          <h5
+            className={cn(
+              "text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2",
+            )}
+          >
             Colors
           </h5>
           <div className={cn("flex flex-col gap-2")}>
-            <ColorRow label="Background" value={draft.background} onChange={(v) => updateDraft("background", v)} />
-            <ColorRow label="Foreground" value={draft.foreground} onChange={(v) => updateDraft("foreground", v)} />
-            <ColorRow label="Cursor" value={draft.cursor} onChange={(v) => updateDraft("cursor", v)} />
+            <ColorRow
+              label="Background"
+              value={draft.background}
+              onChange={(v) => updateDraft("background", v)}
+            />
+            <ColorRow
+              label="Foreground"
+              value={draft.foreground}
+              onChange={(v) => updateDraft("foreground", v)}
+            />
+            <ColorRow
+              label="Cursor"
+              value={draft.cursor}
+              onChange={(v) => updateDraft("cursor", v)}
+            />
           </div>
         </section>
 
@@ -208,7 +232,9 @@ export default function TerminalAppearance() {
           <button
             type="button"
             onClick={() => setColorsOpen((v) => !v)}
-            className={cn("flex items-center gap-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider hover:text-[var(--color-text-secondary)] transition-colors mb-2")}
+            className={cn(
+              "flex items-center gap-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider hover:text-[var(--color-text-secondary)] transition-colors mb-2",
+            )}
           >
             {colorsOpen ? (
               <ChevronDown size={12} strokeWidth={2} />
@@ -233,11 +259,17 @@ export default function TerminalAppearance() {
 
         {/* Preview */}
         <section>
-          <h5 className={cn("text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2")}>
+          <h5
+            className={cn(
+              "text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2",
+            )}
+          >
             Preview
           </h5>
           <div
-            className={cn("rounded-[var(--radius-md)] border border-[var(--color-border)] p-3 text-[12px] leading-[1.6] overflow-hidden")}
+            className={cn(
+              "rounded-[var(--radius-md)] border border-[var(--color-border)] p-3 text-[12px] leading-[1.6] overflow-hidden",
+            )}
             style={{
               backgroundColor: draft.background,
               color: draft.foreground,
@@ -291,14 +323,20 @@ function ColorRow({
 }) {
   return (
     <div className={cn("flex items-center justify-between gap-2 max-w-[280px]")}>
-      <span className={cn("text-[11px] text-muted-foreground")}>
-        {label}
-      </span>
+      <span className={cn("text-[11px] text-muted-foreground")}>{label}</span>
       <div className={cn("flex items-center gap-1.5")}>
-        <span className={cn("text-[10px] text-[var(--color-text-tertiary)] font-mono tabular-nums uppercase")}>
+        <span
+          className={cn(
+            "text-[10px] text-[var(--color-text-tertiary)] font-mono tabular-nums uppercase",
+          )}
+        >
           {value}
         </span>
-        <label className={cn("relative w-5 h-5 rounded-[3px] border border-[var(--color-border)] cursor-pointer overflow-hidden shrink-0")}>
+        <label
+          className={cn(
+            "relative w-5 h-5 rounded-[3px] border border-[var(--color-border)] cursor-pointer overflow-hidden shrink-0",
+          )}
+        >
           <div className={cn("absolute inset-0")} style={{ backgroundColor: value }} />
           <input
             type="color"

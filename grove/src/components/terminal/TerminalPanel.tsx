@@ -78,19 +78,14 @@ const TerminalSessionView = memo(function TerminalSessionView({
   }
 
   return (
-    <div
-      className={cn("absolute inset-0")}
-      style={{ display: isActive ? "block" : "none" }}
-    >
+    <div className={cn("absolute inset-0")} style={{ display: isActive ? "block" : "none" }}>
       <SplitContainer node={node} worktreePath={worktreePath} />
     </div>
   );
 });
 
 function TerminalPanel() {
-  const worktreePaths = useTerminalStore(
-    useShallow((s) => Object.keys(s.sessions)),
-  );
+  const worktreePaths = useTerminalStore(useShallow((s) => Object.keys(s.sessions)));
   const activeWorktree = useTerminalStore((s) => s.activeWorktree);
   const hasActiveSession = useTerminalStore((s) =>
     s.activeWorktree ? s.sessions[s.activeWorktree] !== undefined : false,
@@ -104,9 +99,7 @@ function TerminalPanel() {
   const { createTerminal } = useTerminal();
   const [error, setError] = useState<string | null>(null);
   const previousPaneTopologyRef = useRef(new Map<string, string>());
-  const snapshotSaveTimersRef = useRef(
-    new Map<string, ReturnType<typeof setTimeout>>(),
-  );
+  const snapshotSaveTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const sessionsRef = useRef(useTerminalStore.getState().sessions);
   const ptyIdToWorktreeRef = useRef(new Map<string, string>());
 
@@ -163,17 +156,11 @@ function TerminalPanel() {
 
       const previous = previousPaneTopologyRef.current;
       const next = buildPaneTopologySignatures(state.sessions);
-      const changedPaths = new Set<string>([
-        ...previous.keys(),
-        ...Object.keys(state.sessions),
-      ]);
+      const changedPaths = new Set<string>([...previous.keys(), ...Object.keys(state.sessions)]);
 
       for (const worktreePath of changedPaths) {
         const nextSignature = next.get(worktreePath);
-        if (
-          previous.has(worktreePath) &&
-          previous.get(worktreePath) !== nextSignature
-        ) {
+        if (previous.has(worktreePath) && previous.get(worktreePath) !== nextSignature) {
           scheduleSnapshotSave(worktreePath);
         }
       }
@@ -183,24 +170,28 @@ function TerminalPanel() {
   }, []);
 
   useEffect(
-    () => subscribeTerminalPaneActivity(({ ptyId }) => {
-      const worktreePath = ptyIdToWorktreeRef.current.get(ptyId);
-      if (!worktreePath) {
-        return;
-      }
+    () =>
+      subscribeTerminalPaneActivity(({ ptyId }) => {
+        const worktreePath = ptyIdToWorktreeRef.current.get(ptyId);
+        if (!worktreePath) {
+          return;
+        }
 
-      scheduleSnapshotSave(worktreePath);
-    }),
+        scheduleSnapshotSave(worktreePath);
+      }),
     [],
   );
 
-  useEffect(() => () => {
-    for (const [worktreePath, timer] of snapshotSaveTimersRef.current.entries()) {
-      clearTimeout(timer);
-      persistSnapshot(worktreePath);
-    }
-    snapshotSaveTimersRef.current.clear();
-  }, []);
+  useEffect(
+    () => () => {
+      for (const [worktreePath, timer] of snapshotSaveTimersRef.current.entries()) {
+        clearTimeout(timer);
+        persistSnapshot(worktreePath);
+      }
+      snapshotSaveTimersRef.current.clear();
+    },
+    [],
+  );
 
   // Load theme + default worktree
   useEffect(() => {
@@ -219,7 +210,11 @@ function TerminalPanel() {
         const result = await runCommand(() => getTerminalTheme(), {
           errorToast: false,
         });
-        log("terminal", "system theme result", { detected: result.detected, bg: result.theme.background, fg: result.theme.foreground });
+        log("terminal", "system theme result", {
+          detected: result.detected,
+          bg: result.theme.background,
+          fg: result.theme.foreground,
+        });
 
         // Only expose System preset if detection actually succeeded
         if (result.detected) {
@@ -309,15 +304,12 @@ function TerminalPanel() {
         {!activeWorktree ? (
           <div className={cn("flex flex-col items-center justify-center h-full gap-3")}>
             <TerminalSquare className={cn("size-10 text-muted-foreground/50")} />
-            <span className={cn("text-sm text-muted-foreground")}>Select a worktree to open terminal</span>
+            <span className={cn("text-sm text-muted-foreground")}>
+              Select a worktree to open terminal
+            </span>
           </div>
         ) : (
-          worktreePaths.map((path) => (
-            <TerminalSessionView
-              key={path}
-              worktreePath={path}
-            />
-          ))
+          worktreePaths.map((path) => <TerminalSessionView key={path} worktreePath={path} />)
         )}
       </div>
     </div>

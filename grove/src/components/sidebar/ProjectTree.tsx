@@ -10,11 +10,7 @@ import {
   type DragStartEvent,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  arrayMove,
-} from "@dnd-kit/sortable";
+import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
 import type { Project, CloningProject } from "../../types";
 import { useProjectStore } from "../../store/project";
@@ -64,12 +60,13 @@ type DocumentWithViewTransition = Document & {
 };
 
 function getProjectOrgTransitionName(org: string): string {
-  const slug = org
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24) || "org";
+  const slug =
+    org
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 24) || "org";
 
   let hash = 0;
   for (const char of org) {
@@ -119,7 +116,7 @@ function SortableProjectList({
   );
 
   const activeProject = useMemo(
-    () => (activeId ? projects.find((project) => project.id === activeId) ?? null : null),
+    () => (activeId ? (projects.find((project) => project.id === activeId) ?? null) : null),
     [activeId, projects],
   );
 
@@ -150,11 +147,7 @@ function SortableProjectList({
     return (
       <div className={cn("space-y-1 py-0.5", className)}>
         {projects.map((project) => (
-          <ProjectItem
-            key={project.id}
-            project={project}
-            showOrgPrefix={showOrgPrefix}
-          />
+          <ProjectItem key={project.id} project={project} showOrgPrefix={showOrgPrefix} />
         ))}
       </div>
     );
@@ -172,11 +165,7 @@ function SortableProjectList({
       <SortableContext items={projectIds} strategy={verticalListSortingStrategy}>
         <div className={cn("space-y-1 py-0.5", className)}>
           {projects.map((project) => (
-            <ProjectItem
-              key={project.id}
-              project={project}
-              showOrgPrefix={showOrgPrefix}
-            />
+            <ProjectItem key={project.id} project={project} showOrgPrefix={showOrgPrefix} />
           ))}
         </div>
       </SortableContext>
@@ -323,10 +312,7 @@ function ProjectTree({
     () => orderedAllOrgGroups.map((group) => group.org),
     [orderedAllOrgGroups],
   );
-  const collapsedOrgSet = useMemo(
-    () => new Set(collapsedProjectOrgs),
-    [collapsedProjectOrgs],
-  );
+  const collapsedOrgSet = useMemo(() => new Set(collapsedProjectOrgs), [collapsedProjectOrgs]);
 
   useEffect(() => {
     if (!preferencesLoaded) return;
@@ -343,11 +329,7 @@ function ProjectTree({
 
   const handleOrgReorder = useCallback(
     (org: string, reorderedOrgProjectIds: string[]) => {
-      const reorderedIds = applyOrgProjectOrder(
-        projects,
-        org,
-        reorderedOrgProjectIds,
-      );
+      const reorderedIds = applyOrgProjectOrder(projects, org, reorderedOrgProjectIds);
       reorderProjects(reorderedIds);
     },
     [projects, reorderProjects],
@@ -376,9 +358,7 @@ function ProjectTree({
               org={group.org}
               projects={group.projects}
               collapsed={collapsedOrgSet.has(group.org)}
-              onToggle={() =>
-                setProjectOrgCollapsed(group.org, !collapsedOrgSet.has(group.org))
-              }
+              onToggle={() => setProjectOrgCollapsed(group.org, !collapsedOrgSet.has(group.org))}
               onReorder={(projectIds) => handleOrgReorder(group.org, projectIds)}
               canMoveUp={index > 0}
               canMoveDown={index < filteredOrgGroups.length - 1}
@@ -388,9 +368,7 @@ function ProjectTree({
             />
           ))}
           {sortingEnabled &&
-            cloningProjects.map((cp) => (
-              <CloningProjectItem key={cp.id} project={cp} />
-            ))}
+            cloningProjects.map((cp) => <CloningProjectItem key={cp.id} project={cp} />)}
         </div>
       ) : (
         <>

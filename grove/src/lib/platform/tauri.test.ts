@@ -17,11 +17,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-import {
-  getCommandErrorMessage,
-  getCommitDiffContext,
-  getWorkingDiffContext,
-} from "./tauri";
+import { getCommandErrorMessage, getCommitDiffContext, getWorkingDiffContext } from "./tauri";
 
 describe("getCommandErrorMessage", () => {
   beforeEach(() => {

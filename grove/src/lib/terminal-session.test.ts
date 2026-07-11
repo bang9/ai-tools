@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SplitNode } from "../types";
-import {
-  normalizeSplitTree,
-  toLayoutTemplate,
-} from "./split-tree";
+import { normalizeSplitTree, toLayoutTemplate } from "./split-tree";
 import {
   buildTerminalPaneTopologySignature,
   buildTerminalRestorePlan,
@@ -50,9 +47,7 @@ describe("collectTerminalPanes", () => {
 
 describe("buildTerminalPaneTopologySignature", () => {
   it("tracks stable pane identity without pty ids", () => {
-    expect(buildTerminalPaneTopologySignature(layout)).toBe(
-      "pane-a|pane-b|pane-c",
-    );
+    expect(buildTerminalPaneTopologySignature(layout)).toBe("pane-a|pane-b|pane-c");
     expect(
       buildTerminalPaneTopologySignature(
         restoreLayoutWithPtyIds(
@@ -250,14 +245,8 @@ describe("buildTerminalSnapshotRequest", () => {
 describe("findWorktreePathForPtyId", () => {
   it("returns the owning worktree for a live PTY id", () => {
     const sessions = {
-      "/tmp/project-a": restoreLayoutWithPtyIds(
-        layout,
-        new Map([["pane-a", "pty-a"]]),
-      ),
-      "/tmp/project-b": restoreLayoutWithPtyIds(
-        layout,
-        new Map([["pane-b", "pty-b"]]),
-      ),
+      "/tmp/project-a": restoreLayoutWithPtyIds(layout, new Map([["pane-a", "pty-a"]])),
+      "/tmp/project-b": restoreLayoutWithPtyIds(layout, new Map([["pane-b", "pty-b"]])),
     };
 
     expect(findWorktreePathForPtyId(sessions, "pty-b")).toBe("/tmp/project-b");

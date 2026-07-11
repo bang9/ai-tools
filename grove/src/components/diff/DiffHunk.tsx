@@ -7,10 +7,7 @@ import {
   type HighlightedGroup,
   type HighlightedLine,
 } from "./intraline";
-import {
-  buildConflictHighlightedGroups,
-  type ConflictGroupType,
-} from "./conflict-highlighting";
+import { buildConflictHighlightedGroups, type ConflictGroupType } from "./conflict-highlighting";
 
 interface Props {
   hunk: DiffHunkType;
@@ -237,44 +234,55 @@ function GroupGutterView({
         borderLeft: `2px solid ${style.borderColor}`,
       }}
     >
-        {lines.map((line) => {
-          const isSelectable = isSelectableType && !readOnly;
-          const isSelected = isSelectable && selectedLines.has(line.line.index);
+      {lines.map((line) => {
+        const isSelectable = isSelectableType && !readOnly;
+        const isSelected = isSelectable && selectedLines.has(line.line.index);
 
-          return (
-            <div
-              key={line.line.index}
-              data-gutter-line={isSelectable ? "" : undefined}
-              className={cn("flex min-h-[20px] leading-[20px] font-mono text-[12px]", {
-                "cursor-pointer": isSelectable,
-              })}
-              style={isSelected ? { boxShadow: `inset 3px 0 0 ${style.selectedBorderColor}` } : undefined}
-              onClick={isSelectable ? (e) => { e.stopPropagation(); onGutterClick(line.line.index, e.shiftKey); } : undefined}
-              onMouseDown={isSelectable ? () => onGutterMouseDown(line.line.index) : undefined}
-              onMouseEnter={isSelectable ? (e) => onGutterMouseEnter(line.line.index, e.buttons) : undefined}
-              onMouseUp={isSelectable ? onGutterMouseUp : undefined}
+        return (
+          <div
+            key={line.line.index}
+            data-gutter-line={isSelectable ? "" : undefined}
+            className={cn("flex min-h-[20px] leading-[20px] font-mono text-[12px]", {
+              "cursor-pointer": isSelectable,
+            })}
+            style={
+              isSelected ? { boxShadow: `inset 3px 0 0 ${style.selectedBorderColor}` } : undefined
+            }
+            onClick={
+              isSelectable
+                ? (e) => {
+                    e.stopPropagation();
+                    onGutterClick(line.line.index, e.shiftKey);
+                  }
+                : undefined
+            }
+            onMouseDown={isSelectable ? () => onGutterMouseDown(line.line.index) : undefined}
+            onMouseEnter={
+              isSelectable ? (e) => onGutterMouseEnter(line.line.index, e.buttons) : undefined
+            }
+            onMouseUp={isSelectable ? onGutterMouseUp : undefined}
+          >
+            <span
+              className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
+              style={{ color: "var(--color-text-tertiary)" }}
             >
-              <span
-                className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
-                style={{ color: "var(--color-text-tertiary)" }}
-              >
-                {line.line.oldLineNumber ?? ""}
-              </span>
-              <span
-                className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
-                style={{ color: "var(--color-text-tertiary)" }}
-              >
-                {line.line.newLineNumber ?? ""}
-              </span>
-              <span
-                className={cn("w-[18px] text-center select-none font-medium")}
-                style={{ color: style.prefixColor }}
-              >
-                {style.prefix}
-              </span>
-            </div>
-          );
-        })}
+              {line.line.oldLineNumber ?? ""}
+            </span>
+            <span
+              className={cn("w-[32px] text-right pr-1.5 text-[11px] select-none")}
+              style={{ color: "var(--color-text-tertiary)" }}
+            >
+              {line.line.newLineNumber ?? ""}
+            </span>
+            <span
+              className={cn("w-[18px] text-center select-none font-medium")}
+              style={{ color: style.prefixColor }}
+            >
+              {style.prefix}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -307,9 +315,12 @@ function GroupCodeRows({
         return (
           <div
             key={line.line.index}
-            className={cn("min-h-[20px] w-full leading-[20px] font-mono text-[12px] whitespace-pre pr-3", {
-              "text-foreground/80": isContext,
-            })}
+            className={cn(
+              "min-h-[20px] w-full leading-[20px] font-mono text-[12px] whitespace-pre pr-3",
+              {
+                "text-foreground/80": isContext,
+              },
+            )}
             style={rowStyle}
           >
             {line.segments.map((segment, index) => (

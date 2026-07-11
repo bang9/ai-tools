@@ -5,8 +5,7 @@ const runCommandMock = vi.fn();
 const runCommandSafelyMock = vi.fn();
 
 vi.mock("../lib/command", () => ({
-  runCommand: (...args: Parameters<typeof runCommandMock>) =>
-    runCommandMock(...args),
+  runCommand: (...args: Parameters<typeof runCommandMock>) => runCommandMock(...args),
   runCommandSafely: (...args: Parameters<typeof runCommandSafelyMock>) =>
     runCommandSafelyMock(...args),
 }));
@@ -32,17 +31,11 @@ import * as tauri from "../lib/platform";
 import { useMissionStore } from "./mission";
 import { useTerminalStore } from "./terminal";
 
-function makeMissionProject(
-  projectId: string,
-  path = `/tmp/${projectId}`,
-): MissionProject {
+function makeMissionProject(projectId: string, path = `/tmp/${projectId}`): MissionProject {
   return { projectId, branch: "main", path };
 }
 
-function makeMission(
-  id: string,
-  projects: MissionProject[] = [],
-): Mission {
+function makeMission(id: string, projects: MissionProject[] = []): Mission {
   return {
     id,
     name: `Mission ${id}`,
@@ -55,12 +48,8 @@ function makeMission(
 describe("useMissionStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    runCommandMock.mockImplementation(async (action: () => Promise<unknown>) =>
-      action(),
-    );
-    runCommandSafelyMock.mockImplementation(
-      async (action: () => Promise<unknown>) => action(),
-    );
+    runCommandMock.mockImplementation(async (action: () => Promise<unknown>) => action());
+    runCommandSafelyMock.mockImplementation(async (action: () => Promise<unknown>) => action());
     useMissionStore.setState({
       missions: [],
       selectedItem: null,
@@ -85,14 +74,9 @@ describe("useMissionStore", () => {
       const mission = { ...makeMission("m1"), branchName: "feature/sdk-v5" };
       vi.mocked(tauri.createMission).mockResolvedValue(mission);
 
-      const created = await useMissionStore
-        .getState()
-        .createMission("SDK v5", "feature/sdk-v5");
+      const created = await useMissionStore.getState().createMission("SDK v5", "feature/sdk-v5");
 
-      expect(tauri.createMission).toHaveBeenCalledWith(
-        "SDK v5",
-        "feature/sdk-v5",
-      );
+      expect(tauri.createMission).toHaveBeenCalledWith("SDK v5", "feature/sdk-v5");
       expect(created).toBe(mission);
       expect(useMissionStore.getState().missions).toEqual([mission]);
     });
@@ -137,9 +121,7 @@ describe("useMissionStore", () => {
       useMissionStore.setState({ missions: [mission] });
       useMissionStore.getState().selectItem("m1");
 
-      expect(useMissionStore.getState().getSelectedPath()).toBe(
-        "/tmp/missions/m1",
-      );
+      expect(useMissionStore.getState().getSelectedPath()).toBe("/tmp/missions/m1");
     });
 
     it("returns project path when project is selected", () => {
@@ -189,18 +171,14 @@ describe("useMissionStore", () => {
     });
 
     it("clears the adding flag when the add fails", async () => {
-      vi.mocked(tauri.addProjectToMission).mockRejectedValue(
-        new Error("boom"),
-      );
+      vi.mocked(tauri.addProjectToMission).mockRejectedValue(new Error("boom"));
 
       useMissionStore.setState({
         missions: [makeMission("m1")],
         addingMissionProjects: {},
       });
 
-      await expect(
-        useMissionStore.getState().addProject("m1", "p1"),
-      ).rejects.toThrow("boom");
+      await expect(useMissionStore.getState().addProject("m1", "p1")).rejects.toThrow("boom");
 
       expect(useMissionStore.getState().addingMissionProjects).toEqual({});
       expect(useMissionStore.getState().missions[0]?.projects).toEqual([]);

@@ -8,10 +8,7 @@ import {
 
 describe("pushRecentUrl", () => {
   it("prepends new urls", () => {
-    expect(pushRecentUrl(["http://a/"], "http://b/")).toEqual([
-      "http://b/",
-      "http://a/",
-    ]);
+    expect(pushRecentUrl(["http://a/"], "http://b/")).toEqual(["http://b/", "http://a/"]);
   });
 
   it("moves an existing url to the front", () => {
@@ -31,20 +28,14 @@ describe("pushRecentUrl", () => {
 });
 
 describe("filterUrlSuggestions", () => {
-  const list = [
-    "http://localhost:3000/",
-    "http://localhost:5173/",
-    "https://example.com/docs",
-  ];
+  const list = ["http://localhost:3000/", "http://localhost:5173/", "https://example.com/docs"];
 
   it("returns all (up to limit) for an empty query", () => {
     expect(filterUrlSuggestions(list, "")).toEqual(list);
   });
 
   it("matches substrings case-insensitively", () => {
-    expect(filterUrlSuggestions(list, "EXAMPLE")).toEqual([
-      "https://example.com/docs",
-    ]);
+    expect(filterUrlSuggestions(list, "EXAMPLE")).toEqual(["https://example.com/docs"]);
     expect(filterUrlSuggestions(list, "localhost")).toEqual([
       "http://localhost:3000/",
       "http://localhost:5173/",
@@ -61,11 +52,7 @@ describe("filterUrlSuggestions", () => {
 });
 
 describe("findUrlCompletion", () => {
-  const list = [
-    "http://localhost:3000/",
-    "http://localhost:5173/",
-    "https://example.com/docs",
-  ];
+  const list = ["http://localhost:3000/", "http://localhost:5173/", "https://example.com/docs"];
 
   it("completes from a scheme-stripped prefix", () => {
     expect(findUrlCompletion(list, "loc")).toEqual({
@@ -82,7 +69,9 @@ describe("findUrlCompletion", () => {
   });
 
   it("prefers the most-recent match (MRU order)", () => {
-    expect(findUrlCompletion(["http://localhost:5173/", "http://localhost:3000/"], "local")).toEqual({
+    expect(
+      findUrlCompletion(["http://localhost:5173/", "http://localhost:3000/"], "local"),
+    ).toEqual({
       url: "http://localhost:5173/",
       completion: "host:5173/",
     });

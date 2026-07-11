@@ -242,7 +242,10 @@ function longestCommonSubsequence(left: string[], right: string[]) {
   return { pairs, visibleChars };
 }
 
-function buildSegmentsFromTokens(tokens: string[], matchedIndices: Set<number>): HighlightSegment[] {
+function buildSegmentsFromTokens(
+  tokens: string[],
+  matchedIndices: Set<number>,
+): HighlightSegment[] {
   const segments: HighlightSegment[] = [];
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -314,10 +317,7 @@ function sharedSuffixLength(left: string, right: string, prefixLength: number): 
   const maxSuffix = Math.min(left.length - prefixLength, right.length - prefixLength);
   let index = 0;
 
-  while (
-    index < maxSuffix &&
-    left[left.length - 1 - index] === right[right.length - 1 - index]
-  ) {
+  while (index < maxSuffix && left[left.length - 1 - index] === right[right.length - 1 - index]) {
     index += 1;
   }
 

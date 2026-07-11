@@ -30,23 +30,16 @@ export function selectAiWorktreeSessions(
 }
 
 export function useAiWorktreeSessions(worktreePath: string): AiSession[] {
-  return useTerminalStore(
-    useShallow((state) => selectAiWorktreeSessions(state, worktreePath)),
-  );
+  return useTerminalStore(useShallow((state) => selectAiWorktreeSessions(state, worktreePath)));
 }
 
-export function selectWorktreeBell(
-  state: WorktreeStatusState,
-  worktreePath: string,
-): boolean {
+export function selectWorktreeBell(state: WorktreeStatusState, worktreePath: string): boolean {
   const session = state.sessions[worktreePath];
   if (!session || state.bellPtyIds.size === 0) {
     return false;
   }
 
-  return collectTerminalPanes(session).some(
-    ({ ptyId }) => !!ptyId && state.bellPtyIds.has(ptyId),
-  );
+  return collectTerminalPanes(session).some(({ ptyId }) => !!ptyId && state.bellPtyIds.has(ptyId));
 }
 
 export function useWorktreeBell(worktreePath: string): boolean {

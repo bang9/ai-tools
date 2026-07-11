@@ -2,11 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTerminalStore } from "../store/terminal";
 import { usePanelLayoutStore, type GlobalTerminalTab } from "../store/panel-layout";
-import {
-  closePty as ipcClosePty,
-  createPty as ipcCreatePty,
-  getAppConfig,
-} from "../lib/platform";
+import { closePty as ipcClosePty, createPty as ipcCreatePty, getAppConfig } from "../lib/platform";
 import { useBroadcastStore } from "../store/broadcast";
 import { runCommand, runCommandSafely } from "../lib/command";
 import { log, error as logError } from "../lib/logger";
@@ -108,8 +104,10 @@ export function useGlobalTerminal() {
       }
     }
     // Only update state if map actually changed
-    if (tabPtyMapRef.current.size !== tabPtyMap.size ||
-        [...tabPtyMapRef.current].some(([k, v]) => tabPtyMap.get(k)?.ptyId !== v.ptyId)) {
+    if (
+      tabPtyMapRef.current.size !== tabPtyMap.size ||
+      [...tabPtyMapRef.current].some(([k, v]) => tabPtyMap.get(k)?.ptyId !== v.ptyId)
+    ) {
       setTabPtyMap(new Map(tabPtyMapRef.current));
     }
   }, [tabs, theme, createPtyForTab]);

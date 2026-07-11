@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -38,11 +31,7 @@ import {
 } from "../../lib/browser-webview";
 import { useOverlayPresence } from "../../hooks/useOverlayPresence";
 
-const QUICK_URLS = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "http://localhost:8080",
-];
+const QUICK_URLS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"];
 
 interface BrowserPanelProps {
   tabId: string;
@@ -85,9 +74,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   // (e.g. typing "a" into "loc|alhost…" yields the same display), so we force
   // the DOM value and then apply the selection in a layout effect. A monotonic
   // tick guarantees the effect runs even when `input` is byte-identical.
-  const pendingRef = useRef<{ value: string; start: number; end: number } | null>(
-    null,
-  );
+  const pendingRef = useRef<{ value: string; start: number; end: number } | null>(null);
   const [applyTick, setApplyTick] = useState(0);
   const applyDisplay = useCallback((value: string, start: number, end: number) => {
     pendingRef.current = { value, start, end };
@@ -106,10 +93,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
 
   // Dropdown filtering is always driven by the TYPED text, never the completed
   // text — an inline completion must not narrow the suggestion list.
-  const suggestions = useMemo(
-    () => filterUrlSuggestions(recentUrls, typed),
-    [recentUrls, typed],
-  );
+  const suggestions = useMemo(() => filterUrlSuggestions(recentUrls, typed), [recentUrls, typed]);
 
   const url = nav?.url ?? null;
   const hasNav = !!nav;
@@ -180,8 +164,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
         suggestOpen && highlightIndex >= 0 && highlightIndex < suggestions.length
           ? suggestions[highlightIndex]
           : null;
-      const showingCompletion =
-        completion !== null && input === completion.display;
+      const showingCompletion = completion !== null && input === completion.display;
 
       if (e.key === "Tab") {
         // Accept, never navigate, never move focus away.
@@ -195,11 +178,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
           // Keep `completion` set so a following Enter loads the real URL.
           setTyped(completion.display);
           setHighlightIndex(-1);
-          applyDisplay(
-            completion.display,
-            completion.display.length,
-            completion.display.length,
-          );
+          applyDisplay(completion.display, completion.display.length, completion.display.length);
         }
         return;
       }
@@ -497,9 +476,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
                     },
                   )}
                 >
-                  <History
-                    className={cn("size-3 shrink-0 text-muted-foreground")}
-                  />
+                  <History className={cn("size-3 shrink-0 text-muted-foreground")} />
                   <span className={cn("truncate")}>{suggestion}</span>
                 </button>
               ))}
@@ -555,22 +532,20 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
               </p>
             </div>
             <div className={cn("flex max-w-md flex-wrap items-center justify-center gap-1.5")}>
-              {(recentUrls.length > 0 ? recentUrls.slice(0, 3) : QUICK_URLS).map(
-                (quickUrl) => (
-                  <button
-                    key={quickUrl}
-                    type="button"
-                    onClick={() => commit(quickUrl)}
-                    title={quickUrl}
-                    className={cn(
-                      "h-6 max-w-56 cursor-pointer truncate rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium",
-                      "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
-                    )}
-                  >
-                    {quickUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}
-                  </button>
-                ),
-              )}
+              {(recentUrls.length > 0 ? recentUrls.slice(0, 3) : QUICK_URLS).map((quickUrl) => (
+                <button
+                  key={quickUrl}
+                  type="button"
+                  onClick={() => commit(quickUrl)}
+                  title={quickUrl}
+                  className={cn(
+                    "h-6 max-w-56 cursor-pointer truncate rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium",
+                    "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+                  )}
+                >
+                  {quickUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+                </button>
+              ))}
             </div>
             <p className={cn("text-[10px] text-muted-foreground/60")}>
               Some external sites may refuse to load in an embedded view

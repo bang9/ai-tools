@@ -22,17 +22,9 @@ function MissionProjectPlaceholder({ projectId }: Props) {
       )}
       title={displayName}
     >
-      <FolderGit2
-        className={cn("h-[13px] w-[13px] shrink-0 text-muted-foreground")}
-      />
-      <span className={cn("min-w-0 flex-1 truncate text-muted-foreground")}>
-        {displayName}
-      </span>
-      <Loader2
-        className={cn(
-          "h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground",
-        )}
-      />
+      <FolderGit2 className={cn("h-[13px] w-[13px] shrink-0 text-muted-foreground")} />
+      <span className={cn("min-w-0 flex-1 truncate text-muted-foreground")}>{displayName}</span>
+      <Loader2 className={cn("h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground")} />
     </div>
   );
 }

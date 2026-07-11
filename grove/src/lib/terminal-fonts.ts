@@ -14,9 +14,7 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = [
 
 const LEGACY_DEFAULT_FONT_FAMILIES = new Set(["Menlo, monospace"]);
 
-export function resolveTerminalFontFamily(
-  fontFamily: string | null | undefined,
-): string {
+export function resolveTerminalFontFamily(fontFamily: string | null | undefined): string {
   const normalized = fontFamily?.trim();
   if (!normalized || LEGACY_DEFAULT_FONT_FAMILIES.has(normalized)) {
     return DEFAULT_TERMINAL_FONT_FAMILY;

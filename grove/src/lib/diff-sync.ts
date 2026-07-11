@@ -18,11 +18,7 @@ async function runStatusJob() {
   // loadStatus skips `set()` when content is unchanged, so a fresh array
   // reference means the file list actually changed on disk. Keep the diff
   // viewer in sync with the new list if a file is currently selected.
-  if (
-    after.fileStatuses !== before
-    && after.selectedFile
-    && after.selectedView === "changes"
-  ) {
+  if (after.fileStatuses !== before && after.selectedFile && after.selectedView === "changes") {
     await after.loadWorkingDiff(after.selectedFile, after.isViewingStaged);
   }
 }

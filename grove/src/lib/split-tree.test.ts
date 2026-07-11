@@ -213,14 +213,20 @@ describe("countLeaves", () => {
   });
 
   it("counts two children in a flat split", () => {
-    expect(countLeaves(hSplit([leaf("a", "leaf-a"), leaf("b", "leaf-b")], undefined, "root"))).toBe(2);
+    expect(countLeaves(hSplit([leaf("a", "leaf-a"), leaf("b", "leaf-b")], undefined, "root"))).toBe(
+      2,
+    );
   });
 
   it("counts leaves in a nested tree", () => {
     const tree = vSplit(
       [
         leaf("a", "leaf-a"),
-        hSplit([leaf("b", "leaf-b"), leaf("c", "leaf-c"), leaf("d", "leaf-d")], undefined, "branch"),
+        hSplit(
+          [leaf("b", "leaf-b"), leaf("c", "leaf-c"), leaf("d", "leaf-d")],
+          undefined,
+          "branch",
+        ),
       ],
       undefined,
       "root",
@@ -266,7 +272,11 @@ describe("assignPtyIds", () => {
   });
 
   it("assigns ids to leaves in left-to-right order", () => {
-    const template = hSplit([leaf(undefined, "leaf-a"), leaf(undefined, "leaf-b")], undefined, "root");
+    const template = hSplit(
+      [leaf(undefined, "leaf-a"), leaf(undefined, "leaf-b")],
+      undefined,
+      "root",
+    );
     const ids = ["a", "b"];
     const result = assignPtyIds(template, ids);
 
@@ -296,7 +306,11 @@ describe("assignPtyIds", () => {
   });
 
   it("assigns undefined when ids array is exhausted", () => {
-    const template = hSplit([leaf(undefined, "leaf-a"), leaf(undefined, "leaf-b")], undefined, "root");
+    const template = hSplit(
+      [leaf(undefined, "leaf-a"), leaf(undefined, "leaf-b")],
+      undefined,
+      "root",
+    );
     const ids = ["only-one"];
     const result = assignPtyIds(template, ids);
 
@@ -442,9 +456,7 @@ describe("removeNode", () => {
     );
     const result = removeNode(tree, "b");
 
-    expect(result).toEqual(
-      hSplit([leaf("a", "leaf-a"), leaf("c", "leaf-c")], [0.6, 0.4], "root"),
-    );
+    expect(result).toEqual(hSplit([leaf("a", "leaf-a"), leaf("c", "leaf-c")], [0.6, 0.4], "root"));
   });
 
   it("returns null when all leaves are removed", () => {
@@ -470,7 +482,9 @@ describe("findFirstLeaf", () => {
   });
 
   it("finds the leftmost leaf in a flat split", () => {
-    expect(findFirstLeaf(hSplit([leaf("a", "leaf-a"), leaf("b", "leaf-b")], undefined, "root"))).toBe("a");
+    expect(
+      findFirstLeaf(hSplit([leaf("a", "leaf-a"), leaf("b", "leaf-b")], undefined, "root")),
+    ).toBe("a");
   });
 
   it("finds the deepest-left leaf in a nested tree", () => {
@@ -486,7 +500,11 @@ describe("findFirstLeaf", () => {
   });
 
   it("skips leaves without ptyId to find the first usable pane", () => {
-    const tree = hSplit([leaf(undefined, "leaf-empty"), leaf("found", "leaf-found")], undefined, "root");
+    const tree = hSplit(
+      [leaf(undefined, "leaf-empty"), leaf("found", "leaf-found")],
+      undefined,
+      "root",
+    );
     expect(findFirstLeaf(tree)).toBe("found");
   });
 
@@ -518,7 +536,11 @@ describe("setSizesAtPath", () => {
 
   it("sets sizes two levels deep", () => {
     const deepInner = vSplit([leaf("x", "leaf-x"), leaf("y", "leaf-y")], undefined, "branch-inner");
-    const tree = hSplit([vSplit([deepInner, leaf("z", "leaf-z")], undefined, "branch"), leaf("w", "leaf-w")], undefined, "root");
+    const tree = hSplit(
+      [vSplit([deepInner, leaf("z", "leaf-z")], undefined, "branch"), leaf("w", "leaf-w")],
+      undefined,
+      "root",
+    );
     const result = setSizesAtPath(tree, [0, 0], [0.1, 0.9]);
 
     expect(result.children![0].children![0].sizes).toEqual([0.1, 0.9]);

@@ -20,8 +20,7 @@ export function PanelModeSwitch({ className }: Props) {
         className={cn(
           "flex h-7 cursor-pointer items-center justify-center rounded-md px-2.5 text-[10px] font-semibold uppercase tracking-[0.06em] transition-all duration-150",
           {
-            "bg-sidebar text-[var(--color-text-primary)] shadow-sm":
-              sidebarMode === "projects",
+            "bg-sidebar text-[var(--color-text-primary)] shadow-sm": sidebarMode === "projects",
             "text-[var(--color-text-muted)] hover:bg-[var(--color-bg-secondary)]/60 hover:text-[var(--color-text-secondary)]":
               sidebarMode !== "projects",
           },
@@ -35,8 +34,7 @@ export function PanelModeSwitch({ className }: Props) {
         className={cn(
           "flex h-7 cursor-pointer items-center justify-center rounded-md px-2.5 text-[10px] font-semibold uppercase tracking-[0.06em] transition-all duration-150",
           {
-            "bg-sidebar text-[var(--color-text-primary)] shadow-sm":
-              sidebarMode === "missions",
+            "bg-sidebar text-[var(--color-text-primary)] shadow-sm": sidebarMode === "missions",
             "text-[var(--color-text-muted)] hover:bg-[var(--color-bg-secondary)]/60 hover:text-[var(--color-text-secondary)]":
               sidebarMode !== "missions",
           },

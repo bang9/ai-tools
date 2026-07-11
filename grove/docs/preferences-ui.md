@@ -6,15 +6,16 @@ Unified settings modal accessed via gear icon in AppTabBar. Four tabs: General, 
 
 All preference components must follow this heading hierarchy for visual and semantic consistency.
 
-| Level | Tag | Class | Usage |
-|-------|-----|-------|-------|
-| Page title | `<h3>` | `text-sm font-semibold text-foreground` | Tab name — "General", "Project Categories", "Terminal", "Developer" |
-| Section | `<h4>` | `text-[12px] font-medium text-foreground` | Setting group — "Project view mode", "IDE menu items", "Git GUI menu items", "Categories", "Link Open Mode", "Appearance" |
-| Sub-section | `<h5>` | `text-[11px] font-medium text-muted-foreground uppercase tracking-wider` | Within a section — "Menu Preview", "Available IDEs", "Available Git GUIs", "Presets", "Font", "Colors", "Preview" |
-| Field label | `<label>` | `text-[11px] text-muted-foreground` | Individual input label — "Font Family", "Font Size" |
-| Description | `<p>` | `text-[11px] text-muted-foreground/70` | Helper text below a section heading |
+| Level       | Tag       | Class                                                                    | Usage                                                                                                                     |
+| ----------- | --------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Page title  | `<h3>`    | `text-sm font-semibold text-foreground`                                  | Tab name — "General", "Project Categories", "Terminal", "Developer"                                                       |
+| Section     | `<h4>`    | `text-[12px] font-medium text-foreground`                                | Setting group — "Project view mode", "IDE menu items", "Git GUI menu items", "Categories", "Link Open Mode", "Appearance" |
+| Sub-section | `<h5>`    | `text-[11px] font-medium text-muted-foreground uppercase tracking-wider` | Within a section — "Menu Preview", "Available IDEs", "Available Git GUIs", "Presets", "Font", "Colors", "Preview"         |
+| Field label | `<label>` | `text-[11px] text-muted-foreground`                                      | Individual input label — "Font Family", "Font Size"                                                                       |
+| Description | `<p>`     | `text-[11px] text-muted-foreground/70`                                   | Helper text below a section heading                                                                                       |
 
 Rules:
+
 - Tags must descend semantically: `h3` > `h4` > `h5` > `label`. Never use `h3` inside `h4`.
 - Sections with a description use `h4` + `p` + control. Sections without description use `h4` + control directly.
 - Sub-sections are only used when a section contains multiple grouped settings (e.g., Appearance has Presets, Font, Colors).

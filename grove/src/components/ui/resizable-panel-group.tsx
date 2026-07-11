@@ -7,17 +7,20 @@ import {
   useRef,
 } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import {
-  Allotment,
-  type AllotmentHandle,
-  type AllotmentProps,
-} from "allotment";
+import { Allotment, type AllotmentHandle, type AllotmentProps } from "allotment";
 import "allotment/dist/style.css";
 import { cn } from "../../lib/cn";
 
 type ResizablePanelGroupProps = Omit<
   AllotmentProps,
-  "children" | "className" | "defaultSizes" | "onChange" | "onDragStart" | "onDragEnd" | "onReset" | "sizes"
+  | "children"
+  | "className"
+  | "defaultSizes"
+  | "onChange"
+  | "onDragStart"
+  | "onDragEnd"
+  | "onReset"
+  | "sizes"
 > & {
   children: ReactNode;
   className?: string;
@@ -42,15 +45,7 @@ function toAllotmentSizes(ratios: number[] | undefined): number[] | undefined {
 
 const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupProps>(
   function ResizablePanelGroup(
-    {
-      children,
-      className,
-      allotmentClassName,
-      ratios,
-      onLayout,
-      onCommit,
-      ...props
-    },
+    { children, className, allotmentClassName, ratios, onLayout, onCommit, ...props },
     ref,
   ) {
     const allotmentRef = useRef<AllotmentHandle | null>(null);
@@ -62,14 +57,18 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
     const ratioSignature = serializeRatios(ratios);
     const defaultSizes = toAllotmentSizes(ratios);
 
-    useImperativeHandle(ref, () => ({
-      reset: () => {
-        allotmentRef.current?.reset();
-      },
-      resize: (sizes) => {
-        allotmentRef.current?.resize(sizes);
-      },
-    }), []);
+    useImperativeHandle(
+      ref,
+      () => ({
+        reset: () => {
+          allotmentRef.current?.reset();
+        },
+        resize: (sizes) => {
+          allotmentRef.current?.resize(sizes);
+        },
+      }),
+      [],
+    );
 
     useLayoutEffect(() => {
       if (isDraggingRef.current || !allotmentRef.current) return;
@@ -90,10 +89,13 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
 
     useEffect(() => clearResetPending, [clearResetPending]);
 
-    const commitRatios = useCallback((nextRatios: number[]) => {
-      appliedRatiosRef.current = serializeRatios(nextRatios);
-      onCommit?.(nextRatios);
-    }, [onCommit]);
+    const commitRatios = useCallback(
+      (nextRatios: number[]) => {
+        appliedRatiosRef.current = serializeRatios(nextRatios);
+        onCommit?.(nextRatios);
+      },
+      [onCommit],
+    );
 
     const handleDragStart = useCallback(() => {
       isDraggingRef.current = true;
@@ -147,16 +149,19 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
       [clearResetPending, commitRatios, onLayout],
     );
 
-    const handleDragEnd = useCallback((sizes: number[]) => {
-      isDraggingRef.current = false;
+    const handleDragEnd = useCallback(
+      (sizes: number[]) => {
+        isDraggingRef.current = false;
 
-      const finalRatios = sizes.length > 0 ? toRatios(sizes) : pendingRatiosRef.current;
-      pendingRatiosRef.current = null;
-      if (finalRatios && finalRatios.length > 0) {
-        commitRatios(finalRatios);
-      }
-      clearResetPending();
-    }, [clearResetPending, commitRatios]);
+        const finalRatios = sizes.length > 0 ? toRatios(sizes) : pendingRatiosRef.current;
+        pendingRatiosRef.current = null;
+        if (finalRatios && finalRatios.length > 0) {
+          commitRatios(finalRatios);
+        }
+        clearResetPending();
+      },
+      [clearResetPending, commitRatios],
+    );
 
     return (
       <div

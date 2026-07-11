@@ -109,15 +109,15 @@ These cases should stay covered by tests or manual verification:
 
 ## Key Files
 
-| File | Role |
-|------|------|
-| `src/store/broadcast.ts` | BroadcastStore — PTY-global mirrors and worktree-scoped PiP slots |
-| `src/lib/terminal-runtime.ts` | Runtime retain/release, attach/detach, snapshots, resize ownership |
-| `src/components/terminal/TerminalInstance.tsx` | Original pane: snapshot + overlay + Stop button |
-| `src/components/tab/AppTabContent.tsx` | Worktree-aware PiP policy, runtime retention, shared PiP container, in-memory floating presentation state |
-| `src/lib/pip-floating.ts` | PiP geometry helpers for docking, hide thresholds, sizing, and viewport clamping |
-| `src/hooks/useTerminalCommandPipeline.ts` | Mirror button → startBroadcast + addMirrorTab |
-| `src/hooks/useGlobalTerminal.ts` | Mirror tab close → stopBroadcast |
-| `src/components/terminal/GlobalTerminalTabBar.tsx` | Mirror tab UI (live indicator + title) |
-| `src/store/project.ts` | Worktree removal cleanup for terminal broadcast state |
-| `src/store/panel-layout.ts` | Global terminal layout persistence and mirror-tab filtering |
+| File                                               | Role                                                                                                      |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `src/store/broadcast.ts`                           | BroadcastStore — PTY-global mirrors and worktree-scoped PiP slots                                         |
+| `src/lib/terminal-runtime.ts`                      | Runtime retain/release, attach/detach, snapshots, resize ownership                                        |
+| `src/components/terminal/TerminalInstance.tsx`     | Original pane: snapshot + overlay + Stop button                                                           |
+| `src/components/tab/AppTabContent.tsx`             | Worktree-aware PiP policy, runtime retention, shared PiP container, in-memory floating presentation state |
+| `src/lib/pip-floating.ts`                          | PiP geometry helpers for docking, hide thresholds, sizing, and viewport clamping                          |
+| `src/hooks/useTerminalCommandPipeline.ts`          | Mirror button → startBroadcast + addMirrorTab                                                             |
+| `src/hooks/useGlobalTerminal.ts`                   | Mirror tab close → stopBroadcast                                                                          |
+| `src/components/terminal/GlobalTerminalTabBar.tsx` | Mirror tab UI (live indicator + title)                                                                    |
+| `src/store/project.ts`                             | Worktree removal cleanup for terminal broadcast state                                                     |
+| `src/store/panel-layout.ts`                        | Global terminal layout persistence and mirror-tab filtering                                               |

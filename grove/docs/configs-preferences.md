@@ -74,10 +74,7 @@ interface AppConfig {
 `GrovePreferences` stores user-selectable Grove behavior.
 
 ```ts
-type TerminalLinkOpenMode =
-  | "external"
-  | "internal"
-  | "external-with-localhost-internal";
+type TerminalLinkOpenMode = "external" | "internal" | "external-with-localhost-internal";
 
 type ProjectViewMode = "default" | "group-by-orgs";
 
@@ -108,8 +105,7 @@ type ProjectCategoryIconId =
   | "gem";
 
 type ProjectCategoryIcon =
-  | { type: "emoji"; value: string }
-  | { type: "lucide"; value: ProjectCategoryIconId };
+  { type: "emoji"; value: string } | { type: "lucide"; value: ProjectCategoryIconId };
 
 interface ProjectCategory {
   id: string;
@@ -311,20 +307,20 @@ Preferences UX:
 
 ## Relevant Files
 
-| File | Role |
-|------|------|
-| `grove-core/src/config.rs` | Config schema, defaults, persistence, legacy loading |
-| `grove-core/src/lib.rs` | Re-export of config-facing types |
-| `src/types/index.ts` | Frontend type definitions |
-| `src-tauri/src/lib.rs` | Tauri command surface |
-| `src-electron/native/src/lib.rs` | Electron native command surface |
-| `src-electron/main.ts` | Electron IPC JSON routing |
-| `src/lib/platform/tauri.ts` | Tauri frontend wrappers |
-| `src/lib/platform/electron.ts` | Electron frontend wrappers |
-| `src/store/preferences.ts` | Zustand store with init/save |
-| `src/components/sidebar/SidebarContextMenu.tsx` | Shared sidebar menu with ordered launcher and note items |
-| `src/components/preferences/ProjectCategoriesPanel.tsx` | Category create/edit/delete and project assignment UI |
-| `src/components/sidebar/ProjectCategoryFilterBar.tsx` | Multi-select category filter bar |
-| `src/lib/project-categories.tsx` | Category defaults, id generation, color/icon helpers |
-| `grove-core/src/ide.rs` | IDE launcher resolution and execution |
-| `src/lib/url-open.ts` | Runtime consumer of `terminalLinkOpenMode` |
+| File                                                    | Role                                                     |
+| ------------------------------------------------------- | -------------------------------------------------------- |
+| `grove-core/src/config.rs`                              | Config schema, defaults, persistence, legacy loading     |
+| `grove-core/src/lib.rs`                                 | Re-export of config-facing types                         |
+| `src/types/index.ts`                                    | Frontend type definitions                                |
+| `src-tauri/src/lib.rs`                                  | Tauri command surface                                    |
+| `src-electron/native/src/lib.rs`                        | Electron native command surface                          |
+| `src-electron/main.ts`                                  | Electron IPC JSON routing                                |
+| `src/lib/platform/tauri.ts`                             | Tauri frontend wrappers                                  |
+| `src/lib/platform/electron.ts`                          | Electron frontend wrappers                               |
+| `src/store/preferences.ts`                              | Zustand store with init/save                             |
+| `src/components/sidebar/SidebarContextMenu.tsx`         | Shared sidebar menu with ordered launcher and note items |
+| `src/components/preferences/ProjectCategoriesPanel.tsx` | Category create/edit/delete and project assignment UI    |
+| `src/components/sidebar/ProjectCategoryFilterBar.tsx`   | Multi-select category filter bar                         |
+| `src/lib/project-categories.tsx`                        | Category defaults, id generation, color/icon helpers     |
+| `grove-core/src/ide.rs`                                 | IDE launcher resolution and execution                    |
+| `src/lib/url-open.ts`                                   | Runtime consumer of `terminalLinkOpenMode`               |

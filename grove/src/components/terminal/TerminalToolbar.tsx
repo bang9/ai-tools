@@ -4,7 +4,6 @@ import type { TerminalCommandDefinition } from "../../lib/terminal-command-pipel
 import { IconButton } from "../ui/button";
 import { cn } from "../../lib/cn";
 
-
 const terminalCommandIcons = {
   mirror: ScreenShare,
   "split-horizontal": Columns2,
@@ -15,11 +14,14 @@ const terminalCommandIcons = {
 } satisfies Record<TerminalCommandDefinition["icon"], typeof ScreenShare>;
 
 export default function TerminalToolbar() {
-  const { commands, executeCommand, isCommandEnabled } =
-    useTerminalCommandPipeline();
+  const { commands, executeCommand, isCommandEnabled } = useTerminalCommandPipeline();
 
   return (
-    <div className={cn("flex items-center justify-end border-b border-border bg-sidebar px-2 h-9 shrink-0")}>
+    <div
+      className={cn(
+        "flex items-center justify-end border-b border-border bg-sidebar px-2 h-9 shrink-0",
+      )}
+    >
       <div className={cn("flex items-center gap-1")}>
         {commands.filter(isCommandEnabled).map((command) => {
           const Icon = terminalCommandIcons[command.icon];

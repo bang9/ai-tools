@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import type { ProjectEnvSyncConfig } from "../../types";
-import { getEnvSync, setEnvSync, listGitignorePatterns, getCommandErrorMessage } from "../../lib/platform";
+import {
+  getEnvSync,
+  setEnvSync,
+  listGitignorePatterns,
+  getCommandErrorMessage,
+} from "../../lib/platform";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { cn } from "../../lib/cn";
@@ -96,11 +101,7 @@ export default function ProjectSettingsDialog({ projectId, resolve, close }: Pro
                 "flex items-center justify-center rounded-[var(--radius-md)] border border-dashed border-border py-10",
               )}
             >
-              <p
-                className={cn(
-                  "text-[13px] text-muted-foreground/60 select-none",
-                )}
-              >
+              <p className={cn("text-[13px] text-muted-foreground/60 select-none")}>
                 No .gitignore patterns found.
               </p>
             </div>
@@ -128,13 +129,9 @@ export default function ProjectSettingsDialog({ projectId, resolve, close }: Pro
                   type="checkbox"
                   checked={allSelected}
                   onChange={toggleAll}
-                  className={cn(
-                    "h-3.5 w-3.5 shrink-0 cursor-pointer accent-ring",
-                  )}
+                  className={cn("h-3.5 w-3.5 shrink-0 cursor-pointer accent-ring")}
                 />
-                <span className={cn("text-[12px] font-medium")}>
-                  Select all
-                </span>
+                <span className={cn("text-[12px] font-medium")}>Select all</span>
               </label>
               {entries.map((entry) => (
                 <label
@@ -153,15 +150,9 @@ export default function ProjectSettingsDialog({ projectId, resolve, close }: Pro
                     type="checkbox"
                     checked={selected.has(entry)}
                     onChange={() => toggleEntry(entry)}
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0 cursor-pointer accent-ring",
-                    )}
+                    className={cn("h-3.5 w-3.5 shrink-0 cursor-pointer accent-ring")}
                   />
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate font-mono text-[13px]",
-                    )}
-                  >
+                  <span className={cn("min-w-0 flex-1 truncate font-mono text-[13px]")}>
                     {entry}
                   </span>
                 </label>
@@ -169,18 +160,10 @@ export default function ProjectSettingsDialog({ projectId, resolve, close }: Pro
             </div>
           )}
 
-          {error && (
-            <p className={cn("mt-2 text-[12px] text-destructive")}>
-              {error}
-            </p>
-          )}
+          {error && <p className={cn("mt-2 text-[12px] text-destructive")}>{error}</p>}
         </div>
 
-        <div
-          className={cn(
-            "mt-4 flex items-center justify-end gap-2 border-t border-border pt-4",
-          )}
-        >
+        <div className={cn("mt-4 flex items-center justify-end gap-2 border-t border-border pt-4")}>
           <Button
             variant="ghost"
             size="sm"

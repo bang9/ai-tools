@@ -55,7 +55,10 @@ export function isGapLoading(state: GapLoadState): boolean {
 }
 
 export function getGapRemainingCount(gap: DiffContextGap, state: GapLoadState): number {
-  return Math.max(gap.count - Math.min(gap.count, state.headLoadedCount + state.tailLoadedCount), 0);
+  return Math.max(
+    gap.count - Math.min(gap.count, state.headLoadedCount + state.tailLoadedCount),
+    0,
+  );
 }
 
 export function getNextGapLoadCount(state: GapLoadState): number {
@@ -107,7 +110,10 @@ export function planGapLoad(
   return null;
 }
 
-export function planGapMiddleLoad(gap: DiffContextGap, state: GapLoadState): GapMiddleLoadPlan | null {
+export function planGapMiddleLoad(
+  gap: DiffContextGap,
+  state: GapLoadState,
+): GapMiddleLoadPlan | null {
   if (isGapLoading(state)) {
     return null;
   }

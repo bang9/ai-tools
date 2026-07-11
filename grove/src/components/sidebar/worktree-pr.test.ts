@@ -22,9 +22,7 @@ import {
 describe("worktree PR lookup cache", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    runCommandSafelyMock.mockImplementation(
-      async (action: () => Promise<unknown>) => action(),
-    );
+    runCommandSafelyMock.mockImplementation(async (action: () => Promise<unknown>) => action());
     resetWorktreePrLookupState();
   });
 
@@ -63,7 +61,9 @@ describe("worktree PR lookup cache", () => {
       .ensureWorktreePrUrl("bang9/grove:feature/pr", "/tmp/worktree-a");
 
     expect(vi.mocked(platform.getWorktreePrUrl)).toHaveBeenCalledTimes(1);
-    expect(selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr")).toMatchObject({
+    expect(
+      selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr"),
+    ).toMatchObject({
       loading: true,
       pullRequest: null,
     });
@@ -74,7 +74,9 @@ describe("worktree PR lookup cache", () => {
     });
     await Promise.all([promiseA, promiseB]);
 
-    expect(selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr")).toMatchObject({
+    expect(
+      selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr"),
+    ).toMatchObject({
       loading: false,
       pullRequest: {
         url: "https://github.com/bang9/grove/pull/42",
@@ -107,7 +109,9 @@ describe("worktree PR lookup cache", () => {
       .ensureWorktreePrUrl("bang9/grove:feature/pr", "/tmp/worktree-a");
 
     expect(vi.mocked(platform.getWorktreePrUrl)).toHaveBeenCalledTimes(1);
-    expect(selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr")).toMatchObject({
+    expect(
+      selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr"),
+    ).toMatchObject({
       loading: false,
       pullRequest: {
         url: "https://github.com/bang9/grove/pull/99",
@@ -136,7 +140,9 @@ describe("worktree PR lookup cache", () => {
       .ensureWorktreePrUrl("bang9/grove:feature/pr", "/tmp/worktree-a");
 
     expect(vi.mocked(platform.getWorktreePrUrl)).not.toHaveBeenCalled();
-    expect(selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr")).toMatchObject({
+    expect(
+      selectWorktreePrEntry(useWorktreePrStore.getState(), "bang9/grove:feature/pr"),
+    ).toMatchObject({
       loading: false,
       pullRequest: {
         url: "https://github.com/bang9/grove/pull/99",

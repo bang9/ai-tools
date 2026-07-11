@@ -16,9 +16,7 @@ export function resolveWorktreeBranchLabel({
   }
 
   for (const mission of missions) {
-    const missionProject = mission.projects.find(
-      (project) => project.path === worktreePath,
-    );
+    const missionProject = mission.projects.find((project) => project.path === worktreePath);
     if (missionProject?.branch) {
       return missionProject.branch;
     }

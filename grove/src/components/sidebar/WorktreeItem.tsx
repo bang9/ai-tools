@@ -14,10 +14,7 @@ import { Badge } from "../ui/badge";
 import { Button, IconButton } from "../ui/button";
 import { Input } from "../ui/input";
 import { Dialog } from "../ui/dialog";
-import {
-  useAiWorktreeSessions,
-  useWorktreeBell,
-} from "./worktree-status";
+import { useAiWorktreeSessions, useWorktreeBell } from "./worktree-status";
 import SidebarContextMenu from "./SidebarContextMenu";
 import { getNoteKey, NoteEmoji } from "./NotePopover";
 import { sanitizeBranchName } from "../../lib/git-utils";
@@ -62,12 +59,8 @@ function CreateStackedWorktreeDialog({
     <Dialog open onClose={close} title="Create stacked worktree" className="max-w-sm">
       <form className={cn("space-y-4")} onSubmit={handleSubmit}>
         <div className={cn("space-y-1.5")}>
-          <p className={cn("text-sm text-muted-foreground")}>
-            Parent
-          </p>
-          <p className={cn("text-sm font-medium text-foreground")}>
-            {parentWorktree.name}
-          </p>
+          <p className={cn("text-sm text-muted-foreground")}>Parent</p>
+          <p className={cn("text-sm font-medium text-foreground")}>{parentWorktree.name}</p>
         </div>
         <div className={cn("space-y-1.5")}>
           <label className={cn("text-sm text-muted-foreground")} htmlFor="stacked-worktree-name">
@@ -137,11 +130,7 @@ interface Props {
   descendantCount?: number;
 }
 
-function WorktreeItem({
-  worktree,
-  projectId,
-  descendantCount = 0,
-}: Props) {
+function WorktreeItem({ worktree, projectId, descendantCount = 0 }: Props) {
   const [removing, setRemoving] = useState(false);
   const isSelected = useProjectStore((s) => s.selectedWorktree?.path === worktree.path);
   const selectWorktree = useProjectStore((s) => s.selectWorktree);
@@ -161,11 +150,7 @@ function WorktreeItem({
 
   const handleCreateStacked = () => {
     void overlay.open<void>(({ close }) => (
-      <CreateStackedWorktreeDialog
-        close={close}
-        projectId={projectId}
-        parentWorktree={worktree}
-      />
+      <CreateStackedWorktreeDialog close={close} projectId={projectId} parentWorktree={worktree} />
     ));
   };
 
@@ -174,9 +159,8 @@ function WorktreeItem({
       title: "Remove worktree?",
       description: (
         <>
-          Worktree{" "}
-          <span className={cn("font-semibold text-foreground")}>{displayName}</span>{" "}
-          and its local branch, terminal sessions, and layouts will be removed.
+          Worktree <span className={cn("font-semibold text-foreground")}>{displayName}</span> and
+          its local branch, terminal sessions, and layouts will be removed.
         </>
       ),
       confirmLabel: "Delete",
@@ -197,17 +181,21 @@ function WorktreeItem({
   return (
     <SidebarContextMenu path={worktree.path} noteKey={noteKey} noteLabel={displayName}>
       <SidebarLeafItem
-        icon={(
+        icon={
           isStacked ? (
-            <Layers className={cn("h-[13px] w-[13px] shrink-0", {
-              "text-orange-500": hasBell,
-            })} />
+            <Layers
+              className={cn("h-[13px] w-[13px] shrink-0", {
+                "text-orange-500": hasBell,
+              })}
+            />
           ) : (
-            <GitBranch className={cn("h-[13px] w-[13px] shrink-0", {
-              "text-orange-500": hasBell,
-            })} />
+            <GitBranch
+              className={cn("h-[13px] w-[13px] shrink-0", {
+                "text-orange-500": hasBell,
+              })}
+            />
           )
-        )}
+        }
         label={
           <span className={cn("flex min-w-0 items-center gap-2")}>
             <span className={cn("min-w-0 truncate")}>
@@ -232,38 +220,40 @@ function WorktreeItem({
         disabled={removing}
         onActivate={handleActivate}
         status={<AiStatusIcons sessions={aiSessions} />}
-        action={removing ? (
-          <Loader2 className={cn("h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground")} />
-        ) : (
-          <>
-            <IconButton
-              type="button"
-              className={cn("h-4 w-4")}
-              onClick={(event) => {
-                event.stopPropagation();
-                handleCreateStacked();
-              }}
-              onPointerDown={(event) => event.stopPropagation()}
-              disabled={removing}
-              title="Create stacked worktree"
-            >
-              <LayersPlus className={cn("h-3 w-3")} />
-            </IconButton>
-            <IconButton
-              type="button"
-              className={cn("h-4 w-4")}
-              onClick={(event) => {
-                event.stopPropagation();
-                void handleRemove();
-              }}
-              onPointerDown={(event) => event.stopPropagation()}
-              disabled={hasDescendants}
-              title={hasDescendants ? "Remove stacked children first" : "Remove worktree"}
-            >
-              <X className={cn("h-3 w-3")} />
-            </IconButton>
-          </>
-        )}
+        action={
+          removing ? (
+            <Loader2 className={cn("h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground")} />
+          ) : (
+            <>
+              <IconButton
+                type="button"
+                className={cn("h-4 w-4")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handleCreateStacked();
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                disabled={removing}
+                title="Create stacked worktree"
+              >
+                <LayersPlus className={cn("h-3 w-3")} />
+              </IconButton>
+              <IconButton
+                type="button"
+                className={cn("h-4 w-4")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleRemove();
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                disabled={hasDescendants}
+                title={hasDescendants ? "Remove stacked children first" : "Remove worktree"}
+              >
+                <X className={cn("h-3 w-3")} />
+              </IconButton>
+            </>
+          )
+        }
       />
     </SidebarContextMenu>
   );

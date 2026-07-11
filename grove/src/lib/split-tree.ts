@@ -27,7 +27,10 @@ function evenRatios(count: number): number[] | undefined {
   return count > 1 ? Array.from({ length: count }, () => 1 / count) : undefined;
 }
 
-function normalizeBranchSizes(sizes: number[] | undefined, childCount: number): number[] | undefined {
+function normalizeBranchSizes(
+  sizes: number[] | undefined,
+  childCount: number,
+): number[] | undefined {
   if (childCount <= 1) return undefined;
   if (!sizes || sizes.length !== childCount) {
     return evenRatios(childCount);
@@ -155,10 +158,7 @@ export function splitNode(
       id: insertion.branchId,
       type: direction,
       sizes: [0.5, 0.5],
-      children: [
-        { ...node },
-        { id: insertion.leafId, type: "leaf", ptyId: insertion.ptyId },
-      ],
+      children: [{ ...node }, { id: insertion.leafId, type: "leaf", ptyId: insertion.ptyId }],
     };
   }
   if (node.children) {

@@ -17,31 +17,46 @@ function App() {
     let cancelled = false;
     let cleanup: (() => void) | undefined;
     initBackendLogPipe().then((fn) => {
-      if (cancelled) { fn?.(); }
-      else { cleanup = fn; }
+      if (cancelled) {
+        fn?.();
+      } else {
+        cleanup = fn;
+      }
     });
-    return () => { cancelled = true; cleanup?.(); };
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     let cleanup: (() => void) | undefined;
     initUrlOpenPipe().then((fn) => {
-      if (cancelled) { fn?.(); }
-      else { cleanup = fn; }
+      if (cancelled) {
+        fn?.();
+      } else {
+        cleanup = fn;
+      }
     });
-    return () => { cancelled = true; cleanup?.(); };
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
   }, []);
 
-  useEffect(() => { usePreferencesStore.getState().init(); }, []);
-  useEffect(() => { useNoteStore.getState().init(); }, []);
+  useEffect(() => {
+    usePreferencesStore.getState().init();
+  }, []);
+  useEffect(() => {
+    useNoteStore.getState().init();
+  }, []);
 
   useEffect(() => {
     checkForUpdates((version) => {
-      useToastStore.getState().addToast(
-        "info",
-        `Update available: v${version}. Restart the app to update.`,
-      );
+      useToastStore
+        .getState()
+        .addToast("info", `Update available: v${version}. Restart the app to update.`);
     });
   }, []);
 

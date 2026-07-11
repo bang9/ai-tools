@@ -52,9 +52,8 @@ export function getPipDimensions(
   requestedWidth: number,
 ): Pick<PipFrame, "width" | "height"> {
   const requested = clampRequestedPipWidth(requestedWidth);
-  const maxWidth = viewport.width > 0
-    ? Math.max(PIP_PEEK_WIDTH * 2, viewport.width - (PIP_MARGIN * 2))
-    : requested;
+  const maxWidth =
+    viewport.width > 0 ? Math.max(PIP_PEEK_WIDTH * 2, viewport.width - PIP_MARGIN * 2) : requested;
   const width = Math.min(requested, maxWidth);
   return {
     width,
@@ -62,11 +61,7 @@ export function getPipDimensions(
   };
 }
 
-export function clampPipY(
-  y: number | null,
-  viewport: PipViewport,
-  height: number,
-): number {
+export function clampPipY(y: number | null, viewport: PipViewport, height: number): number {
   const maxY = Math.max(PIP_MARGIN, viewport.height - height - PIP_MARGIN);
   if (y === null || Number.isNaN(y)) {
     return maxY;
@@ -83,22 +78,12 @@ export function getVisiblePipX(
   return dockSide === "left" ? PIP_MARGIN : rightX;
 }
 
-export function getHiddenPipX(
-  viewportWidth: number,
-  width: number,
-  dockSide: PipDockSide,
-): number {
-  return dockSide === "left"
-    ? -(width - PIP_PEEK_WIDTH)
-    : viewportWidth - PIP_PEEK_WIDTH;
+export function getHiddenPipX(viewportWidth: number, width: number, dockSide: PipDockSide): number {
+  return dockSide === "left" ? -(width - PIP_PEEK_WIDTH) : viewportWidth - PIP_PEEK_WIDTH;
 }
 
-export function resolvePipDockSide(
-  x: number,
-  width: number,
-  viewportWidth: number,
-): PipDockSide {
-  return x + (width / 2) <= viewportWidth / 2 ? "left" : "right";
+export function resolvePipDockSide(x: number, width: number, viewportWidth: number): PipDockSide {
+  return x + width / 2 <= viewportWidth / 2 ? "left" : "right";
 }
 
 export function clampDraggingPipPosition(
@@ -126,9 +111,10 @@ export function resolvePipPresentationAfterDrag(
   const next = clampDraggingPipPosition(position, viewport, requestedWidth);
   const dockSide = resolvePipDockSide(next.x, width, viewport.width);
   const visibleX = getVisiblePipX(viewport.width, width, dockSide);
-  const hidden = dockSide === "left"
-    ? next.x <= visibleX - PIP_HIDE_THRESHOLD
-    : next.x >= visibleX + PIP_HIDE_THRESHOLD;
+  const hidden =
+    dockSide === "left"
+      ? next.x <= visibleX - PIP_HIDE_THRESHOLD
+      : next.x >= visibleX + PIP_HIDE_THRESHOLD;
 
   return {
     dockSide,

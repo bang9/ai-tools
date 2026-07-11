@@ -25,8 +25,7 @@ export function openUrl(url: string) {
   const mode = usePreferencesStore.getState().terminalLinkOpenMode;
 
   const useInternal =
-    mode === "internal" ||
-    (mode === "external-with-localhost-internal" && isLocalhostUrl(url));
+    mode === "internal" || (mode === "external-with-localhost-internal" && isLocalhostUrl(url));
 
   if (useInternal) {
     // TODO: open in Grove browser tab
@@ -38,12 +37,9 @@ export function openUrl(url: string) {
 
 /** Listen for URL open requests from the Grove backend (via open-url socket). */
 export async function initUrlOpenPipe(): Promise<(() => void) | undefined> {
-  const unlisten = await platform.listen<string>(
-    "grove:open-url",
-    (url) => {
-      log("url-open", "received:", url);
-      openUrl(url);
-    },
-  );
+  const unlisten = await platform.listen<string>("grove:open-url", (url) => {
+    log("url-open", "received:", url);
+    openUrl(url);
+  });
   return unlisten;
 }

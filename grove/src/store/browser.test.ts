@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useBrowserStore } from "./browser";
 import type { BrowserNavEvent } from "../lib/platform";
 
-function navEvent(partial: Partial<BrowserNavEvent> & { tabId: string; url: string }): BrowserNavEvent {
+function navEvent(
+  partial: Partial<BrowserNavEvent> & { tabId: string; url: string },
+): BrowserNavEvent {
   return {
     title: null,
     loading: false,
@@ -65,9 +67,7 @@ describe("useBrowserStore", () => {
 
   describe("applyNavEvent", () => {
     it("ignores events for unknown tabs (never creates entries)", () => {
-      useBrowserStore
-        .getState()
-        .applyNavEvent(navEvent({ tabId: "ghost", url: "http://a/" }));
+      useBrowserStore.getState().applyNavEvent(navEvent({ tabId: "ghost", url: "http://a/" }));
       expect(useBrowserStore.getState().navs.ghost).toBeUndefined();
     });
 
@@ -118,12 +118,8 @@ describe("useBrowserStore", () => {
     it("replaces the current entry when a settled load reports a new url (redirect)", () => {
       const store = useBrowserStore.getState();
       store.navigate("t1", "http://naver.com/");
-      store.applyNavEvent(
-        navEvent({ tabId: "t1", url: "http://naver.com/", loading: true }),
-      );
-      store.applyNavEvent(
-        navEvent({ tabId: "t1", url: "https://www.naver.com/", loading: false }),
-      );
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "http://naver.com/", loading: true }));
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "https://www.naver.com/", loading: false }));
       const nav = useBrowserStore.getState().navs.t1;
       expect(nav.history).toEqual(["https://www.naver.com/"]);
       expect(nav.index).toBe(0);
@@ -140,23 +136,14 @@ describe("useBrowserStore", () => {
       );
       // naver.com typed → redirects
       store.navigate("t1", "http://naver.com/");
-      store.applyNavEvent(
-        navEvent({ tabId: "t1", url: "http://naver.com/", loading: true }),
-      );
-      store.applyNavEvent(
-        navEvent({ tabId: "t1", url: "https://www.naver.com/", loading: false }),
-      );
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "http://naver.com/", loading: true }));
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "https://www.naver.com/", loading: false }));
       let nav = useBrowserStore.getState().navs.t1;
-      expect(nav.history).toEqual([
-        "https://www.google.com/",
-        "https://www.naver.com/",
-      ]);
+      expect(nav.history).toEqual(["https://www.google.com/", "https://www.naver.com/"]);
       expect(nav.index).toBe(1);
       // Back = explicit navigation to history[0]; the load-start event must be
       // recognized as a back move, not a push.
-      store.applyNavEvent(
-        navEvent({ tabId: "t1", url: "https://www.google.com/", loading: true }),
-      );
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "https://www.google.com/", loading: true }));
       nav = useBrowserStore.getState().navs.t1;
       expect(nav.index).toBe(0);
       expect(nav.history).toHaveLength(2);
@@ -166,9 +153,7 @@ describe("useBrowserStore", () => {
     it("still pushes for a brand-new url while loading (link click)", () => {
       const store = useBrowserStore.getState();
       store.navigate("t1", "http://a/");
-      store.applyNavEvent(
-        navEvent({ tabId: "t1", url: "http://b/", loading: true }),
-      );
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "http://b/", loading: true }));
       const nav = useBrowserStore.getState().navs.t1;
       expect(nav.history).toEqual(["http://a/", "http://b/"]);
       expect(nav.index).toBe(1);
@@ -260,9 +245,6 @@ describe("useBrowserStore", () => {
     store.recordRecentUrl("http://a/");
     store.recordRecentUrl("http://b/");
     store.recordRecentUrl("http://a/");
-    expect(useBrowserStore.getState().recentUrls).toEqual([
-      "http://a/",
-      "http://b/",
-    ]);
+    expect(useBrowserStore.getState().recentUrls).toEqual(["http://a/", "http://b/"]);
   });
 });

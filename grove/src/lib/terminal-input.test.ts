@@ -7,9 +7,7 @@ import {
 
 describe("isTerminalCompositionEvent", () => {
   it("detects browser composition markers", () => {
-    expect(
-      isTerminalCompositionEvent({ isComposing: true, key: "r", keyCode: 82 }),
-    ).toBe(true);
+    expect(isTerminalCompositionEvent({ isComposing: true, key: "r", keyCode: 82 })).toBe(true);
     expect(
       isTerminalCompositionEvent({
         isComposing: false,
@@ -17,9 +15,7 @@ describe("isTerminalCompositionEvent", () => {
         keyCode: 229,
       }),
     ).toBe(true);
-    expect(
-      isTerminalCompositionEvent({ isComposing: false, key: "a", keyCode: 65 }),
-    ).toBe(false);
+    expect(isTerminalCompositionEvent({ isComposing: false, key: "a", keyCode: 65 })).toBe(false);
   });
 });
 

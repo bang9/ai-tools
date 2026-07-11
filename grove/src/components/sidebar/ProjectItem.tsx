@@ -1,13 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import {
-  X,
-  GitBranch,
-  Pencil,
-  Settings,
-  Github,
-  Star,
-  StarOff,
-} from "lucide-react";
+import { X, GitBranch, Pencil, Settings, Github, Star, StarOff } from "lucide-react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Project } from "../../types";
@@ -33,10 +25,7 @@ import { sanitizeBranchName } from "../../lib/git-utils";
 import { getProjectDisplayName } from "../../lib/project-view";
 import { getGitHubRepoUrl } from "../../lib/project-remote";
 import { buildWorktreeTree, type WorktreeTreeNode } from "../../lib/worktree-tree";
-import {
-  ProjectCategoryIconGlyph,
-  resolveProjectCategory,
-} from "../../lib/project-categories";
+import { ProjectCategoryIconGlyph, resolveProjectCategory } from "../../lib/project-categories";
 
 interface Props {
   project: Project;
@@ -65,18 +54,10 @@ function WorktreeTreeList({ projectId, nodes }: WorktreeTreeListProps) {
   ));
 }
 
-const ProjectItem = memo(function ProjectItem({
-  project,
-  showOrgPrefix = true,
-}: Props) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: project.id });
+const ProjectItem = memo(function ProjectItem({ project, showOrgPrefix = true }: Props) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: project.id,
+  });
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -188,9 +169,8 @@ const ProjectItem = memo(function ProjectItem({
             project folder and all worktrees will be deleted.
           </p>
           <p className={cn("text-xs text-muted-foreground/70")}>
-            This removes the hidden source repository too. Use sync source if
-            you only want to reset the source repo to the remote default
-            branch.
+            This removes the hidden source repository too. Use sync source if you only want to reset
+            the source repo to the remote default branch.
           </p>
         </>
       ),
@@ -211,111 +191,113 @@ const ProjectItem = memo(function ProjectItem({
   return (
     <div ref={setNodeRef} style={style} className={cn("px-1.5")}>
       <ContextMenu>
-      <ContextMenuTrigger asChild>
-      <div
-        className={cn(
-          "group flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] leading-5 text-foreground transition-all duration-150 cursor-pointer select-none hover:bg-secondary/50",
-        )}
-        onClick={() => toggleCollapse(project.id)}
-        {...attributes}
-        {...listeners}
-      >
-        <button
-          type="button"
-          className={cn(
-            "relative inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md focus-visible:outline-none",
-            "before:content-[''] before:absolute before:-inset-1 before:rounded-md before:border before:border-border/80 before:bg-background/95 before:opacity-0 before:shadow-sm before:transition-opacity",
-            "hover:before:opacity-100 focus-visible:before:opacity-100",
-            {
-              "text-accent": expanded,
-              "text-muted-foreground": !expanded,
-            },
-          )}
-          onClick={handleProjectCategory}
-          onPointerDown={handleProjectCategory}
-          title={`Manage ${projectCategory.name} category`}
-        >
-          <span
+        <ContextMenuTrigger asChild>
+          <div
             className={cn(
-              "relative z-[1] inline-flex h-[15px] w-[15px] items-center justify-center",
+              "group flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] leading-5 text-foreground transition-all duration-150 cursor-pointer select-none hover:bg-secondary/50",
             )}
+            onClick={() => toggleCollapse(project.id)}
+            {...attributes}
+            {...listeners}
           >
-            <ProjectCategoryIconGlyph
-              icon={projectCategory.icon}
-              className={cn("h-[15px] w-[15px] shrink-0")}
-            />
-          </span>
-        </button>
-        {renaming ? (
-          <form onSubmit={handleRename} className={cn("flex-1 min-w-0")}>
-            <input
+            <button
+              type="button"
               className={cn(
-                "w-full bg-transparent text-[13px] font-medium text-foreground outline-none",
-                "placeholder:text-muted-foreground/50",
+                "relative inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md focus-visible:outline-none",
+                "before:content-[''] before:absolute before:-inset-1 before:rounded-md before:border before:border-border/80 before:bg-background/95 before:opacity-0 before:shadow-sm before:transition-opacity",
+                "hover:before:opacity-100 focus-visible:before:opacity-100",
+                {
+                  "text-accent": expanded,
+                  "text-muted-foreground": !expanded,
+                },
               )}
-              type="text"
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              autoFocus
-              onBlur={() => setRenaming(false)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setRenaming(false);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-            />
-          </form>
-        ) : (
-          <span className={cn("truncate font-medium")} title={`${project.org}/${project.repo}`}>
-            {displayName}
-          </span>
-        )}
-        <div className={cn("ml-auto hidden shrink-0 items-center group-hover:flex")}>
-          <IconButton
-            className={cn("h-5 w-5")}
-            onClick={handleStartRename}
-            onPointerDown={(e) => e.stopPropagation()}
-            title="Rename project"
-          >
-            <Pencil className={cn("h-[11px] w-[11px]")} />
-          </IconButton>
-          <IconButton
-            className={cn("h-5 w-5")}
-            onClick={handleRemoveProject}
-            onPointerDown={(e) => e.stopPropagation()}
-            title="Remove project"
-          >
-            <X className={cn("h-[11px] w-[11px]")} />
-          </IconButton>
-        </div>
-      </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={handleProjectSettings}>
-          <Settings className={cn("mr-1.5 h-3.5 w-3.5")} />
-          Project Settings
-        </ContextMenuItem>
-        {githubRepoUrl && (
-          <ContextMenuItem onSelect={handleOpenInGitHub}>
-            <Github className={cn("mr-1.5 h-3.5 w-3.5")} />
-            Open in GitHub
+              onClick={handleProjectCategory}
+              onPointerDown={handleProjectCategory}
+              title={`Manage ${projectCategory.name} category`}
+            >
+              <span
+                className={cn(
+                  "relative z-[1] inline-flex h-[15px] w-[15px] items-center justify-center",
+                )}
+              >
+                <ProjectCategoryIconGlyph
+                  icon={projectCategory.icon}
+                  className={cn("h-[15px] w-[15px] shrink-0")}
+                />
+              </span>
+            </button>
+            {renaming ? (
+              <form onSubmit={handleRename} className={cn("flex-1 min-w-0")}>
+                <input
+                  className={cn(
+                    "w-full bg-transparent text-[13px] font-medium text-foreground outline-none",
+                    "placeholder:text-muted-foreground/50",
+                  )}
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  autoFocus
+                  onBlur={() => setRenaming(false)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setRenaming(false);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                />
+              </form>
+            ) : (
+              <span className={cn("truncate font-medium")} title={`${project.org}/${project.repo}`}>
+                {displayName}
+              </span>
+            )}
+            <div className={cn("ml-auto hidden shrink-0 items-center group-hover:flex")}>
+              <IconButton
+                className={cn("h-5 w-5")}
+                onClick={handleStartRename}
+                onPointerDown={(e) => e.stopPropagation()}
+                title="Rename project"
+              >
+                <Pencil className={cn("h-[11px] w-[11px]")} />
+              </IconButton>
+              <IconButton
+                className={cn("h-5 w-5")}
+                onClick={handleRemoveProject}
+                onPointerDown={(e) => e.stopPropagation()}
+                title="Remove project"
+              >
+                <X className={cn("h-[11px] w-[11px]")} />
+              </IconButton>
+            </div>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={handleProjectSettings}>
+            <Settings className={cn("mr-1.5 h-3.5 w-3.5")} />
+            Project Settings
           </ContextMenuItem>
-        )}
-        <ContextMenuItem onSelect={handleToggleFocus}>
-          {project.focused ? (
-            <StarOff className={cn("mr-1.5 h-3.5 w-3.5")} />
-          ) : (
-            <Star className={cn("mr-1.5 h-3.5 w-3.5")} />
+          {githubRepoUrl && (
+            <ContextMenuItem onSelect={handleOpenInGitHub}>
+              <Github className={cn("mr-1.5 h-3.5 w-3.5")} />
+              Open in GitHub
+            </ContextMenuItem>
           )}
-          {project.focused ? "Unfocus" : "Focus"}
-        </ContextMenuItem>
-      </ContextMenuContent>
+          <ContextMenuItem onSelect={handleToggleFocus}>
+            {project.focused ? (
+              <StarOff className={cn("mr-1.5 h-3.5 w-3.5")} />
+            ) : (
+              <Star className={cn("mr-1.5 h-3.5 w-3.5")} />
+            )}
+            {project.focused ? "Unfocus" : "Focus"}
+          </ContextMenuItem>
+        </ContextMenuContent>
       </ContextMenu>
 
-      <div className={cn(
-        "grid transition-[grid-template-rows] duration-200 ease-out",
-        { "grid-rows-[1fr]": expanded, "grid-rows-[0fr]": !expanded },
-      )}>
+      <div
+        className={cn("grid transition-[grid-template-rows] duration-200 ease-out", {
+          "grid-rows-[1fr]": expanded,
+          "grid-rows-[0fr]": !expanded,
+        })}
+      >
         <div className={cn("overflow-hidden")}>
           <div className={cn("ml-4 border-l border-border/80 pl-2")}>
             <DefaultBranchItem project={project} />

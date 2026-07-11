@@ -1,13 +1,5 @@
 import type { ReactNode } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  FolderOpen,
-  GitBranch,
-  Plus,
-  Terminal,
-  X,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, FolderOpen, GitBranch, Plus, Terminal, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { usePreferencesStore } from "../../store/preferences";
 import { cn } from "../../lib/cn";
@@ -81,9 +73,7 @@ function MenuPreviewRow({
 }) {
   return (
     <div
-      className={cn(
-        "flex h-7 items-center gap-2 rounded-sm px-1.5 text-[11px] text-foreground",
-      )}
+      className={cn("flex h-7 items-center gap-2 rounded-sm px-1.5 text-[11px] text-foreground")}
     >
       {icon}
       <div className={cn("min-w-0 flex flex-1 items-center gap-2")}>
@@ -163,7 +153,11 @@ function MenuItemsSection<T extends MenuItemLike>({
         {showPreview && (
           <div className={cn("w-full max-w-[380px] space-y-3")}>
             <div>
-              <h5 className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
+              <h5
+                className={cn(
+                  "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+                )}
+              >
                 Menu Preview
               </h5>
               <p className={cn("mt-1 text-[11px] text-muted-foreground/70")}>
@@ -234,7 +228,11 @@ function MenuItemsSection<T extends MenuItemLike>({
 
         <div className={cn("space-y-3")}>
           <div>
-            <h5 className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
+            <h5
+              className={cn(
+                "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+              )}
+            >
               {availableTitle}
             </h5>
             <p className={cn("mt-1 text-[11px] text-muted-foreground/70")}>
@@ -269,26 +267,16 @@ function MenuItemsSection<T extends MenuItemLike>({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    className={cn(
-                      "shrink-0 border-0 shadow-none",
-                      {
-                        "text-muted-foreground/35 hover:text-muted-foreground/70":
-                          isSelected,
-                      },
-                    )}
+                    className={cn("shrink-0 border-0 shadow-none", {
+                      "text-muted-foreground/35 hover:text-muted-foreground/70": isSelected,
+                    })}
                     aria-label={
                       isSelected
                         ? `Remove ${entry.displayName} from menu`
                         : `Add ${entry.displayName} to menu`
                     }
-                    title={
-                      isSelected
-                        ? `Remove ${entry.displayName}`
-                        : `Add ${entry.displayName}`
-                    }
-                    onClick={() =>
-                      isSelected ? removeMenuItem(entry.id) : addMenuItem(entry.id)
-                    }
+                    title={isSelected ? `Remove ${entry.displayName}` : `Add ${entry.displayName}`}
+                    onClick={() => (isSelected ? removeMenuItem(entry.id) : addMenuItem(entry.id))}
                   >
                     {isSelected ? (
                       <X className={cn("size-3.5")} />
@@ -301,9 +289,7 @@ function MenuItemsSection<T extends MenuItemLike>({
             })}
           </div>
           {availableEntries.length === 0 && (
-            <p className={cn("mt-2.5 text-[11px] text-muted-foreground/70")}>
-              {emptyMessage}
-            </p>
+            <p className={cn("mt-2.5 text-[11px] text-muted-foreground/70")}>{emptyMessage}</p>
           )}
         </div>
       </div>
@@ -335,9 +321,7 @@ export default function GeneralTab() {
       <h3 className={cn("mb-5 text-sm font-semibold text-foreground")}>General</h3>
 
       <div className={cn("mb-6")}>
-        <h4 className={cn("mb-1 text-[12px] font-medium text-foreground")}>
-          Project view mode
-        </h4>
+        <h4 className={cn("mb-1 text-[12px] font-medium text-foreground")}>Project view mode</h4>
         <p className={cn("mb-2 text-[11px] text-muted-foreground/70")}>
           Controls how projects are organized in the sidebar
         </p>
@@ -363,8 +347,8 @@ export default function GeneralTab() {
         title="IDE menu items"
         description={
           <>
-            Choose which IDEs appear in sidebar context menus. Order here becomes
-            `Finder` → `Global Terminal` → your selected IDEs.
+            Choose which IDEs appear in sidebar context menus. Order here becomes `Finder` → `Global
+            Terminal` → your selected IDEs.
           </>
         }
         previewDescription="Reorder selected IDE items here."
@@ -386,9 +370,8 @@ export default function GeneralTab() {
         title="Git GUI menu items"
         description={
           <>
-            Choose which Git GUIs appear in sidebar context menus after the IDE
-            section. Order here becomes `Finder` → `Global Terminal` → your
-            selected IDEs → your selected Git GUIs.
+            Choose which Git GUIs appear in sidebar context menus after the IDE section. Order here
+            becomes `Finder` → `Global Terminal` → your selected IDEs → your selected Git GUIs.
           </>
         }
         previewDescription="Reorder selected Git GUI items here."

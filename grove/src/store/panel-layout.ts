@@ -97,21 +97,21 @@ function makeDefaultTab(): GlobalTerminalTab {
   return { id: crypto.randomUUID(), paneId: crypto.randomUUID(), title: "Terminal 1" };
 }
 
-function resolveGlobalTerminalLayout(
-  layout?: LegacyGlobalTerminalLayout,
-): GlobalTerminalLayout {
+function resolveGlobalTerminalLayout(layout?: LegacyGlobalTerminalLayout): GlobalTerminalLayout {
   const collapsed = layout?.collapsed ?? DEFAULTS.globalTerminal.collapsed;
   const ratio = layout?.ratio ?? DEFAULTS.globalTerminal.ratio;
 
   // Collect tabs: legacy single paneId, persisted tabs, or fresh default
-  const rawTabs = layout?.paneId && !layout.tabs?.length
-    ? [{ id: crypto.randomUUID(), paneId: layout.paneId, title: "Terminal 1" }]
-    : layout?.tabs?.filter((t) => !t.mirrorPtyId);
+  const rawTabs =
+    layout?.paneId && !layout.tabs?.length
+      ? [{ id: crypto.randomUUID(), paneId: layout.paneId, title: "Terminal 1" }]
+      : layout?.tabs?.filter((t) => !t.mirrorPtyId);
 
   const tabs = rawTabs?.length ? rawTabs : [makeDefaultTab()];
-  const activeTabId = layout?.activeTabId && tabs.some((t) => t.id === layout.activeTabId)
-    ? layout.activeTabId
-    : tabs[0].id;
+  const activeTabId =
+    layout?.activeTabId && tabs.some((t) => t.id === layout.activeTabId)
+      ? layout.activeTabId
+      : tabs[0].id;
 
   return { collapsed, ratio, tabs, activeTabId };
 }
@@ -238,9 +238,7 @@ export const usePanelLayoutStore = create<PanelLayoutStore>((set, get) => ({
     if (idx === -1) return;
     const newTabs = gt.tabs.filter((t) => t.id !== tabId);
     const newActiveId =
-      gt.activeTabId === tabId
-        ? newTabs[Math.max(0, idx - 1)].id
-        : gt.activeTabId;
+      gt.activeTabId === tabId ? newTabs[Math.max(0, idx - 1)].id : gt.activeTabId;
     const updated: GlobalTerminalLayout = {
       ...gt,
       tabs: newTabs,

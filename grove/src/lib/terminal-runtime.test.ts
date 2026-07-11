@@ -31,9 +31,7 @@ describe("shouldSendResize", () => {
   });
 
   it("skips when the target matches the already-applied size", () => {
-    expect(
-      shouldSendResize({ cols: 80, rows: 24 }, { cols: 80, rows: 24 }, null),
-    ).toBe(false);
+    expect(shouldSendResize({ cols: 80, rows: 24 }, { cols: 80, rows: 24 }, null)).toBe(false);
   });
 
   it("skips when the target matches a resize already in flight", () => {

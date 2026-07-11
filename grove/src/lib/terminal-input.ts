@@ -14,21 +14,12 @@ const MAC_SHORTCUT_SEQUENCES: Record<string, string> = {
   Delete: "\x1bd",
 };
 
-export function isTerminalCompositionEvent(
-  event: TerminalCompositionLikeEvent,
-): boolean {
-  return (
-    event.isComposing === true ||
-    event.key === "Process" ||
-    event.keyCode === 229
-  );
+export function isTerminalCompositionEvent(event: TerminalCompositionLikeEvent): boolean {
+  return event.isComposing === true || event.key === "Process" || event.keyCode === 229;
 }
 
 export function isMacClearTerminalShortcut(
-  event: Pick<
-    TerminalCompositionLikeEvent,
-    "altKey" | "ctrlKey" | "key" | "metaKey"
-  >,
+  event: Pick<TerminalCompositionLikeEvent, "altKey" | "ctrlKey" | "key" | "metaKey">,
 ): boolean {
   return (
     event.metaKey === true &&
@@ -39,10 +30,7 @@ export function isMacClearTerminalShortcut(
 }
 
 export function getMacShortcutSequence(
-  event: Pick<
-    TerminalCompositionLikeEvent,
-    "altKey" | "ctrlKey" | "key" | "metaKey"
-  >,
+  event: Pick<TerminalCompositionLikeEvent, "altKey" | "ctrlKey" | "key" | "metaKey">,
 ): string | null {
   if (event.altKey !== true || event.metaKey === true || event.ctrlKey === true) {
     return null;

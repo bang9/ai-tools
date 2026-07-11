@@ -364,12 +364,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    oklch(1 0 0 / 0.4) 50%,
-    transparent 100%
-  );
+  background: linear-gradient(90deg, transparent 0%, oklch(1 0 0 / 0.4) 50%, transparent 100%);
   animation: shimmer 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
@@ -405,15 +400,29 @@
 
 /* AI status icon animations */
 @keyframes glow {
-  0%, 100% { filter: drop-shadow(0 0 1px var(--glow-color)) drop-shadow(0 0 3px transparent); }
-  50% { filter: drop-shadow(0 0 4px var(--glow-color)) drop-shadow(0 0 8px var(--glow-color)); }
+  0%,
+  100% {
+    filter: drop-shadow(0 0 1px var(--glow-color)) drop-shadow(0 0 3px transparent);
+  }
+  50% {
+    filter: drop-shadow(0 0 4px var(--glow-color)) drop-shadow(0 0 8px var(--glow-color));
+  }
 }
 
 @keyframes bounce-dock {
-  0%, 100% { transform: translateY(0); }
-  25% { transform: translateY(-3px); }
-  50% { transform: translateY(0); }
-  75% { transform: translateY(-1.5px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  25% {
+    transform: translateY(-3px);
+  }
+  50% {
+    transform: translateY(0);
+  }
+  75% {
+    transform: translateY(-1.5px);
+  }
 }
 
 .animate-glow {

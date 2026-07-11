@@ -279,15 +279,11 @@ async function runDev() {
       waitForPort(rendererPort, rendererHost),
     ]);
 
-    electronProcess = spawnTracked(
-      pnpmCommand,
-      ["exec", "electron", mainOutput],
-      {
-        env: withElectronEnv({
-          GROVE_RENDERER_URL: rendererDevUrl,
-        }),
-      },
-    );
+    electronProcess = spawnTracked(pnpmCommand, ["exec", "electron", mainOutput], {
+      env: withElectronEnv({
+        GROVE_RENDERER_URL: rendererDevUrl,
+      }),
+    });
 
     await new Promise((resolve, reject) => {
       electronProcess.once("error", reject);
@@ -299,9 +295,7 @@ async function runDev() {
 
         reject(
           new Error(
-            `electron exited with ${
-              signal ? `signal ${signal}` : `code ${code ?? "unknown"}`
-            }`,
+            `electron exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}`,
           ),
         );
       });
@@ -361,8 +355,6 @@ try {
     throw new Error(`Unsupported command '${command}'`);
   }
 } catch (error) {
-  console.error(
-    `[grove-electron] ${error instanceof Error ? error.message : String(error)}`,
-  );
+  console.error(`[grove-electron] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

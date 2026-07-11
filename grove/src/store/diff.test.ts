@@ -204,9 +204,7 @@ describe("polling equality gates", () => {
   });
 
   it("loadStatus keeps same array reference when content is unchanged", async () => {
-    const initial = [
-      { path: "a.ts", status: "modified" as const, staged: false },
-    ];
+    const initial = [{ path: "a.ts", status: "modified" as const, staged: false }];
     useDiffStore.setState({ fileStatuses: initial });
     vi.mocked(tauri.getStatus).mockResolvedValue([
       { path: "a.ts", status: "modified", staged: false },
@@ -217,9 +215,7 @@ describe("polling equality gates", () => {
   });
 
   it("loadStatus replaces array when any field differs", async () => {
-    const initial = [
-      { path: "a.ts", status: "modified" as const, staged: false },
-    ];
+    const initial = [{ path: "a.ts", status: "modified" as const, staged: false }];
     useDiffStore.setState({ fileStatuses: initial });
     vi.mocked(tauri.getStatus).mockResolvedValue([
       { path: "a.ts", status: "modified", staged: true }, // staged flipped
@@ -231,9 +227,7 @@ describe("polling equality gates", () => {
   });
 
   it("loadCommits keeps same array when hash sequence unchanged", async () => {
-    const initial = [
-      { hash: "a", shortHash: "a", message: "x", author: "x", date: "x" },
-    ];
+    const initial = [{ hash: "a", shortHash: "a", message: "x", author: "x", date: "x" }];
     useDiffStore.setState({ commits: initial });
     vi.mocked(tauri.getCommits).mockResolvedValue([
       { hash: "a", shortHash: "a", message: "different", author: "y", date: "z" },
@@ -244,9 +238,7 @@ describe("polling equality gates", () => {
   });
 
   it("loadCommits replaces array when hash changes", async () => {
-    const initial = [
-      { hash: "a", shortHash: "a", message: "x", author: "x", date: "x" },
-    ];
+    const initial = [{ hash: "a", shortHash: "a", message: "x", author: "x", date: "x" }];
     useDiffStore.setState({ commits: initial });
     vi.mocked(tauri.getCommits).mockResolvedValue([
       { hash: "b", shortHash: "b", message: "x", author: "x", date: "x" },
@@ -283,11 +275,9 @@ describe("mergeDefaultBranch", () => {
     vi.mocked(runCommandSafely).mockImplementation(
       async (action: () => Promise<unknown>) => action() as Promise<null>,
     );
-    vi.mocked(runCommand).mockImplementation(
-      async (action: () => Promise<unknown>) => {
-        await action();
-      },
-    );
+    vi.mocked(runCommand).mockImplementation(async (action: () => Promise<unknown>) => {
+      await action();
+    });
     vi.mocked(tauri.getStatus).mockResolvedValue([]);
     vi.mocked(tauri.getCommits).mockResolvedValue([]);
     vi.mocked(tauri.getBehindCount).mockResolvedValue({ behind: 0, defaultBranch: "main" });

@@ -33,15 +33,10 @@ function Dialog(props: DialogProps) {
           }
         }}
       >
-        <DialogContent
-          className={cn("gap-0 p-0 sm:max-w-md", className)}
-          showCloseButton={false}
-        >
+        <DialogContent className={cn("gap-0 p-0 sm:max-w-md", className)} showCloseButton={false}>
           <div className={cn("flex items-center justify-between gap-4 px-5 pt-4 pb-2")}>
             {title ? (
-              <DialogTitle className={cn("text-sm font-semibold")}>
-                {title}
-              </DialogTitle>
+              <DialogTitle className={cn("text-sm font-semibold")}>{title}</DialogTitle>
             ) : (
               <div />
             )}
@@ -68,21 +63,15 @@ function Dialog(props: DialogProps) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
 
-function DialogTrigger({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
+function DialogTrigger({ ...props }: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
   return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
 }
 
-function DialogPortal({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Portal>) {
+function DialogPortal({ ...props }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
 }
 
-function DialogClose({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Close>) {
+function DialogClose({ ...props }: React.ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
@@ -156,10 +145,7 @@ function DialogFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-footer"
-      className={cn(
-        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
-        className,
-      )}
+      className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)}
       {...props}
     />
   );

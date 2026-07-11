@@ -61,14 +61,9 @@ describe("usePreferencesStore", () => {
   });
 
   it("saves unique org order values", () => {
-    usePreferencesStore
-      .getState()
-      .setProjectOrgOrder(["sendbird", "bang9", "sendbird"]);
+    usePreferencesStore.getState().setProjectOrgOrder(["sendbird", "bang9", "sendbird"]);
 
-    expect(usePreferencesStore.getState().projectOrgOrder).toEqual([
-      "sendbird",
-      "bang9",
-    ]);
+    expect(usePreferencesStore.getState().projectOrgOrder).toEqual(["sendbird", "bang9"]);
     expect(platform.saveGrovePreferences).toHaveBeenCalledWith(
       expect.objectContaining({
         projectOrgOrder: ["sendbird", "bang9"],

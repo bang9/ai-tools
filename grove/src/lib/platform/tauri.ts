@@ -152,10 +152,7 @@ export function sanitizeCommandErrorMessage(message: string): string {
     .replace(/^Error:\s*/i, "")
     .replace(/Cloning into '[^']+'\.{3}/g, "Cloning repository...")
     .replace(/(https?:\/\/)([^@\s/]+(?::[^@\s/]+)?@)/gi, "$1***@")
-    .replace(
-      /(^|[\s('"])(\/(?:Users|home|private|tmp|var|Volumes)[^'"\s)\n]*)/g,
-      "$1[path]",
-    )
+    .replace(/(^|[\s('"])(\/(?:Users|home|private|tmp|var|Volumes)[^'"\s)\n]*)/g, "$1[path]")
     .trim();
 }
 
@@ -181,9 +178,7 @@ export async function saveAppConfig(config: AppConfig): Promise<void> {
   return platform.invoke("save_app_config", { config });
 }
 
-export async function saveGrovePreferences(
-  preferences: GrovePreferences,
-): Promise<void> {
+export async function saveGrovePreferences(preferences: GrovePreferences): Promise<void> {
   return platform.invoke("save_grove_preferences", { preferences });
 }
 
@@ -227,10 +222,7 @@ export function onCloneFailed(
   return platform.listen<{ id: string; error: string }>("grove:clone-failed", handler);
 }
 
-export async function createProject(
-  name: string,
-  path: string,
-): Promise<Project> {
+export async function createProject(name: string, path: string): Promise<Project> {
   return platform.invoke<Project>("create_project", { name, path });
 }
 
@@ -266,10 +258,7 @@ export async function addStackedWorktree(
   });
 }
 
-export async function removeWorktree(
-  projectId: string,
-  name: string,
-): Promise<void> {
+export async function removeWorktree(projectId: string, name: string): Promise<void> {
   return platform.invoke("remove_worktree", { projectId, name });
 }
 
@@ -277,9 +266,7 @@ export async function listWorktrees(projectId: string): Promise<Worktree[]> {
   return platform.invoke<Worktree[]>("list_worktrees", { projectId });
 }
 
-export async function getWorktreePrUrl(
-  worktreePath: string,
-): Promise<WorktreePullRequest | null> {
+export async function getWorktreePrUrl(worktreePath: string): Promise<WorktreePullRequest | null> {
   return platform.invoke<WorktreePullRequest | null>("get_worktree_pr_url", { worktreePath });
 }
 
@@ -300,10 +287,7 @@ export async function renameProject(projectId: string, name: string): Promise<vo
   return platform.invoke("rename_project", { projectId, name });
 }
 
-export async function setProjectCategory(
-  projectId: string,
-  categoryId: string,
-): Promise<void> {
+export async function setProjectCategory(projectId: string, categoryId: string): Promise<void> {
   return platform.invoke("set_project_category", { projectId, categoryId });
 }
 
@@ -369,17 +353,11 @@ export async function browserReload(tabId: string): Promise<void> {
   return platform.invoke("browser_reload", { tabId });
 }
 
-export async function browserSetBounds(
-  tabId: string,
-  bounds: BrowserBounds,
-): Promise<void> {
+export async function browserSetBounds(tabId: string, bounds: BrowserBounds): Promise<void> {
   return platform.invoke("browser_set_bounds", { tabId, bounds });
 }
 
-export async function browserSetVisible(
-  tabId: string,
-  visible: boolean,
-): Promise<void> {
+export async function browserSetVisible(tabId: string, visible: boolean): Promise<void> {
   return platform.invoke("browser_set_visible", { tabId, visible });
 }
 
@@ -401,9 +379,7 @@ export async function browserOpenDevtools(tabId: string): Promise<void> {
  */
 export const browserHasNativeHistory = false;
 
-export function onBrowserNav(
-  handler: (event: BrowserNavEvent) => void,
-): Promise<UnlistenFn> {
+export function onBrowserNav(handler: (event: BrowserNavEvent) => void): Promise<UnlistenFn> {
   return platform.listen<BrowserNavEvent>("browser:nav", handler);
 }
 
@@ -429,9 +405,7 @@ export async function listGitignorePatterns(projectId: string): Promise<string[]
 
 // === PTY COMMANDS (W3) ===
 
-export async function createPty(
-  request: CreatePtyRequest,
-): Promise<CreatePtyResult> {
+export async function createPty(request: CreatePtyRequest): Promise<CreatePtyResult> {
   // A per-PTY channel carries raw output bytes as an ArrayBuffer with no base64
   // and no JSON number-array blowup. Its onmessage routes by the immutable
   // ptyId, so pane re-acquire / ptyId reassignment is handled entirely by the
@@ -456,11 +430,7 @@ export async function writePty(id: string, data: Uint8Array): Promise<void> {
   return tauriInvoke("write_pty", data, { headers: { "pty-id": id } });
 }
 
-export async function resizePty(
-  id: string,
-  cols: number,
-  rows: number,
-): Promise<void> {
+export async function resizePty(id: string, cols: number, rows: number): Promise<void> {
   return platform.invoke("resize_pty", { id, cols, rows });
 }
 
@@ -492,9 +462,7 @@ export async function loadTerminalSessionSnapshot(
   });
 }
 
-export async function runTerminalGc(
-  dryRun = false,
-): Promise<TerminalGcReport> {
+export async function runTerminalGc(dryRun = false): Promise<TerminalGcReport> {
   return platform.invoke<TerminalGcReport>("run_terminal_gc", { dryRun });
 }
 
@@ -514,24 +482,15 @@ export async function listDirectoryFiles(
   });
 }
 
-export async function getCommits(
-  worktreePath: string,
-  limit: number,
-): Promise<CommitInfo[]> {
+export async function getCommits(worktreePath: string, limit: number): Promise<CommitInfo[]> {
   return platform.invoke<CommitInfo[]>("get_commits", { worktreePath, limit });
 }
 
-export async function getWorkingDiff(
-  worktreePath: string,
-  path: string,
-): Promise<FileDiff> {
+export async function getWorkingDiff(worktreePath: string, path: string): Promise<FileDiff> {
   return platform.invoke<FileDiff>("get_working_diff", { worktreePath, path });
 }
 
-export async function getCommitDiff(
-  worktreePath: string,
-  hash: string,
-): Promise<FileDiff[]> {
+export async function getCommitDiff(worktreePath: string, hash: string): Promise<FileDiff[]> {
   return platform.invoke<FileDiff[]>("get_commit_diff", { worktreePath, hash });
 }
 
@@ -567,52 +526,31 @@ export async function getCommitDiffContext(
   });
 }
 
-export async function stageFile(
-  worktreePath: string,
-  path: string,
-): Promise<void> {
+export async function stageFile(worktreePath: string, path: string): Promise<void> {
   return platform.invoke("stage_file", { worktreePath, path });
 }
 
-export async function stageFiles(
-  worktreePath: string,
-  paths: string[],
-): Promise<void> {
+export async function stageFiles(worktreePath: string, paths: string[]): Promise<void> {
   return platform.invoke("stage_files", { worktreePath, paths });
 }
 
-export async function unstageFile(
-  worktreePath: string,
-  path: string,
-): Promise<void> {
+export async function unstageFile(worktreePath: string, path: string): Promise<void> {
   return platform.invoke("unstage_file", { worktreePath, path });
 }
 
-export async function unstageFiles(
-  worktreePath: string,
-  paths: string[],
-): Promise<void> {
+export async function unstageFiles(worktreePath: string, paths: string[]): Promise<void> {
   return platform.invoke("unstage_files", { worktreePath, paths });
 }
 
-export async function discardFile(
-  worktreePath: string,
-  path: string,
-): Promise<void> {
+export async function discardFile(worktreePath: string, path: string): Promise<void> {
   return platform.invoke("discard_file", { worktreePath, path });
 }
 
-export async function discardFiles(
-  worktreePath: string,
-  paths: string[],
-): Promise<void> {
+export async function discardFiles(worktreePath: string, paths: string[]): Promise<void> {
   return platform.invoke("discard_files", { worktreePath, paths });
 }
 
-export async function removeUntrackedFiles(
-  worktreePath: string,
-  paths: string[],
-): Promise<void> {
+export async function removeUntrackedFiles(worktreePath: string, paths: string[]): Promise<void> {
   return platform.invoke("remove_untracked_files", { worktreePath, paths });
 }
 
@@ -679,15 +617,11 @@ export async function discardLines(
 
 // === GIT MERGE COMMANDS ===
 
-export async function getBehindCount(
-  worktreePath: string,
-): Promise<BehindInfo> {
+export async function getBehindCount(worktreePath: string): Promise<BehindInfo> {
   return platform.invoke<BehindInfo>("get_behind_count", { worktreePath });
 }
 
-export async function mergeDefaultBranch(
-  worktreePath: string,
-): Promise<void> {
+export async function mergeDefaultBranch(worktreePath: string): Promise<void> {
   return platform.invoke("merge_default_branch", { worktreePath });
 }
 
@@ -697,10 +631,7 @@ export async function listMissions(): Promise<Mission[]> {
   return platform.invoke<Mission[]>("list_missions");
 }
 
-export async function createMission(
-  name: string,
-  branchName?: string | null,
-): Promise<Mission> {
+export async function createMission(name: string, branchName?: string | null): Promise<Mission> {
   return platform.invoke<Mission>("create_mission", {
     name,
     branchName: branchName ?? null,

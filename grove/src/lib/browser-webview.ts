@@ -1,10 +1,7 @@
 import { useBrowserStore } from "../store/browser";
 import { useTabStore } from "../store/tab";
 import { browserTabTitle } from "./browser-url";
-import {
-  selectEvictions,
-  type WebviewVisibility,
-} from "./browser-eviction";
+import { selectEvictions, type WebviewVisibility } from "./browser-eviction";
 import { registerSyncJob } from "./sync-manager";
 import {
   browserClose,
@@ -71,11 +68,7 @@ export function isBrowserWebviewCreated(tabId: string): boolean {
   return created.has(tabId);
 }
 
-export function createBrowserWebview(
-  tabId: string,
-  url: string,
-  bounds: BrowserBounds,
-): void {
+export function createBrowserWebview(tabId: string, url: string, bounds: BrowserBounds): void {
   created.add(tabId);
   // Created over the active host, so it starts visible. The visibility effect
   // in BrowserPanel calls setBrowserVisible right after and corrects this if
@@ -233,9 +226,7 @@ export function initBrowserWebviewBridge(): void {
       }
       await onBrowserNav((ev) => {
         useBrowserStore.getState().applyNavEvent(ev);
-        useTabStore
-          .getState()
-          .updateTabTitle(ev.tabId, ev.title ?? browserTabTitle(ev.url));
+        useTabStore.getState().updateTabTitle(ev.tabId, ev.title ?? browserTabTitle(ev.url));
       });
     } catch (err) {
       warn(err);

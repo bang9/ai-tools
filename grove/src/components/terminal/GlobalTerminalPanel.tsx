@@ -27,9 +27,7 @@ const TerminalTabContent = memo(function TerminalTabContent({
     tab.mirrorPtyId ? (s.mirrors[tab.mirrorPtyId] ?? null) : null,
   );
   const termRef = useRef<HTMLDivElement>(null);
-  const runtimeRef = useRef<ReturnType<
-    typeof acquireTerminalRuntime
-  > | null>(null);
+  const runtimeRef = useRef<ReturnType<typeof acquireTerminalRuntime> | null>(null);
   const runtimePaneId = mirrorSession?.paneId ?? tab.paneId;
 
   useLayoutEffect(() => {
@@ -39,9 +37,7 @@ const TerminalTabContent = memo(function TerminalTabContent({
     const isMirror = Boolean(tab.mirrorPtyId);
     let runtime: ReturnType<typeof acquireTerminalRuntime> | null;
     if (isMirror) {
-      runtime = mirrorSession
-        ? acquireTerminalRuntime(mirrorSession.paneId, theme)
-        : null;
+      runtime = mirrorSession ? acquireTerminalRuntime(mirrorSession.paneId, theme) : null;
     } else {
       runtime = acquireTerminalRuntime(tab.paneId, theme);
     }
@@ -57,13 +53,7 @@ const TerminalTabContent = memo(function TerminalTabContent({
       runtime.release();
       runtimeRef.current = null;
     };
-  }, [
-    mirrorSession?.paneId,
-    ptyId,
-    tab.mirrorPtyId,
-    tab.paneId,
-    runtimePaneId,
-  ]);
+  }, [mirrorSession?.paneId, ptyId, tab.mirrorPtyId, tab.paneId, runtimePaneId]);
 
   // Refit when becoming active
   useEffect(() => {
@@ -127,9 +117,7 @@ function GlobalTerminalPanel({
 }: Props) {
   const theme = useTerminalStore((s) => s.theme);
   const collapsed = usePanelLayoutStore((s) => s.globalTerminal.collapsed);
-  const updateGlobalTerminal = usePanelLayoutStore(
-    (s) => s.updateGlobalTerminal,
-  );
+  const updateGlobalTerminal = usePanelLayoutStore((s) => s.updateGlobalTerminal);
 
   const toggle = () => {
     updateGlobalTerminal({ collapsed: !collapsed });

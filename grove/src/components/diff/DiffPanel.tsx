@@ -19,13 +19,14 @@ export default function DiffPanel() {
   if (store.selectedView !== "changes" && !store.currentDiff) {
     viewerDiffs.push(...store.commitDiffs);
   }
-  const fileStatuses = store.selectedView === "changes"
-    ? store.fileStatuses
-    : store.commitDiffs.map((d) => ({
-        path: d.path,
-        status: d.status as FileStatus["status"],
-        staged: false,
-      }));
+  const fileStatuses =
+    store.selectedView === "changes"
+      ? store.fileStatuses
+      : store.commitDiffs.map((d) => ({
+          path: d.path,
+          status: d.status as FileStatus["status"],
+          staged: false,
+        }));
 
   if (!worktreePath) {
     return (

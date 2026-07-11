@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Project, Worktree } from "../types";
-import {
-  findProjectForWorktreePath,
-  getGlobalTerminalMirrorTitle,
-} from "./global-terminal-title";
+import { findProjectForWorktreePath, getGlobalTerminalMirrorTitle } from "./global-terminal-title";
 
 function makeWorktree(name: string, path: string, branch: string): Worktree {
   return { name, path, branch };
@@ -40,9 +37,7 @@ describe("getGlobalTerminalMirrorTitle", () => {
   it("uses the source branch for source broadcasts", () => {
     const source = makeWorktree("source", "/tmp/bang9/grove/source", "develop");
 
-    expect(getGlobalTerminalMirrorTitle([makeProject()], source)).toBe(
-      "bang9/grove > develop",
-    );
+    expect(getGlobalTerminalMirrorTitle([makeProject()], source)).toBe("bang9/grove > develop");
   });
 
   it("keeps the worktree name for non-source broadcasts", () => {

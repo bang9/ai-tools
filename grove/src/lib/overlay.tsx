@@ -84,7 +84,9 @@ export const overlay = {
       <Dialog open onClose={close} title={title} className={cn("max-w-sm", className)}>
         <div className={cn("space-y-4")}>
           {description ? (
-            <div className={cn("text-sm leading-relaxed text-muted-foreground whitespace-pre-line")}>
+            <div
+              className={cn("text-sm leading-relaxed text-muted-foreground whitespace-pre-line")}
+            >
               {description}
             </div>
           ) : null}
@@ -92,12 +94,7 @@ export const overlay = {
             <Button type="button" variant="ghost" size="sm" onClick={close}>
               {cancelLabel}
             </Button>
-            <Button
-              type="button"
-              variant={variant}
-              size="sm"
-              onClick={() => resolve(true)}
-            >
+            <Button type="button" variant={variant} size="sm" onClick={() => resolve(true)}>
               {confirmLabel}
             </Button>
           </div>
@@ -121,11 +118,7 @@ export function OverlayContainer() {
       {entries.map((entry) => {
         const control = controlMap.get(entry.id);
         if (!control) return null;
-        return (
-          <div key={entry.id}>
-            {entry.render(control)}
-          </div>
-        );
+        return <div key={entry.id}>{entry.render(control)}</div>;
       })}
     </>
   );

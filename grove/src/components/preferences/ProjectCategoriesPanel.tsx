@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Pencil, Plus, Trash2 } from "lucide-react";
-import type {
-  ProjectCategory,
-  ProjectCategoryIcon,
-  ProjectCategoryIconId,
-} from "../../types";
+import type { ProjectCategory, ProjectCategoryIcon, ProjectCategoryIconId } from "../../types";
 import { usePreferencesStore } from "../../store/preferences";
 import { useProjectStore } from "../../store/project";
 import { getCommandErrorMessage } from "../../lib/platform";
@@ -66,15 +62,10 @@ interface Props {
   managementMode?: "full" | "assign-only";
 }
 
-export default function ProjectCategoriesPanel({
-  projectId,
-  managementMode = "full",
-}: Props) {
+export default function ProjectCategoriesPanel({ projectId, managementMode = "full" }: Props) {
   const projectCategories = usePreferencesStore((state) => state.projectCategories);
   const setProjectCategories = usePreferencesStore((state) => state.setProjectCategories);
-  const deleteProjectCategory = usePreferencesStore(
-    (state) => state.deleteProjectCategory,
-  );
+  const deleteProjectCategory = usePreferencesStore((state) => state.deleteProjectCategory);
   const projects = useProjectStore((state) => state.projects);
   const setProjectCategory = useProjectStore((state) => state.setProjectCategory);
 
@@ -85,22 +76,16 @@ export default function ProjectCategoriesPanel({
   const [randomizingCategoryId, setRandomizingCategoryId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
-  const project = projectId
-    ? projects.find((item) => item.id === projectId) ?? null
-    : null;
+  const project = projectId ? (projects.find((item) => item.id === projectId) ?? null) : null;
   const categories = getProjectCategories(projectCategories);
   const selectedCategoryId = project?.categoryId ?? DEFAULT_PROJECT_CATEGORY_ID;
   const showManagementControls = managementMode === "full";
   const editing = draft.id != null;
   const sanitizedName = sanitizeProjectCategoryName(draft.name);
   const sanitizedEmoji = sanitizeProjectCategoryEmoji(draft.emoji);
-  const emojiOptions = useMemo(
-    () => getProjectCategoryEmojiOptions(draft.emoji),
-    [draft.emoji],
-  );
+  const emojiOptions = useMemo(() => getProjectCategoryEmojiOptions(draft.emoji), [draft.emoji]);
   const canSubmit =
-    sanitizedName.length > 0 &&
-    (draft.iconMode === "lucide" || sanitizedEmoji.length > 0);
+    sanitizedName.length > 0 && (draft.iconMode === "lucide" || sanitizedEmoji.length > 0);
 
   useEffect(() => {
     if (!draft.id) {
@@ -131,8 +116,7 @@ export default function ProjectCategoriesPanel({
         category.icon.type === "emoji"
           ? category.icon.value
           : (PROJECT_CATEGORY_EMOJI_OPTIONS[0]?.value ?? "🌱"),
-      lucideIconId:
-        category.icon.type === "lucide" ? category.icon.value : "sprout",
+      lucideIconId: category.icon.type === "lucide" ? category.icon.value : "sprout",
     });
     setError("");
   };
@@ -162,16 +146,12 @@ export default function ProjectCategoriesPanel({
             categories.map((category) => category.id),
           ),
           name: sanitizedName,
-          color: getRandomProjectCategoryColor(
-            projectCategories.map((category) => category.color),
-          ),
+          color: getRandomProjectCategoryColor(projectCategories.map((category) => category.color)),
           icon,
         };
 
     const nextCategories = draft.id
-      ? projectCategories.map((category) =>
-          category.id === draft.id ? nextCategory : category,
-        )
+      ? projectCategories.map((category) => (category.id === draft.id ? nextCategory : category))
       : [...projectCategories, nextCategory];
 
     setSubmitting(true);
@@ -212,10 +192,7 @@ export default function ProjectCategoriesPanel({
       description: (
         <>
           <p>
-            Projects in{" "}
-            <span className={cn("font-semibold text-foreground")}>
-              {category.name}
-            </span>{" "}
+            Projects in <span className={cn("font-semibold text-foreground")}>{category.name}</span>{" "}
             will move to Default.
           </p>
         </>
@@ -242,17 +219,12 @@ export default function ProjectCategoriesPanel({
   };
 
   const handleRandomizeColor = async (category: ProjectCategory) => {
-    if (
-      category.id === DEFAULT_PROJECT_CATEGORY_ID ||
-      randomizingCategoryId === category.id
-    ) {
+    if (category.id === DEFAULT_PROJECT_CATEGORY_ID || randomizingCategoryId === category.id) {
       return;
     }
 
     const nextColor = getRandomProjectCategoryColor(
-      projectCategories
-        .filter((item) => item.id !== category.id)
-        .map((item) => item.color),
+      projectCategories.filter((item) => item.id !== category.id).map((item) => item.color),
       [category.color],
     );
     const nextCategories = projectCategories.map((item) =>
@@ -274,7 +246,9 @@ export default function ProjectCategoriesPanel({
     <div className={cn("space-y-6")}>
       {project && (
         <div className={cn("rounded-xl border border-border bg-secondary/20 p-4")}>
-          <p className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
+          <p
+            className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}
+          >
             Project Category
           </p>
           <div className={cn("mt-2 flex items-center gap-2")}>
@@ -305,13 +279,10 @@ export default function ProjectCategoriesPanel({
         </div>
 
         <div
-          className={cn(
-            "space-y-2 overflow-y-auto pr-1",
-            {
-              "max-h-[22rem]": showManagementControls,
-              "max-h-[26rem]": !showManagementControls,
-            },
-          )}
+          className={cn("space-y-2 overflow-y-auto pr-1", {
+            "max-h-[22rem]": showManagementControls,
+            "max-h-[26rem]": !showManagementControls,
+          })}
         >
           {categories.map((category) => {
             const selected = category.id === selectedCategoryId;
@@ -333,8 +304,8 @@ export default function ProjectCategoriesPanel({
                 )}
                 style={selectedStyle}
               >
-                {showManagementControls && (
-                  canRandomizeColor ? (
+                {showManagementControls &&
+                  (canRandomizeColor ? (
                     <button
                       type="button"
                       className={cn(
@@ -356,10 +327,7 @@ export default function ProjectCategoriesPanel({
                         )}
                         style={getProjectCategoryButtonStyle(category.color)}
                       >
-                        <ProjectCategoryIconGlyph
-                          icon={category.icon}
-                          className={cn("size-4")}
-                        />
+                        <ProjectCategoryIconGlyph icon={category.icon} className={cn("size-4")} />
                       </span>
                     </button>
                   ) : (
@@ -369,13 +337,9 @@ export default function ProjectCategoriesPanel({
                       )}
                       style={getProjectCategoryButtonStyle(category.color)}
                     >
-                      <ProjectCategoryIconGlyph
-                        icon={category.icon}
-                        className={cn("size-4")}
-                      />
+                      <ProjectCategoryIconGlyph icon={category.icon} className={cn("size-4")} />
                     </span>
-                  )
-                )}
+                  ))}
                 <button
                   type="button"
                   className={cn(
@@ -399,10 +363,7 @@ export default function ProjectCategoriesPanel({
                       )}
                       style={getProjectCategoryButtonStyle(category.color)}
                     >
-                      <ProjectCategoryIconGlyph
-                        icon={category.icon}
-                        className={cn("size-4")}
-                      />
+                      <ProjectCategoryIconGlyph icon={category.icon} className={cn("size-4")} />
                     </span>
                   )}
                   <div className={cn("min-w-0 flex-1")}>
@@ -426,9 +387,7 @@ export default function ProjectCategoriesPanel({
                           "mt-1 flex items-center gap-2 text-[11px] text-muted-foreground",
                         )}
                       >
-                        <span
-                          className={cn("inline-flex items-center gap-1 text-foreground")}
-                        >
+                        <span className={cn("inline-flex items-center gap-1 text-foreground")}>
                           <Check className={cn("size-3")} />
                           Assigned
                         </span>
@@ -437,8 +396,7 @@ export default function ProjectCategoriesPanel({
                   </div>
                 </button>
 
-                {showManagementControls &&
-                  category.id !== DEFAULT_PROJECT_CATEGORY_ID && (
+                {showManagementControls && category.id !== DEFAULT_PROJECT_CATEGORY_ID && (
                   <div className={cn("flex shrink-0 items-center gap-1")}>
                     <IconButton
                       type="button"
@@ -470,209 +428,222 @@ export default function ProjectCategoriesPanel({
 
       {showManagementControls && (
         <div className={cn("rounded-xl border border-border bg-background/70 p-4")}>
-        <div className={cn("flex items-center justify-between gap-3")}>
-          <div>
-            <h4 className={cn("text-[12px] font-medium text-foreground")}>
-              {editing ? "Edit category" : "Add category"}
-            </h4>
-            <p className={cn("mt-1 text-[11px] text-muted-foreground/70")}>
-              Names are limited to 10 characters.
-            </p>
-          </div>
-          {editing && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={(event) => {
-                event.currentTarget.blur();
-                resetDraft();
-              }}
-              disabled={submitting}
-            >
-              Cancel edit
-            </Button>
-          )}
-        </div>
-
-        <div className={cn("mt-4 space-y-4")}>
-          <div className={cn("space-y-2")}>
-            <label className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
-              Name
-            </label>
-            <Input
-              className={cn("placeholder:text-muted-foreground/45")}
-              value={draft.name}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  name: sanitizeProjectCategoryName(event.target.value),
-                }))
-              }
-              placeholder="Frontend"
-              maxLength={10}
-            />
-          </div>
-
-          <div className={cn("space-y-2")}>
-            <label className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
-              Icon Type
-            </label>
-            <div className={cn("grid grid-cols-2 gap-2")}>
+          <div className={cn("flex items-center justify-between gap-3")}>
+            <div>
+              <h4 className={cn("text-[12px] font-medium text-foreground")}>
+                {editing ? "Edit category" : "Add category"}
+              </h4>
+              <p className={cn("mt-1 text-[11px] text-muted-foreground/70")}>
+                Names are limited to 10 characters.
+              </p>
+            </div>
+            {editing && (
               <Button
                 type="button"
-                variant={draft.iconMode === "emoji" ? "default" : "outline"}
+                variant="ghost"
                 size="sm"
-                onClick={() =>
-                  setDraft((current) => ({ ...current, iconMode: "emoji" }))
-                }
-              >
-                Emoji
-              </Button>
-              <Button
-                type="button"
-                variant={draft.iconMode === "lucide" ? "default" : "outline"}
-                size="sm"
-                onClick={() =>
-                  setDraft((current) => ({ ...current, iconMode: "lucide" }))
-                }
-              >
-                Icon
-              </Button>
-            </div>
-          </div>
-
-          {draft.iconMode === "emoji" ? (
-            <div className={cn("space-y-2")}>
-              <label className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
-                Emoji
-              </label>
-              <div className={cn("grid w-full grid-cols-4 gap-1.5")}>
-                {emojiOptions.map((option) => {
-                  const selected = sanitizedEmoji === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={cn(
-                        "flex h-8 w-full items-center justify-center rounded-lg border text-base transition-colors",
-                        {
-                          "border-accent bg-accent/12 text-foreground": selected,
-                          "border-border bg-background text-muted-foreground hover:bg-secondary/40 hover:text-foreground":
-                            !selected,
-                        },
-                      )}
-                      title={option.label}
-                      onClick={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          emoji: option.value,
-                        }))
-                      }
-                    >
-                      <span>{option.value}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className={cn("space-y-2")}>
-              <label className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
-                Icon
-              </label>
-              <div className={cn("grid w-full grid-cols-4 gap-1.5")}>
-                {PROJECT_CATEGORY_ICON_OPTIONS.map((option) => {
-                  const selected = draft.lucideIconId === option.id;
-                  const OptionIcon = option.icon;
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={cn(
-                        "flex h-8 w-full items-center justify-center rounded-lg border transition-colors",
-                        {
-                          "border-accent bg-accent/12 text-foreground": selected,
-                          "border-border bg-background text-muted-foreground hover:bg-secondary/40 hover:text-foreground":
-                            !selected,
-                        },
-                      )}
-                      title={option.label}
-                      onClick={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          lucideIconId: option.id,
-                        }))
-                      }
-                    >
-                      <OptionIcon className={cn("size-3.5")} />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div className={cn("rounded-lg border border-border/70 bg-secondary/20 p-3")}>
-            <p className={cn("text-[11px] font-medium uppercase tracking-wider text-muted-foreground")}>
-              Preview
-            </p>
-            <div className={cn("mt-2")}>
-              <ProjectCategoryBadge
-                category={{
-                  id: draft.id ?? "preview",
-                  name: sanitizedName || "Category",
-                  color:
-                    projectCategories.find((category) => category.id === draft.id)?.color ??
-                    DEFAULT_PROJECT_CATEGORY.color,
-                  icon:
-                    draft.iconMode === "emoji"
-                      ? {
-                          type: "emoji",
-                          value:
-                            sanitizedEmoji ||
-                            (PROJECT_CATEGORY_EMOJI_OPTIONS[0]?.value ?? "🌱"),
-                        }
-                      : { type: "lucide", value: draft.lucideIconId },
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  resetDraft();
                 }}
-              />
-            </div>
-          </div>
-
-          {error && (
-            <p className={cn("text-[12px] text-destructive")}>{error}</p>
-          )}
-
-          <div className={cn("flex justify-end")}>
-            {editing ? (
-              <Button
-                key="update-category"
-                type="button"
-                className={cn("min-w-[148px] transition-colors")}
-                onClick={() => {
-                  void handleSubmit();
-                }}
-                disabled={!canSubmit || submitting}
+                disabled={submitting}
               >
-                <Check className={cn("size-4")} />
-                Update category
-              </Button>
-            ) : (
-              <Button
-                key="add-category"
-                type="button"
-                className={cn("min-w-[148px] transition-colors")}
-                onClick={() => {
-                  void handleSubmit();
-                }}
-                disabled={!canSubmit || submitting}
-              >
-                <Plus className={cn("size-4")} />
-                Add category
+                Cancel edit
               </Button>
             )}
           </div>
-        </div>
+
+          <div className={cn("mt-4 space-y-4")}>
+            <div className={cn("space-y-2")}>
+              <label
+                className={cn(
+                  "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+                )}
+              >
+                Name
+              </label>
+              <Input
+                className={cn("placeholder:text-muted-foreground/45")}
+                value={draft.name}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    name: sanitizeProjectCategoryName(event.target.value),
+                  }))
+                }
+                placeholder="Frontend"
+                maxLength={10}
+              />
+            </div>
+
+            <div className={cn("space-y-2")}>
+              <label
+                className={cn(
+                  "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+                )}
+              >
+                Icon Type
+              </label>
+              <div className={cn("grid grid-cols-2 gap-2")}>
+                <Button
+                  type="button"
+                  variant={draft.iconMode === "emoji" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setDraft((current) => ({ ...current, iconMode: "emoji" }))}
+                >
+                  Emoji
+                </Button>
+                <Button
+                  type="button"
+                  variant={draft.iconMode === "lucide" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setDraft((current) => ({ ...current, iconMode: "lucide" }))}
+                >
+                  Icon
+                </Button>
+              </div>
+            </div>
+
+            {draft.iconMode === "emoji" ? (
+              <div className={cn("space-y-2")}>
+                <label
+                  className={cn(
+                    "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+                  )}
+                >
+                  Emoji
+                </label>
+                <div className={cn("grid w-full grid-cols-4 gap-1.5")}>
+                  {emojiOptions.map((option) => {
+                    const selected = sanitizedEmoji === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={cn(
+                          "flex h-8 w-full items-center justify-center rounded-lg border text-base transition-colors",
+                          {
+                            "border-accent bg-accent/12 text-foreground": selected,
+                            "border-border bg-background text-muted-foreground hover:bg-secondary/40 hover:text-foreground":
+                              !selected,
+                          },
+                        )}
+                        title={option.label}
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            emoji: option.value,
+                          }))
+                        }
+                      >
+                        <span>{option.value}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className={cn("space-y-2")}>
+                <label
+                  className={cn(
+                    "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+                  )}
+                >
+                  Icon
+                </label>
+                <div className={cn("grid w-full grid-cols-4 gap-1.5")}>
+                  {PROJECT_CATEGORY_ICON_OPTIONS.map((option) => {
+                    const selected = draft.lucideIconId === option.id;
+                    const OptionIcon = option.icon;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={cn(
+                          "flex h-8 w-full items-center justify-center rounded-lg border transition-colors",
+                          {
+                            "border-accent bg-accent/12 text-foreground": selected,
+                            "border-border bg-background text-muted-foreground hover:bg-secondary/40 hover:text-foreground":
+                              !selected,
+                          },
+                        )}
+                        title={option.label}
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            lucideIconId: option.id,
+                          }))
+                        }
+                      >
+                        <OptionIcon className={cn("size-3.5")} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className={cn("rounded-lg border border-border/70 bg-secondary/20 p-3")}>
+              <p
+                className={cn(
+                  "text-[11px] font-medium uppercase tracking-wider text-muted-foreground",
+                )}
+              >
+                Preview
+              </p>
+              <div className={cn("mt-2")}>
+                <ProjectCategoryBadge
+                  category={{
+                    id: draft.id ?? "preview",
+                    name: sanitizedName || "Category",
+                    color:
+                      projectCategories.find((category) => category.id === draft.id)?.color ??
+                      DEFAULT_PROJECT_CATEGORY.color,
+                    icon:
+                      draft.iconMode === "emoji"
+                        ? {
+                            type: "emoji",
+                            value:
+                              sanitizedEmoji || (PROJECT_CATEGORY_EMOJI_OPTIONS[0]?.value ?? "🌱"),
+                          }
+                        : { type: "lucide", value: draft.lucideIconId },
+                  }}
+                />
+              </div>
+            </div>
+
+            {error && <p className={cn("text-[12px] text-destructive")}>{error}</p>}
+
+            <div className={cn("flex justify-end")}>
+              {editing ? (
+                <Button
+                  key="update-category"
+                  type="button"
+                  className={cn("min-w-[148px] transition-colors")}
+                  onClick={() => {
+                    void handleSubmit();
+                  }}
+                  disabled={!canSubmit || submitting}
+                >
+                  <Check className={cn("size-4")} />
+                  Update category
+                </Button>
+              ) : (
+                <Button
+                  key="add-category"
+                  type="button"
+                  className={cn("min-w-[148px] transition-colors")}
+                  onClick={() => {
+                    void handleSubmit();
+                  }}
+                  disabled={!canSubmit || submitting}
+                >
+                  <Plus className={cn("size-4")} />
+                  Add category
+                </Button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

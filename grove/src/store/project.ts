@@ -26,11 +26,7 @@ interface ProjectState {
   reorderProjects: (projectIds: string[]) => Promise<void>;
   removeProject: (id: string) => Promise<void>;
   addWorktree: (projectId: string, name: string) => Promise<Worktree>;
-  addStackedWorktree: (
-    projectId: string,
-    parentName: string,
-    name: string,
-  ) => Promise<Worktree>;
+  addStackedWorktree: (projectId: string, parentName: string, name: string) => Promise<Worktree>;
   removeWorktree: (projectId: string, name: string) => Promise<void>;
   selectWorktree: (worktree: Worktree | null) => void;
   setWorktreeOrder: (projectId: string, order: string[]) => Promise<void>;
@@ -43,7 +39,10 @@ interface ProjectState {
 }
 
 function normalizeProjectUrl(url: string): string {
-  return url.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  return url
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "");
 }
 
 function sameProjectIdentity(left: Project, right: Project): boolean {
@@ -88,13 +87,9 @@ function reconcileSelectedWorktree(
     if (project.sourcePath === selectedWorktree.path) {
       return selectedWorktree;
     }
-    const match = project.worktrees.find(
-      (worktree) => worktree.path === selectedWorktree.path,
-    );
+    const match = project.worktrees.find((worktree) => worktree.path === selectedWorktree.path);
     if (match) {
-      return sameWorktreeValue(match, selectedWorktree)
-        ? selectedWorktree
-        : match;
+      return sameWorktreeValue(match, selectedWorktree) ? selectedWorktree : match;
     }
   }
 
@@ -158,10 +153,7 @@ function beginProjectsSnapshotRequest(
   return { requestId, mutationEpoch };
 }
 
-function canApplyProjectsSnapshot(
-  state: ProjectState,
-  token: ProjectsSnapshotToken,
-): boolean {
+function canApplyProjectsSnapshot(state: ProjectState, token: ProjectsSnapshotToken): boolean {
   return (
     state.projectsSnapshotRequestId === token.requestId &&
     state.projectsMutationEpoch === token.mutationEpoch
@@ -181,15 +173,8 @@ function applyProjectsSnapshot(
   });
 }
 
-function finishProjectsSnapshotLoad(
-  set: ProjectStateSetter,
-  token: ProjectsSnapshotToken,
-) {
-  set((state) =>
-    state.projectsSnapshotRequestId === token.requestId
-      ? { loading: false }
-      : {},
-  );
+function finishProjectsSnapshotLoad(set: ProjectStateSetter, token: ProjectsSnapshotToken) {
+  set((state) => (state.projectsSnapshotRequestId === token.requestId ? { loading: false } : {}));
 }
 
 function commitProjectMutation(
@@ -227,10 +212,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       if (projects) {
         applyProjectsSnapshot(set, token, (state) => ({
           projects,
-          selectedWorktree: reconcileSelectedWorktree(
-            projects,
-            state.selectedWorktree,
-          ),
+          selectedWorktree: reconcileSelectedWorktree(projects, state.selectedWorktree),
         }));
       }
     } finally {
@@ -246,10 +228,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
     if (projects) {
       applyProjectsSnapshot(set, token, (state) => ({
         projects,
-        selectedWorktree: reconcileSelectedWorktree(
-          projects,
-          state.selectedWorktree,
-        ),
+        selectedWorktree: reconcileSelectedWorktree(projects, state.selectedWorktree),
       }));
     }
   },
@@ -263,10 +242,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       const projects = upsertProject(state.projects, project);
       return {
         projects,
-        selectedWorktree: reconcileSelectedWorktree(
-          projects,
-          state.selectedWorktree,
-        ),
+        selectedWorktree: reconcileSelectedWorktree(projects, state.selectedWorktree),
       };
     });
     return project;
@@ -320,18 +296,13 @@ export const useProjectStore = create<ProjectState>((set) => ({
   removeProject: async (id: string) => {
     // Check for mission references BEFORE deleting
     const { missions } = useMissionStore.getState();
-    const referencingMissions = missions.filter((m) =>
-      m.projects.some((p) => p.projectId === id),
-    );
+    const referencingMissions = missions.filter((m) => m.projects.some((p) => p.projectId === id));
 
     if (referencingMissions.length > 0) {
-      const missionNames = referencingMissions
-        .map((m) => m.name)
-        .join("\n  - ");
+      const missionNames = referencingMissions.map((m) => m.name).join("\n  - ");
       const confirmed = await overlay.confirm({
         title: "Remove project from missions too?",
-        description:
-          `This project is used in the following missions:\n  - ${missionNames}\n\nDelete will also remove it from these missions.`,
+        description: `This project is used in the following missions:\n  - ${missionNames}\n\nDelete will also remove it from these missions.`,
         confirmLabel: "Delete project",
         variant: "destructive",
       });
@@ -341,9 +312,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       for (const mission of referencingMissions) {
         await useMissionStore.getState().removeProject(mission.id, id);
         // If mission now has 0 projects, delete it entirely
-        const updated = useMissionStore
-          .getState()
-          .missions.find((m) => m.id === mission.id);
+        const updated = useMissionStore.getState().missions.find((m) => m.id === mission.id);
         if (updated && updated.projects.length === 0) {
           await useMissionStore.getState().deleteMission(mission.id);
         }
@@ -359,10 +328,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       const projects = state.projects.filter((p) => p.id !== id);
       return {
         projects,
-        selectedWorktree: reconcileSelectedWorktree(
-          projects,
-          state.selectedWorktree,
-        ),
+        selectedWorktree: reconcileSelectedWorktree(projects, state.selectedWorktree),
       };
     });
     void runTerminalGcNow();
@@ -370,22 +336,23 @@ export const useProjectStore = create<ProjectState>((set) => ({
 
   addWorktree: async (projectId: string, name: string) => {
     markProjectMutationStarted(set);
-    const worktree = await runCommand(async () => {
-      const { projects } = useProjectStore.getState();
-      const project = projects.find((p) => p.id === projectId);
-      if (project?.worktrees.some((w) => w.name === name)) {
-        throw new Error(`Worktree '${name}' already exists`);
-      }
+    const worktree = await runCommand(
+      async () => {
+        const { projects } = useProjectStore.getState();
+        const project = projects.find((p) => p.id === projectId);
+        if (project?.worktrees.some((w) => w.name === name)) {
+          throw new Error(`Worktree '${name}' already exists`);
+        }
 
-      return tauri.addWorktree(projectId, name, name);
-    }, {
-      errorToast: "Failed to create worktree",
-    });
+        return tauri.addWorktree(projectId, name, name);
+      },
+      {
+        errorToast: "Failed to create worktree",
+      },
+    );
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
-        p.id === projectId
-          ? { ...p, worktrees: upsertWorktree(p.worktrees, worktree) }
-          : p,
+        p.id === projectId ? { ...p, worktrees: upsertWorktree(p.worktrees, worktree) } : p,
       ),
     }));
     return worktree;
@@ -393,22 +360,23 @@ export const useProjectStore = create<ProjectState>((set) => ({
 
   addStackedWorktree: async (projectId: string, parentName: string, name: string) => {
     markProjectMutationStarted(set);
-    const worktree = await runCommand(async () => {
-      const { projects } = useProjectStore.getState();
-      const project = projects.find((p) => p.id === projectId);
-      if (project?.worktrees.some((w) => w.name === name)) {
-        throw new Error(`Worktree '${name}' already exists`);
-      }
+    const worktree = await runCommand(
+      async () => {
+        const { projects } = useProjectStore.getState();
+        const project = projects.find((p) => p.id === projectId);
+        if (project?.worktrees.some((w) => w.name === name)) {
+          throw new Error(`Worktree '${name}' already exists`);
+        }
 
-      return tauri.addStackedWorktree(projectId, parentName, name);
-    }, {
-      errorToast: "Failed to create stacked worktree",
-    });
+        return tauri.addStackedWorktree(projectId, parentName, name);
+      },
+      {
+        errorToast: "Failed to create stacked worktree",
+      },
+    );
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
-        p.id === projectId
-          ? { ...p, worktrees: upsertWorktree(p.worktrees, worktree) }
-          : p,
+        p.id === projectId ? { ...p, worktrees: upsertWorktree(p.worktrees, worktree) } : p,
       ),
     }));
     return worktree;
@@ -416,9 +384,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
 
   removeWorktree: async (projectId: string, name: string) => {
     markProjectMutationStarted(set);
-    const project = useProjectStore
-      .getState()
-      .projects.find((p) => p.id === projectId);
+    const project = useProjectStore.getState().projects.find((p) => p.id === projectId);
     const removedWorktree = project?.worktrees.find((w) => w.name === name);
     const worktreePath = removedWorktree?.path;
 
@@ -428,14 +394,11 @@ export const useProjectStore = create<ProjectState>((set) => ({
 
     const currentState = useProjectStore.getState();
     const nextProjects = currentState.projects.map((p) =>
-      p.id === projectId
-        ? { ...p, worktrees: p.worktrees.filter((w) => w.name !== name) }
-        : p,
+      p.id === projectId ? { ...p, worktrees: p.worktrees.filter((w) => w.name !== name) } : p,
     );
     const nextProject = nextProjects.find((p) => p.id === projectId);
     const removedSelected =
-      currentState.selectedWorktree != null &&
-      currentState.selectedWorktree.path === worktreePath;
+      currentState.selectedWorktree != null && currentState.selectedWorktree.path === worktreePath;
     const nextSelectedWorktree =
       removedSelected && nextProject
         ? sourceWorktreeForProject(nextProject)
@@ -454,9 +417,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
             }
           }
         }
-        useTerminalStore
-          .getState()
-          .removeSession(worktreePath, nextSelectedWorktree?.path ?? null);
+        useTerminalStore.getState().removeSession(worktreePath, nextSelectedWorktree?.path ?? null);
       }
 
       commitProjectMutation(set, () => ({
@@ -479,9 +440,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
     });
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((p) =>
-        p.id === projectId
-          ? { ...p, worktrees: reorderWorktrees(p.worktrees, order) }
-          : p,
+        p.id === projectId ? { ...p, worktrees: reorderWorktrees(p.worktrees, order) } : p,
       ),
     }));
   },
@@ -492,9 +451,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       errorToast: "Failed to rename project",
     });
     commitProjectMutation(set, (state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId ? { ...p, name } : p,
-      ),
+      projects: state.projects.map((p) => (p.id === projectId ? { ...p, name } : p)),
     }));
   },
 
@@ -504,9 +461,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       errorToast: "Failed to set project category",
     });
     commitProjectMutation(set, (state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId ? { ...p, categoryId } : p,
-      ),
+      projects: state.projects.map((p) => (p.id === projectId ? { ...p, categoryId } : p)),
     }));
   },
 
@@ -516,18 +471,14 @@ export const useProjectStore = create<ProjectState>((set) => ({
       errorToast: "Failed to update project focus",
     });
     commitProjectMutation(set, (state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId ? { ...p, focused } : p,
-      ),
+      projects: state.projects.map((p) => (p.id === projectId ? { ...p, focused } : p)),
     }));
   },
 
   remapDeletedProjectCategory: (categoryId: string) => {
     commitProjectMutation(set, (state) => ({
       projects: state.projects.map((project) =>
-        project.categoryId === categoryId
-          ? { ...project, categoryId: "default" }
-          : project,
+        project.categoryId === categoryId ? { ...project, categoryId: "default" } : project,
       ),
     }));
   },
@@ -538,9 +489,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
       errorToast: "Failed to set base branch",
     });
     commitProjectMutation(set, (state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId ? { ...p, baseBranch: branch } : p,
-      ),
+      projects: state.projects.map((p) => (p.id === projectId ? { ...p, baseBranch: branch } : p)),
     }));
   },
 
@@ -549,9 +498,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
     if (!project) return;
     const collapsed = !project.collapsed;
     commitProjectMutation(set, (state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, collapsed } : p,
-      ),
+      projects: state.projects.map((p) => (p.id === id ? { ...p, collapsed } : p)),
     }));
     tauri.setProjectCollapsed(id, collapsed).catch(() => {});
   },

@@ -151,7 +151,9 @@ className={cn("flex", {
 
 ```tsx
 import { Button } from "../ui/button";
-<Button variant="default" size="sm">Save</Button>
+<Button variant="default" size="sm">
+  Save
+</Button>;
 // Variants: default, secondary, ghost, outline, destructive, link
 // Sizes: default, sm, lg, icon, icon-sm, icon-lg
 ```

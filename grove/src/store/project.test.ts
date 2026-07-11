@@ -5,8 +5,7 @@ const runCommandMock = vi.fn();
 const runCommandSafelyMock = vi.fn();
 
 vi.mock("../lib/command", () => ({
-  runCommand: (...args: Parameters<typeof runCommandMock>) =>
-    runCommandMock(...args),
+  runCommand: (...args: Parameters<typeof runCommandMock>) => runCommandMock(...args),
   runCommandSafely: (...args: Parameters<typeof runCommandSafelyMock>) =>
     runCommandSafelyMock(...args),
 }));
@@ -82,10 +81,7 @@ function makeLeaf(id: string, ptyId: string): SplitNode {
   };
 }
 
-function makeProjectWithId(
-  id: string,
-  overrides: Partial<Project> = {},
-): Project {
+function makeProjectWithId(id: string, overrides: Partial<Project> = {}): Project {
   return {
     ...makeProject([]),
     id,
@@ -96,12 +92,8 @@ function makeProjectWithId(
 describe("useProjectStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    runCommandMock.mockImplementation(async (action: () => Promise<unknown>) =>
-      action(),
-    );
-    runCommandSafelyMock.mockImplementation(
-      async (action: () => Promise<unknown>) => action(),
-    );
+    runCommandMock.mockImplementation(async (action: () => Promise<unknown>) => action());
+    runCommandSafelyMock.mockImplementation(async (action: () => Promise<unknown>) => action());
     useProjectStore.setState({
       projects: [],
       cloningProjects: [],
@@ -154,16 +146,12 @@ describe("useProjectStore", () => {
       loading: false,
     });
 
-    vi.mocked(tauri.refreshProject).mockResolvedValue(
-      makeProject([refreshedWorktree]),
-    );
+    vi.mocked(tauri.refreshProject).mockResolvedValue(makeProject([refreshedWorktree]));
 
     await useProjectStore.getState().refreshProject("project-1");
 
     expect(useProjectStore.getState().selectedWorktree).toEqual(refreshedWorktree);
-    expect(useProjectStore.getState().selectedWorktree).not.toBe(
-      selectedWorktree,
-    );
+    expect(useProjectStore.getState().selectedWorktree).not.toBe(selectedWorktree);
   });
 
   it("upserts existing project when startClone returns alreadyExists", async () => {
@@ -343,26 +331,18 @@ describe("useProjectStore", () => {
     const newWorktree = makeWorktree("feature-a");
     const addDeferred = deferred<Worktree>();
     vi.mocked(tauri.addWorktree).mockReturnValueOnce(addDeferred.promise);
-    vi.mocked(tauri.listProjects).mockResolvedValueOnce([
-      makeProject([newWorktree]),
-    ]);
+    vi.mocked(tauri.listProjects).mockResolvedValueOnce([makeProject([newWorktree])]);
 
-    const addPromise = useProjectStore
-      .getState()
-      .addWorktree("project-1", "feature-a");
+    const addPromise = useProjectStore.getState().addWorktree("project-1", "feature-a");
 
     await useProjectStore.getState().syncProjects();
 
-    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
-      newWorktree,
-    ]);
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([newWorktree]);
 
     addDeferred.resolve(newWorktree);
     await addPromise;
 
-    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
-      newWorktree,
-    ]);
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([newWorktree]);
   });
 
   it("adds a stacked worktree to the matching project", async () => {
@@ -401,9 +381,7 @@ describe("useProjectStore", () => {
 
     const addDeferred = deferred<Worktree>();
     vi.mocked(tauri.addStackedWorktree).mockReturnValueOnce(addDeferred.promise);
-    vi.mocked(tauri.listProjects).mockResolvedValueOnce([
-      makeProject([parent, stackedChild]),
-    ]);
+    vi.mocked(tauri.listProjects).mockResolvedValueOnce([makeProject([parent, stackedChild])]);
 
     const addPromise = useProjectStore
       .getState()
@@ -411,18 +389,12 @@ describe("useProjectStore", () => {
 
     await useProjectStore.getState().syncProjects();
 
-    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
-      parent,
-      stackedChild,
-    ]);
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([parent, stackedChild]);
 
     addDeferred.resolve(stackedChild);
     await addPromise;
 
-    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
-      parent,
-      stackedChild,
-    ]);
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([parent, stackedChild]);
   });
 
   it("ignores an in-flight stale snapshot while adding a stacked worktree", async () => {
@@ -456,10 +428,7 @@ describe("useProjectStore", () => {
     createStacked.resolve(stackedChild);
     await addPromise;
 
-    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([
-      parent,
-      stackedChild,
-    ]);
+    expect(useProjectStore.getState().projects[0]?.worktrees).toEqual([parent, stackedChild]);
   });
 
   it("ignores a stale project snapshot after removing a worktree", async () => {

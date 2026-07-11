@@ -6,9 +6,7 @@ import {
   type TerminalCommandDefinition,
 } from "./terminal-command-pipeline";
 
-function makeContext(
-  overrides: Partial<TerminalCommandContext> = {},
-): TerminalCommandContext {
+function makeContext(overrides: Partial<TerminalCommandContext> = {}): TerminalCommandContext {
   return {
     activeWorktree: "/tmp/worktree",
     focusedPtyId: "pty-1",
@@ -33,9 +31,7 @@ describe("terminal command pipeline", () => {
       steps: [{ type: "session", action: "close" }],
     };
 
-    expect(
-      isTerminalCommandEnabled(command, { focusedPtyId: null, terminalCount: 1 }),
-    ).toBe(false);
+    expect(isTerminalCommandEnabled(command, { focusedPtyId: null, terminalCount: 1 })).toBe(false);
   });
 
   it("executes session and pty steps in order", async () => {

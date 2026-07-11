@@ -4,7 +4,6 @@ import CommitListItem from "./CommitListItem";
 import WorkingChanges from "./WorkingChanges";
 import { cn } from "../../lib/cn";
 
-
 interface Props {
   commits: CommitInfo[];
   changeCount: number;
@@ -46,9 +45,7 @@ export default function CommitList({
           <CommitListItem
             key={commit.hash}
             commit={commit}
-            isSelected={
-              selectedView !== "changes" && selectedView.hash === commit.hash
-            }
+            isSelected={selectedView !== "changes" && selectedView.hash === commit.hash}
             onClick={() => onSelectView(commit)}
           />
         ))}

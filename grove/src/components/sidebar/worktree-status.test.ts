@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 import { shallow } from "zustand/shallow";
 import type { SplitNode } from "../../types";
 import type { AiSession } from "../../store/terminal";
-import {
-  selectAiWorktreeSessions,
-  selectWorktreeBell,
-} from "./worktree-status";
+import { selectAiWorktreeSessions, selectWorktreeBell } from "./worktree-status";
 
 interface WorktreeStatusState {
   sessions: Record<string, SplitNode>;
@@ -21,9 +18,7 @@ function makeLeaf(id: string, ptyId?: string): SplitNode {
   };
 }
 
-function makeState(
-  overrides: Partial<WorktreeStatusState> = {},
-): WorktreeStatusState {
+function makeState(overrides: Partial<WorktreeStatusState> = {}): WorktreeStatusState {
   return {
     sessions: {},
     bellPtyIds: new Set<string>(),
@@ -50,10 +45,7 @@ describe("worktree status selectors", () => {
           id: "root",
           type: "horizontal",
           sizes: [1, 1],
-          children: [
-            makeLeaf("pane-a", "pty-a"),
-            makeLeaf("pane-b", "pty-b"),
-          ],
+          children: [makeLeaf("pane-a", "pty-a"), makeLeaf("pane-b", "pty-b")],
         },
       },
       aiSessions: {

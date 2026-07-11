@@ -46,8 +46,7 @@ function toSaveable(get: () => PreferencesStore): GrovePreferences {
 
 function normalizePreferences(prefs: GrovePreferences): GrovePreferences {
   return {
-    terminalLinkOpenMode:
-      prefs.terminalLinkOpenMode ?? "external-with-localhost-internal",
+    terminalLinkOpenMode: prefs.terminalLinkOpenMode ?? "external-with-localhost-internal",
     projectViewMode: prefs.projectViewMode ?? "default",
     collapsedProjectOrgs: prefs.collapsedProjectOrgs ?? [],
     projectOrgOrder: prefs.projectOrgOrder ?? [],
@@ -117,9 +116,7 @@ export const usePreferencesStore = create<PreferencesStore>((set, get) => ({
   deleteProjectCategory: async (categoryId) => {
     await deleteProjectCategoryCommand(categoryId);
     set((state) => ({
-      projectCategories: state.projectCategories.filter(
-        (category) => category.id !== categoryId,
-      ),
+      projectCategories: state.projectCategories.filter((category) => category.id !== categoryId),
     }));
     useProjectStore.getState().remapDeletedProjectCategory(categoryId);
   },

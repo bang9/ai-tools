@@ -17,11 +17,7 @@ let started = false;
 const TICK_MS = 1000;
 
 /** Register a sync job. If key already exists, updates the config. */
-export function registerSyncJob(
-  key: string,
-  fn: () => Promise<void>,
-  intervalMs: number,
-) {
+export function registerSyncJob(key: string, fn: () => Promise<void>, intervalMs: number) {
   jobs.set(key, {
     key,
     fn,

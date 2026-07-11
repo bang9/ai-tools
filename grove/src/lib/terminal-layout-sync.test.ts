@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  requestTerminalLayoutSync,
-  subscribeTerminalLayoutSync,
-} from "./terminal-layout-sync";
+import { requestTerminalLayoutSync, subscribeTerminalLayoutSync } from "./terminal-layout-sync";
 
 describe("terminal layout sync", () => {
   it("broadcasts manual sync requests to subscribers", () => {

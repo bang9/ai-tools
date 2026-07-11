@@ -1,9 +1,4 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from "../ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "../ui/dialog";
 import { cn } from "../../lib/cn";
 import GeneralTab from "./GeneralTab";
 import CategoriesTab from "./CategoriesTab";
@@ -25,39 +20,34 @@ interface Props {
   onTabChange: (tab: PreferencesTabId) => void;
 }
 
-export default function PreferencesModal({
-  open,
-  onClose,
-  activeTab,
-  onTabChange,
-}: Props) {
+export default function PreferencesModal({ open, onClose, activeTab, onTabChange }: Props) {
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
-      <DialogContent
-        className={cn(
-          "gap-0 p-0 sm:max-w-4xl overflow-hidden",
-        )}
-        showCloseButton
-      >
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <DialogContent className={cn("gap-0 p-0 sm:max-w-4xl overflow-hidden")} showCloseButton>
         <DialogTitle className={cn("sr-only")}>Preferences</DialogTitle>
-        <DialogDescription className={cn("sr-only")}>
-          Application preferences
-        </DialogDescription>
+        <DialogDescription className={cn("sr-only")}>Application preferences</DialogDescription>
         <div className={cn("flex h-[720px]")}>
           {/* Left: Tab Navigation */}
-          <nav className={cn("flex w-[160px] shrink-0 flex-col gap-0.5 border-r border-border bg-secondary/30 p-2 pt-3")}>
+          <nav
+            className={cn(
+              "flex w-[160px] shrink-0 flex-col gap-0.5 border-r border-border bg-secondary/30 p-2 pt-3",
+            )}
+          >
             {TABS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => onTabChange(tab.id)}
-                className={cn(
-                  "rounded-md px-3 py-1.5 text-left text-[13px] transition-colors",
-                  {
-                    "bg-accent/15 font-medium text-foreground": activeTab === tab.id,
-                    "text-muted-foreground hover:bg-accent/8 hover:text-foreground": activeTab !== tab.id,
-                  },
-                )}
+                className={cn("rounded-md px-3 py-1.5 text-left text-[13px] transition-colors", {
+                  "bg-accent/15 font-medium text-foreground": activeTab === tab.id,
+                  "text-muted-foreground hover:bg-accent/8 hover:text-foreground":
+                    activeTab !== tab.id,
+                })}
               >
                 {tab.label}
               </button>

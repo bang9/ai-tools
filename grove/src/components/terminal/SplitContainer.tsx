@@ -29,15 +29,14 @@ function pathsEqual(left: number[] | undefined, right: number[] | undefined) {
   return true;
 }
 
-function SplitContainer({
-  node,
-  worktreePath,
-  path = [],
-}: Props) {
+function SplitContainer({ node, worktreePath, path = [] }: Props) {
   const updateSizes = useTerminalStore((s) => s.updateSizes);
-  const handleCommit = useCallback((ratios: number[]) => {
-    updateSizes(worktreePath, path, ratios);
-  }, [path, updateSizes, worktreePath]);
+  const handleCommit = useCallback(
+    (ratios: number[]) => {
+      updateSizes(worktreePath, path, ratios);
+    },
+    [path, updateSizes, worktreePath],
+  );
 
   // Scope panelResize layout-sync to the leaf panes under this split so a sash
   // drag only wakes the runtimes that actually rescale, not every pane app-wide.
@@ -72,19 +71,17 @@ function SplitContainer({
           key={child.id}
           preferredSize={node.sizes?.[i] !== undefined ? `${node.sizes[i] * 100}%` : undefined}
         >
-          <SplitContainer
-            node={child}
-            worktreePath={worktreePath}
-            path={[...path, i]}
-          />
+          <SplitContainer node={child} worktreePath={worktreePath} path={[...path, i]} />
         </ResizablePanelGroup.Pane>
       ))}
     </ResizablePanelGroup>
   );
 }
 
-export default memo(SplitContainer, (prev, next) =>
-  prev.node === next.node &&
-  prev.worktreePath === next.worktreePath &&
-  pathsEqual(prev.path, next.path),
+export default memo(
+  SplitContainer,
+  (prev, next) =>
+    prev.node === next.node &&
+    prev.worktreePath === next.worktreePath &&
+    pathsEqual(prev.path, next.path),
 );

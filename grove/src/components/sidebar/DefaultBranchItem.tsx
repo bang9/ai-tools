@@ -66,9 +66,7 @@ function DefaultBranchItem({ project }: Props) {
       await setBaseBranch(project.id, branch);
       toast(
         "success",
-        branch
-          ? `Base branch set to '${branch}'`
-          : "Base branch reset to auto-detect",
+        branch ? `Base branch set to '${branch}'` : "Base branch reset to auto-detect",
       );
     } catch {
       // Toasts are handled by the command layer.
@@ -101,11 +99,7 @@ function DefaultBranchItem({ project }: Props) {
           forceShowAction={project.sourceBehindRemote}
           action={
             refreshing ? (
-              <Loader2
-                className={cn(
-                  "h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground",
-                )}
-              />
+              <Loader2 className={cn("h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground")} />
             ) : (
               <span className={cn("flex items-center gap-0.5")}>
                 <button

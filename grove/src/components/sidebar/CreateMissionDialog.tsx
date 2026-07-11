@@ -65,7 +65,9 @@ function CreateMissionDialog({ onClose }: Props) {
           }}
         />
         {error && (
-          <div className={cn("text-[11px] text-[var(--color-danger)] mb-2 break-all leading-relaxed")}>
+          <div
+            className={cn("text-[11px] text-[var(--color-danger)] mb-2 break-all leading-relaxed")}
+          >
             {error}
           </div>
         )}

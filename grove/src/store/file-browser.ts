@@ -3,10 +3,7 @@ import type { DirectoryFileEntry } from "../types";
 import * as platform from "../lib/platform";
 import { runCommandSafely } from "../lib/command";
 
-function entriesEqual(
-  a: DirectoryFileEntry[],
-  b: DirectoryFileEntry[],
-): boolean {
+function entriesEqual(a: DirectoryFileEntry[], b: DirectoryFileEntry[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {

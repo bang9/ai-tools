@@ -9,9 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const RENDERER_DEV_URL =
-  process.env.GROVE_RENDERER_URL ??
-  process.env.VITE_DEV_SERVER_URL ??
-  "http://localhost:1420";
+  process.env.GROVE_RENDERER_URL ?? process.env.VITE_DEV_SERVER_URL ?? "http://localhost:1420";
 
 const JSON_RESPONSE_COMMANDS = new Set([
   "get_terminal_theme",
@@ -99,9 +97,7 @@ function loadNativeAddon(): NativeAddon {
     }
   }
 
-  throw new Error(
-    `Failed to load grove native addon.${lastError ? ` ${String(lastError)}` : ""}`,
-  );
+  throw new Error(`Failed to load grove native addon.${lastError ? ` ${String(lastError)}` : ""}`);
 }
 
 const native = loadNativeAddon();
@@ -128,10 +124,7 @@ function parseJsonResult(command: string, value: unknown): unknown {
   }
 }
 
-function serializeArgs(
-  command: string,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
+function serializeArgs(command: string, args: Record<string, unknown>): Record<string, unknown> {
   const serialized: Record<string, unknown> = { ...args };
 
   if (command === "save_app_config" && "config" in serialized) {
@@ -142,24 +135,15 @@ function serializeArgs(
     serialized.config = JSON.stringify(serialized.config);
   }
 
-  if (
-    command === "save_grove_preferences" &&
-    "preferences" in serialized
-  ) {
+  if (command === "save_grove_preferences" && "preferences" in serialized) {
     serialized.preferences = JSON.stringify(serialized.preferences);
   }
 
-  if (
-    command === "open_in_ide" &&
-    "ideMenuItem" in serialized
-  ) {
+  if (command === "open_in_ide" && "ideMenuItem" in serialized) {
     serialized.ideMenuItem = JSON.stringify(serialized.ideMenuItem);
   }
 
-  if (
-    command === "save_terminal_session_snapshot" &&
-    "snapshot" in serialized
-  ) {
+  if (command === "save_terminal_session_snapshot" && "snapshot" in serialized) {
     serialized.snapshot = JSON.stringify(serialized.snapshot);
   }
 
@@ -304,11 +288,7 @@ function sendBrowserNav(
   });
 }
 
-function wireBrowserViewEvents(
-  win: BrowserWindow,
-  tabId: string,
-  view: WebContentsView,
-) {
+function wireBrowserViewEvents(win: BrowserWindow, tabId: string, view: WebContentsView) {
   const wc = view.webContents;
 
   wc.on("did-start-loading", () => sendBrowserNav(win, tabId, view));
@@ -360,10 +340,7 @@ function closeBrowserViewsForWindow(win: BrowserWindow) {
         entry.view.webContents.close();
       }
     } catch (error) {
-      console.error(
-        "[grove-electron] Failed to close browser view webContents:",
-        error,
-      );
+      console.error("[grove-electron] Failed to close browser view webContents:", error);
     }
 
     browserViews.delete(tabId);
@@ -540,11 +517,7 @@ function broadcast(channel: string, payload: unknown) {
 }
 
 function registerOptionalLogForwarding() {
-  const candidateNames = [
-    "setLogListener",
-    "registerLogListener",
-    "onLog",
-  ] as const;
+  const candidateNames = ["setLogListener", "registerLogListener", "onLog"] as const;
 
   for (const name of candidateNames) {
     const candidate = native[name];
@@ -626,47 +599,44 @@ function createMainWindow() {
 
 function registerIpcHandlers() {
   ipcMain.removeHandler("invoke");
-  ipcMain.handle(
-    "invoke",
-    async (event, command: string, args: Record<string, unknown> = {}) => {
-      const targetWindow = BrowserWindow.fromWebContents(event.sender);
-      if (!targetWindow) {
-        throw new Error("Unable to resolve caller window for invoke IPC");
-      }
+  ipcMain.handle("invoke", async (event, command: string, args: Record<string, unknown> = {}) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!targetWindow) {
+      throw new Error("Unable to resolve caller window for invoke IPC");
+    }
 
-      if (command === "is_fullscreen") {
-        return targetWindow.isFullScreen();
-      }
+    if (command === "is_fullscreen") {
+      return targetWindow.isFullScreen();
+    }
 
-      if (command === "open_external") {
-        const url = requireStringArg(args, "url");
-        await shell.openExternal(url);
-        return;
-      }
+    if (command === "open_external") {
+      const url = requireStringArg(args, "url");
+      await shell.openExternal(url);
+      return;
+    }
 
-      if (command === "reveal_in_finder") {
-        const p = requireStringArg(args, "path");
-        shell.openPath(p);
-        return;
-      }
+    if (command === "reveal_in_finder") {
+      const p = requireStringArg(args, "path");
+      shell.openPath(p);
+      return;
+    }
 
-      if (command === "open_dev_console") {
-        targetWindow.webContents.openDevTools();
-        return;
-      }
+    if (command === "open_dev_console") {
+      targetWindow.webContents.openDevTools();
+      return;
+    }
 
-      if (command === "reload_app_window") {
-        targetWindow.webContents.reload();
-        return;
-      }
+    if (command === "reload_app_window") {
+      targetWindow.webContents.reload();
+      return;
+    }
 
-      if (BROWSER_COMMANDS.has(command)) {
-        return handleBrowserCommand(targetWindow, command, args);
-      }
+    if (BROWSER_COMMANDS.has(command)) {
+      return handleBrowserCommand(targetWindow, command, args);
+    }
 
-      return invokeNative(targetWindow, command, args);
-    },
-  );
+    return invokeNative(targetWindow, command, args);
+  });
 }
 
 app.whenReady().then(() => {

@@ -1,7 +1,11 @@
 import path from "node:path";
 
 function isCnCall(node) {
-  return node?.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "cn";
+  return (
+    node?.type === "CallExpression" &&
+    node.callee.type === "Identifier" &&
+    node.callee.name === "cn"
+  );
 }
 
 function hasMultipleClasses(value) {
@@ -57,7 +61,9 @@ function buildCnImportFixes(context, fixer) {
     return [];
   }
 
-  const importDeclarations = program.body.filter((statement) => statement.type === "ImportDeclaration");
+  const importDeclarations = program.body.filter(
+    (statement) => statement.type === "ImportDeclaration",
+  );
   const importStatement = `import { cn } from "${importPath}";\n`;
 
   if (importDeclarations.length === 0) {

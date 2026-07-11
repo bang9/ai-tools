@@ -11,10 +11,10 @@ const buttonVariants = cva(
         default: "bg-accent/10 text-foreground hover:bg-accent/20",
         destructive:
           "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
-        outline:
-          "border border-border bg-background hover:bg-secondary/50 hover:text-foreground",
+        outline: "border border-border bg-background hover:bg-secondary/50 hover:text-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "border border-border text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+        ghost:
+          "border border-border text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
@@ -54,10 +54,7 @@ function Button({
   );
 }
 
-function IconButton({
-  className,
-  ...props
-}: React.ComponentProps<"button">) {
+function IconButton({ className, ...props }: React.ComponentProps<"button">) {
   return (
     <button
       className={cn(

@@ -22,17 +22,18 @@ export async function runTerminalGcNow(
     return activeRun;
   }
 
-  activeRun = runCommandSafely(
-    () => runTerminalGc(dryRun),
-    { errorToast: options?.errorToast ?? false },
-  ).then((report) => {
-    if (report && !dryRun) {
-      syncTerminalStore(report);
-    }
-    return report;
-  }).finally(() => {
-    activeRun = null;
-  });
+  activeRun = runCommandSafely(() => runTerminalGc(dryRun), {
+    errorToast: options?.errorToast ?? false,
+  })
+    .then((report) => {
+      if (report && !dryRun) {
+        syncTerminalStore(report);
+      }
+      return report;
+    })
+    .finally(() => {
+      activeRun = null;
+    });
 
   return activeRun;
 }

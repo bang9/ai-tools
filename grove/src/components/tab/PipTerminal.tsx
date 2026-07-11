@@ -109,10 +109,13 @@ export default function PipTerminal({
     return () => observer.disconnect();
   }, [boundaryRef]);
 
-  useEffect(() => () => {
-    dragCleanupRef.current?.();
-    resizeCleanupRef.current?.();
-  }, []);
+  useEffect(
+    () => () => {
+      dragCleanupRef.current?.();
+      resizeCleanupRef.current?.();
+    },
+    [],
+  );
 
   const activeRequestedWidth = resizeWidth ?? presentation.requestedWidth;
   const restingFrame = resolvePipFrame(viewport, {
@@ -123,9 +126,10 @@ export default function PipTerminal({
   const visibleFrame = dragPosition
     ? { ...restingFrame, x: dragPosition.x, y: dragPosition.y }
     : restingFrame;
-  const hiddenBodyX = presentation.dockSide === "left"
-    ? -(visibleFrame.width + PIP_MARGIN)
-    : viewport.width + PIP_MARGIN;
+  const hiddenBodyX =
+    presentation.dockSide === "left"
+      ? -(visibleFrame.width + PIP_MARGIN)
+      : viewport.width + PIP_MARGIN;
   const activeFrame = {
     ...visibleFrame,
     x: presentation.hidden ? hiddenBodyX : visibleFrame.x,
@@ -148,9 +152,7 @@ export default function PipTerminal({
   const handleToggleSize = useCallback(() => {
     onPresentationChange({
       ...presentation,
-      requestedWidth: presentation.requestedWidth > MIN_PIP_WIDTH
-        ? MIN_PIP_WIDTH
-        : MAX_PIP_WIDTH,
+      requestedWidth: presentation.requestedWidth > MIN_PIP_WIDTH ? MIN_PIP_WIDTH : MAX_PIP_WIDTH,
     });
   }, [onPresentationChange, presentation]);
 
@@ -258,12 +260,9 @@ export default function PipTerminal({
 
         const deltaX = event.clientX - session.startClientX;
         const deltaY = event.clientY - e.clientY;
-        const outwardDelta = session.dockSide === "left"
-          ? Math.max(deltaX, deltaY)
-          : Math.max(-deltaX, deltaY);
-        const nextWidth = clampRequestedPipWidth(
-          session.startWidth + outwardDelta,
-        );
+        const outwardDelta =
+          session.dockSide === "left" ? Math.max(deltaX, deltaY) : Math.max(-deltaX, deltaY);
+        const nextWidth = clampRequestedPipWidth(session.startWidth + outwardDelta);
 
         resizeWidthRef.current = nextWidth;
         setResizeWidth(nextWidth);
@@ -311,7 +310,7 @@ export default function PipTerminal({
   const RestoreIcon = restoreIcon;
   const peekHeight = 56;
   const peekY = clamp(
-    Math.round(visibleFrame.y + (visibleFrame.height / 2) - (peekHeight / 2)),
+    Math.round(visibleFrame.y + visibleFrame.height / 2 - peekHeight / 2),
     PIP_MARGIN,
     Math.max(PIP_MARGIN, viewport.height - peekHeight - PIP_MARGIN),
   );
@@ -388,22 +387,19 @@ export default function PipTerminal({
             className={cn("flex-1 min-h-0 px-2")}
             style={{ backgroundColor: theme?.background ?? "#000" }}
           >
-            <div
-              ref={containerRef}
-              className={cn("h-full w-full")}
-            />
+            <div ref={containerRef} className={cn("h-full w-full")} />
           </div>
 
           <button
             type="button"
             onPointerDown={handleResizeStart}
-          className={cn(
-            "absolute bottom-1 z-10 flex items-center justify-center size-7 rounded-lg touch-none select-none",
-            "cursor-pointer border border-white/20 bg-white/10 text-white/60 shadow-[0_4px_10px_rgba(0,0,0,0.14)] backdrop-blur-sm",
-            "hover:bg-white/20 hover:border-white/35 transition-colors",
-            {
-              "right-1 cursor-se-resize": presentation.dockSide === "left",
-              "left-1 cursor-sw-resize": presentation.dockSide === "right",
+            className={cn(
+              "absolute bottom-1 z-10 flex items-center justify-center size-7 rounded-lg touch-none select-none",
+              "cursor-pointer border border-white/20 bg-white/10 text-white/60 shadow-[0_4px_10px_rgba(0,0,0,0.14)] backdrop-blur-sm",
+              "hover:bg-white/20 hover:border-white/35 transition-colors",
+              {
+                "right-1 cursor-se-resize": presentation.dockSide === "left",
+                "left-1 cursor-sw-resize": presentation.dockSide === "right",
               },
             )}
             title="Resize terminal"
@@ -433,9 +429,7 @@ export default function PipTerminal({
           )}
           style={{
             transform: `translate3d(${
-              presentation.dockSide === "left"
-                ? 0
-                : viewport.width - PIP_PEEK_WIDTH
+              presentation.dockSide === "left" ? 0 : viewport.width - PIP_PEEK_WIDTH
             }px, ${peekY}px, 0)`,
           }}
           title="Show terminal"

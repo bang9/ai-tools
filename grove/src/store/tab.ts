@@ -37,10 +37,7 @@ const DEFAULT_SESSION: TabSession = {
   activeTabId: "terminal",
 };
 
-function getSessionForWorktree(
-  state: TabState,
-  worktreePath: string | null,
-): TabSession {
+function getSessionForWorktree(state: TabState, worktreePath: string | null): TabSession {
   if (!worktreePath) return DEFAULT_SESSION;
   return state.sessions[worktreePath] ?? DEFAULT_SESSION;
 }
@@ -69,15 +66,16 @@ export const useTabStore = create<TabState>((set, get) => ({
     const state = get();
     if (state.activeWorktree === worktreePath) return;
     // Single atomic set — ensure session exists with a fresh copy
-    const sessions = worktreePath && !state.sessions[worktreePath]
-      ? {
-          ...state.sessions,
-          [worktreePath]: {
-            tabs: [...DEFAULT_SESSION.tabs],
-            activeTabId: DEFAULT_SESSION.activeTabId,
-          },
-        }
-      : state.sessions;
+    const sessions =
+      worktreePath && !state.sessions[worktreePath]
+        ? {
+            ...state.sessions,
+            [worktreePath]: {
+              tabs: [...DEFAULT_SESSION.tabs],
+              activeTabId: DEFAULT_SESSION.activeTabId,
+            },
+          }
+        : state.sessions;
     set({ activeWorktree: worktreePath, sessions });
   },
 
@@ -93,10 +91,12 @@ export const useTabStore = create<TabState>((set, get) => ({
 
     const id = crypto.randomUUID();
     const tab: AppTab = { id, type, title, closable: true };
-    set(updateSession(state, () => ({
-      tabs: [...session.tabs, tab],
-      activeTabId: id,
-    })));
+    set(
+      updateSession(state, () => ({
+        tabs: [...session.tabs, tab],
+        activeTabId: id,
+      })),
+    );
     return id;
   },
 
@@ -111,10 +111,12 @@ export const useTabStore = create<TabState>((set, get) => ({
     const newActiveTabId = wasActive
       ? newTabs[Math.min(tabIndex, newTabs.length - 1)].id
       : session.activeTabId;
-    set(updateSession(state, () => ({
-      tabs: newTabs,
-      activeTabId: newActiveTabId,
-    })));
+    set(
+      updateSession(state, () => ({
+        tabs: newTabs,
+        activeTabId: newActiveTabId,
+      })),
+    );
     if (tab.type === "browser") {
       useBrowserStore.getState().removeTab(tabId);
     }
@@ -137,9 +139,7 @@ export const useTabStore = create<TabState>((set, get) => ({
       if (!tab || !tab.closable || tab.title === title) return {};
       return updateSession(state, () => ({
         ...session,
-        tabs: session.tabs.map((t) =>
-          t.id === tabId ? { ...t, title } : t,
-        ),
+        tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
       }));
     }),
 
@@ -168,16 +168,10 @@ export function selectCurrentActiveTabId(state: TabState): string {
   return getSession(state).activeTabId;
 }
 
-export function selectTabsForWorktree(
-  state: TabState,
-  worktreePath: string | null,
-): AppTab[] {
+export function selectTabsForWorktree(state: TabState, worktreePath: string | null): AppTab[] {
   return getSessionForWorktree(state, worktreePath).tabs;
 }
 
-export function selectActiveTabIdForWorktree(
-  state: TabState,
-  worktreePath: string | null,
-): string {
+export function selectActiveTabIdForWorktree(state: TabState, worktreePath: string | null): string {
   return getSessionForWorktree(state, worktreePath).activeTabId;
 }

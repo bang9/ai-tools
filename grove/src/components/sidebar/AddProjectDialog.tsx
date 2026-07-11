@@ -46,7 +46,9 @@ function AddProjectDialog({ onClose }: Props) {
           Supports HTTPS and SSH Git URLs.
         </div>
         {error && (
-          <div className={cn("text-[11px] text-[var(--color-danger)] mb-2 break-all leading-relaxed")}>
+          <div
+            className={cn("text-[11px] text-[var(--color-danger)] mb-2 break-all leading-relaxed")}
+          >
             {error}
           </div>
         )}
@@ -60,12 +62,7 @@ function AddProjectDialog({ onClose }: Props) {
           >
             Cancel
           </Button>
-          <Button
-            type="submit"
-            variant="default"
-            size="sm"
-            disabled={!url.trim()}
-          >
+          <Button type="submit" variant="default" size="sm" disabled={!url.trim()}>
             Add
           </Button>
         </div>

@@ -20,12 +20,9 @@ export function useLineSelection(filePath: string) {
     [filePath, selectLine, selectLineRange],
   );
 
-  const handleGutterMouseDown = useCallback(
-    (lineIndex: number) => {
-      dragStartRef.current = lineIndex;
-    },
-    [],
-  );
+  const handleGutterMouseDown = useCallback((lineIndex: number) => {
+    dragStartRef.current = lineIndex;
+  }, []);
 
   const handleGutterMouseEnter = useCallback(
     (lineIndex: number, buttons: number) => {

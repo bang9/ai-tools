@@ -12,7 +12,10 @@ import CreateMissionDialog from "./CreateMissionDialog";
 import MissionPanel from "./MissionPanel";
 import { IconButton } from "../ui/button";
 import { cn } from "../../lib/cn";
-import { DEFAULT_PROJECT_CATEGORY_ID, resolveProjectCategoryId } from "../../lib/project-categories";
+import {
+  DEFAULT_PROJECT_CATEGORY_ID,
+  resolveProjectCategoryId,
+} from "../../lib/project-categories";
 import { hasFocusedProjects, getFocusedProjects } from "../../lib/project-focus";
 
 function Sidebar() {
@@ -153,9 +156,7 @@ function Sidebar() {
         </div>
       </div>
 
-      {showAddDialog && (
-        <AddProjectDialog onClose={() => setShowAddDialog(false)} />
-      )}
+      {showAddDialog && <AddProjectDialog onClose={() => setShowAddDialog(false)} />}
       {showCreateMissionDialog && (
         <CreateMissionDialog onClose={() => setShowCreateMissionDialog(false)} />
       )}

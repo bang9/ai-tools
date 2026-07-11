@@ -7,10 +7,7 @@ import {
 
 describe("buildLinePairHighlight", () => {
   it("highlights changed suffix with the fast prefix path", () => {
-    const result = buildLinePairHighlight(
-      "const total = count + 1\n",
-      "const total = count + 2\n",
-    );
+    const result = buildLinePairHighlight("const total = count + 1\n", "const total = count + 2\n");
 
     expect(result).toEqual({
       remove: [
@@ -27,10 +24,7 @@ describe("buildLinePairHighlight", () => {
   });
 
   it("falls back to token diff when shared text is in the middle", () => {
-    const result = buildLinePairHighlight(
-      "const total = count + 1\n",
-      "let total = count + 2\n",
-    );
+    const result = buildLinePairHighlight("const total = count + 1\n", "let total = count + 2\n");
 
     expect(result).toEqual({
       remove: [

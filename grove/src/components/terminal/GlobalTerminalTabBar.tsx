@@ -32,13 +32,7 @@ interface Props {
   onClose: (tabId: string) => void;
 }
 
-function GlobalTerminalTabBar({
-  tabs,
-  activeTabId,
-  onSelect,
-  onAdd,
-  onClose,
-}: Props) {
+function GlobalTerminalTabBar({ tabs, activeTabId, onSelect, onAdd, onClose }: Props) {
   return (
     <div className={cn("flex items-center gap-1.5 min-w-0 overflow-x-auto")}>
       {tabs.map((tab) => {
@@ -53,23 +47,29 @@ function GlobalTerminalTabBar({
               "flex items-center gap-1.5 h-6 px-1.5 rounded-md shrink-0 group backdrop-blur-sm border border-white/10 shadow-sm transition-all duration-200 ease-out",
               {
                 "w-16 justify-between": !isMirror,
-                "bg-white/15 text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)] -translate-y-0.5 scale-105": isActive,
-                "bg-white/30 text-muted-foreground border-white/45 shadow-[0_1px_6px_rgba(0,0,0,0.3)] translate-y-0 scale-100 hover:-translate-y-0.5 hover:scale-105 hover:bg-white/35 hover:text-foreground hover:shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)]": !isActive,
+                "bg-white/15 text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)] -translate-y-0.5 scale-105":
+                  isActive,
+                "bg-white/30 text-muted-foreground border-white/45 shadow-[0_1px_6px_rgba(0,0,0,0.3)] translate-y-0 scale-100 hover:-translate-y-0.5 hover:scale-105 hover:bg-white/35 hover:text-foreground hover:shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)]":
+                  !isActive,
               },
             )}
           >
             <span className={cn("relative inline-flex shrink-0")}>
               <TerminalIcon />
               {isMirror && (
-                <span className={cn("absolute top-[1px] left-[1px] -translate-x-1/2 -translate-y-1/2 flex items-center justify-center")}>
-                  <span className={cn("absolute size-[9px] rounded-full bg-red-500/40 animate-ping")} />
+                <span
+                  className={cn(
+                    "absolute top-[1px] left-[1px] -translate-x-1/2 -translate-y-1/2 flex items-center justify-center",
+                  )}
+                >
+                  <span
+                    className={cn("absolute size-[9px] rounded-full bg-red-500/40 animate-ping")}
+                  />
                   <span className={cn("size-[5px] rounded-full bg-red-500")} />
                 </span>
               )}
             </span>
-            {isMirror && (
-              <span className={cn("text-[10px] whitespace-nowrap")}>{tab.title}</span>
-            )}
+            {isMirror && <span className={cn("text-[10px] whitespace-nowrap")}>{tab.title}</span>}
             {tabs.length > 1 && (
               <span
                 role="button"

@@ -52,9 +52,7 @@ interface BroadcastState {
   stopPip: (worktreePath: string) => BroadcastSession | null;
 
   /** Stop the PiP broadcast that owns this PTY, regardless of worktree. */
-  stopPipByPty: (
-    ptyId: string,
-  ) => { worktreePath: string; session: BroadcastSession } | null;
+  stopPipByPty: (ptyId: string) => { worktreePath: string; session: BroadcastSession } | null;
 
   /** Get the PiP session for a worktree, or null if none is active. */
   getPip: (worktreePath: string | null | undefined) => BroadcastSession | null;
@@ -106,14 +104,7 @@ export const useBroadcastStore = create<BroadcastState>((set, get) => ({
     return session;
   },
 
-  startPip: (
-    worktreePath,
-    ptyId,
-    paneId,
-    originalCols,
-    originalRows,
-    snapshot = null,
-  ) => {
+  startPip: (worktreePath, ptyId, paneId, originalCols, originalRows, snapshot = null) => {
     set((state) => {
       const previous = state.pips[worktreePath];
       const nextPipOwnerByPtyId = { ...state.pipOwnerByPtyId };

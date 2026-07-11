@@ -17,27 +17,27 @@ SidebarContextMenu (wrapper)
 
 ### Key Files
 
-| File | Role |
-|------|------|
-| `src/components/ui/context-menu.tsx` | Radix primitive wrappers (base components) |
-| `src/components/sidebar/SidebarContextMenu.tsx` | Shared wrapper with common menu items |
-| `src/components/sidebar/NotePopover.tsx` | Note dialog and sidebar note indicator |
-| `src/lib/platform/tauri.ts` · `electron.ts` | `revealInFinder()` / `openInIde()` platform commands |
-| `src-tauri/src/lib.rs` | `reveal_in_finder` / `open_in_ide` Tauri commands |
-| `src-electron/main.ts` | `reveal_in_finder` Electron handler + native invoke bridge |
-| `grove-core/src/ide.rs` | IDE and Git GUI launcher resolution |
-| `src/lib/ide-registry.ts` | Supported IDE menu item ids and display metadata |
-| `src/lib/git-gui-registry.ts` | Supported Git GUI menu item ids and display metadata |
-| `grove-core/src/note.rs` | Persisted note store under `~/.grove/notes.json` |
+| File                                            | Role                                                       |
+| ----------------------------------------------- | ---------------------------------------------------------- |
+| `src/components/ui/context-menu.tsx`            | Radix primitive wrappers (base components)                 |
+| `src/components/sidebar/SidebarContextMenu.tsx` | Shared wrapper with common menu items                      |
+| `src/components/sidebar/NotePopover.tsx`        | Note dialog and sidebar note indicator                     |
+| `src/lib/platform/tauri.ts` · `electron.ts`     | `revealInFinder()` / `openInIde()` platform commands       |
+| `src-tauri/src/lib.rs`                          | `reveal_in_finder` / `open_in_ide` Tauri commands          |
+| `src-electron/main.ts`                          | `reveal_in_finder` Electron handler + native invoke bridge |
+| `grove-core/src/ide.rs`                         | IDE and Git GUI launcher resolution                        |
+| `src/lib/ide-registry.ts`                       | Supported IDE menu item ids and display metadata           |
+| `src/lib/git-gui-registry.ts`                   | Supported Git GUI menu item ids and display metadata       |
+| `grove-core/src/note.rs`                        | Persisted note store under `~/.grove/notes.json`           |
 
 ### Applied To
 
-| Component | Path source |
-|-----------|-------------|
+| Component                 | Path source          |
+| ------------------------- | -------------------- |
 | `DefaultBranchItem` (SOT) | `project.sourcePath` |
-| `WorktreeItem` | `worktree.path` |
-| `MissionItem` | `mission.missionDir` |
-| `MissionProjectItem` | `project.path` |
+| `WorktreeItem`            | `worktree.path`      |
+| `MissionItem`             | `mission.missionDir` |
+| `MissionProjectItem`      | `project.path`       |
 
 ## Extending
 

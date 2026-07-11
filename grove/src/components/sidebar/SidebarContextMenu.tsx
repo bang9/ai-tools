@@ -13,14 +13,8 @@ import { usePanelLayoutStore } from "../../store/panel-layout";
 import { usePreferencesStore } from "../../store/preferences";
 import { runCommandSafely } from "../../lib/command";
 import IdeAppIcon from "../ide/IdeAppIcon";
-import {
-  getGitGuiMenuItemDisplayName,
-  getGitGuiRegistryEntry,
-} from "../../lib/git-gui-registry";
-import {
-  getIdeMenuItemDisplayName,
-  getIdeRegistryEntry,
-} from "../../lib/ide-registry";
+import { getGitGuiMenuItemDisplayName, getGitGuiRegistryEntry } from "../../lib/git-gui-registry";
+import { getIdeMenuItemDisplayName, getIdeRegistryEntry } from "../../lib/ide-registry";
 import { openNoteDialog } from "./NotePopover";
 
 interface SidebarContextMenuProps {
@@ -31,7 +25,13 @@ interface SidebarContextMenuProps {
   noteLabel?: string;
 }
 
-function SidebarContextMenu({ path, children, extraItems, noteKey, noteLabel }: SidebarContextMenuProps) {
+function SidebarContextMenu({
+  path,
+  children,
+  extraItems,
+  noteKey,
+  noteLabel,
+}: SidebarContextMenuProps) {
   const ideMenuItems = usePreferencesStore((s) => s.ideMenuItems);
   const gitGuiMenuItems = usePreferencesStore((s) => s.gitGuiMenuItems);
 
@@ -39,7 +39,11 @@ function SidebarContextMenu({ path, children, extraItems, noteKey, noteLabel }: 
     void runCommandSafely(() => revealInFinder(path));
   };
 
-  const handleOpenInMenuItem = (item: { id: string; displayName?: string; openCommand?: string }) => {
+  const handleOpenInMenuItem = (item: {
+    id: string;
+    displayName?: string;
+    openCommand?: string;
+  }) => {
     void runCommandSafely(() => openInIde(path, item));
   };
 
@@ -63,9 +67,7 @@ function SidebarContextMenu({ path, children, extraItems, noteKey, noteLabel }: 
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
-        {children}
-      </ContextMenuTrigger>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent className={cn("min-w-[15rem]")}>
         {extraItems}
         {extraItems && <ContextMenuSeparator />}

@@ -61,16 +61,11 @@ export function findTerminalPaneByPaneId(
   return collectTerminalPanes(node).find((pane) => pane.paneId === paneId) ?? null;
 }
 
-export function findTerminalPaneByPtyId(
-  node: SplitNode,
-  ptyId: string,
-): TerminalPaneEntry | null {
+export function findTerminalPaneByPtyId(node: SplitNode, ptyId: string): TerminalPaneEntry | null {
   return collectTerminalPanes(node).find((pane) => pane.ptyId === ptyId) ?? null;
 }
 
-export function buildTerminalPaneTopologySignature(
-  node: SplitNode | undefined,
-): string {
+export function buildTerminalPaneTopologySignature(node: SplitNode | undefined): string {
   return node
     ? collectTerminalPanes(node)
         .map((pane) => pane.paneId)
@@ -95,9 +90,7 @@ export function restoreLayoutWithPtyIds(
     id: node.id,
     type: node.type,
     sizes: node.sizes,
-    children: (node.children ?? []).map((child) =>
-      restoreLayoutWithPtyIds(child, panePtyIds),
-    ),
+    children: (node.children ?? []).map((child) => restoreLayoutWithPtyIds(child, panePtyIds)),
   };
 }
 

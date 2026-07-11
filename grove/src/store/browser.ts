@@ -1,10 +1,6 @@
 import { create } from "zustand";
 import type { BrowserNavEvent } from "../lib/platform";
-import {
-  loadRecentUrls,
-  pushRecentUrl,
-  saveRecentUrls,
-} from "../lib/browser-history";
+import { loadRecentUrls, pushRecentUrl, saveRecentUrls } from "../lib/browser-history";
 
 export interface BrowserNavState {
   /** URL currently shown by the native webview. */
@@ -51,9 +47,7 @@ export const useBrowserStore = create<BrowserState>((set) => ({
     set((state) => {
       const nav = state.navs[tabId];
       if (nav?.url === url) return {};
-      const history = nav
-        ? [...nav.history.slice(0, nav.index + 1), url]
-        : [url];
+      const history = nav ? [...nav.history.slice(0, nav.index + 1), url] : [url];
       const index = history.length - 1;
       return {
         navs: {
@@ -151,6 +145,5 @@ export const useBrowserStore = create<BrowserState>((set) => ({
 }));
 
 export function selectNav(tabId: string) {
-  return (state: BrowserState): BrowserNavState | null =>
-    state.navs[tabId] ?? null;
+  return (state: BrowserState): BrowserNavState | null => state.navs[tabId] ?? null;
 }
