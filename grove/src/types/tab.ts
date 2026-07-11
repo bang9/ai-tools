@@ -1,4 +1,4 @@
-export type AppTabType = "terminal" | "changes" | "browser";
+export type AppTabType = "terminal" | "changes" | "browser" | "file";
 
 export interface AppTab {
   id: string;

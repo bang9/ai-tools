@@ -2,7 +2,8 @@ mod browser;
 mod eventbus;
 use grove_core::{
     AppConfig, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest, CreatePtyRestore,
-    CreatePtyResult, DetectedThemeResult, DirectoryFileEntry, FileDiff, FileStatus,
+    CreatePtyResult, DeepDirectoryListing, DetectedThemeResult, DirectoryFileEntry, FileDiff,
+    FileStatus, WorkspaceFileContent,
     GrovePreferences, IdeMenuItem, Project, PtyBellEvent, SaveTerminalSessionSnapshotRequest,
     TerminalGcReport, TerminalSessionSnapshot, Worktree, WorktreePullRequest,
 };
@@ -452,6 +453,20 @@ async fn list_directory_files(
 }
 
 #[tauri::command]
+async fn list_directory_files_deep(root_path: String) -> Result<DeepDirectoryListing, String> {
+    blocking(move || grove_core::file_browser::list_directory_files_deep_impl(&root_path)).await
+}
+
+#[tauri::command]
+async fn read_workspace_file(
+    root_path: String,
+    file_path: String,
+) -> Result<WorkspaceFileContent, String> {
+    blocking(move || grove_core::file_browser::read_workspace_file_impl(&root_path, &file_path))
+        .await
+}
+
+#[tauri::command]
 async fn get_commits(worktree_path: String, limit: u32) -> Result<Vec<CommitInfo>, String> {
     blocking(move || grove_core::git_diff::get_commits_impl(&worktree_path, limit)).await
 }
@@ -681,6 +696,8 @@ pub fn run() {
             // Git Diff (W4)
             get_status,
             list_directory_files,
+            list_directory_files_deep,
+            read_workspace_file,
             get_commits,
             get_working_diff,
             get_commit_diff,

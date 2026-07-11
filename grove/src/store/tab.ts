@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AppTab, AppTabType } from "../types";
 import { useBrowserStore } from "./browser";
+import { useFileViewerStore } from "./file-viewer";
 
 export interface TabSession {
   tabs: AppTab[];
@@ -119,6 +120,8 @@ export const useTabStore = create<TabState>((set, get) => ({
     );
     if (tab.type === "browser") {
       useBrowserStore.getState().removeTab(tabId);
+    } else if (tab.type === "file") {
+      useFileViewerStore.getState().removeTab(tabId);
     }
   },
 
@@ -151,9 +154,12 @@ export const useTabStore = create<TabState>((set, get) => ({
     delete newSessions[worktreePath];
     set({ sessions: newSessions });
     const browserStore = useBrowserStore.getState();
+    const fileViewerStore = useFileViewerStore.getState();
     for (const tab of session.tabs) {
       if (tab.type === "browser") {
         browserStore.removeTab(tab.id);
+      } else if (tab.type === "file") {
+        fileViewerStore.removeTab(tab.id);
       }
     }
   },

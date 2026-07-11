@@ -11,6 +11,8 @@ import type {
   BehindInfo,
   FileStatus,
   DirectoryFileEntry,
+  DeepDirectoryListing,
+  WorkspaceFileContent,
   CommitInfo,
   FileDiff,
   Mission,
@@ -483,6 +485,17 @@ export async function listDirectoryFiles(
     rootPath,
     parentPath,
   });
+}
+
+export async function listDirectoryFilesDeep(rootPath: string): Promise<DeepDirectoryListing> {
+  return platform.invoke<DeepDirectoryListing>("list_directory_files_deep", { rootPath });
+}
+
+export async function readWorkspaceFile(
+  rootPath: string,
+  filePath: string,
+): Promise<WorkspaceFileContent> {
+  return platform.invoke<WorkspaceFileContent>("read_workspace_file", { rootPath, filePath });
 }
 
 export async function getCommits(worktreePath: string, limit: number): Promise<CommitInfo[]> {

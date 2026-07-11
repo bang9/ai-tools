@@ -384,6 +384,20 @@ pub async fn list_directory_files(
 }
 
 #[napi]
+pub async fn list_directory_files_deep(root_path: String) -> Result<String> {
+    blocking_json(move || grove_core::file_browser::list_directory_files_deep_impl(&root_path))
+        .await
+}
+
+#[napi]
+pub async fn read_workspace_file(root_path: String, file_path: String) -> Result<String> {
+    blocking_json(move || {
+        grove_core::file_browser::read_workspace_file_impl(&root_path, &file_path)
+    })
+    .await
+}
+
+#[napi]
 pub async fn get_commits(worktree_path: String, limit: u32) -> Result<String> {
     blocking_json(move || grove_core::git_diff::get_commits_impl(&worktree_path, limit)).await
 }

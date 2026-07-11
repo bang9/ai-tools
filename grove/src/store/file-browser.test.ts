@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/platform", () => ({
   listDirectoryFiles: vi.fn(),
+  listDirectoryFilesDeep: vi.fn(),
 }));
 
 vi.mock("../lib/command", () => ({
@@ -13,6 +14,16 @@ import { runCommandSafely } from "../lib/command";
 import type { DirectoryFileEntry } from "../types";
 import { useFileBrowserStore } from "./file-browser";
 
+function dir(path: string, depth: number): DirectoryFileEntry {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return { path, name, entryType: "directory", depth };
+}
+
+function file(path: string, depth: number): DirectoryFileEntry {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return { path, name, entryType: "file", depth };
+}
+
 describe("useFileBrowserStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -21,10 +32,19 @@ describe("useFileBrowserStore", () => {
       entriesByParent: {},
       loadedParents: {},
       loadingParents: {},
+      expandedPaths: new Set(),
+      selectedPath: null,
+      bulkLoading: false,
+      refreshing: false,
+      deepTruncated: false,
     });
-    vi.mocked(runCommandSafely).mockImplementation(
-      async (action: () => Promise<unknown>) => action() as Promise<null>,
-    );
+    vi.mocked(runCommandSafely).mockImplementation(async (action: () => Promise<unknown>) => {
+      try {
+        return (await action()) as null;
+      } catch {
+        return null;
+      }
+    });
     vi.mocked(platform.listDirectoryFiles).mockResolvedValue([
       { path: "src", name: "src", entryType: "directory", depth: 0 },
       { path: "src/main.ts", name: "main.ts", entryType: "file", depth: 1 },
@@ -60,7 +80,7 @@ describe("useFileBrowserStore", () => {
     expect(platform.listDirectoryFiles).not.toHaveBeenCalled();
   });
 
-  it("resets entries when the root changes", () => {
+  it("resets entries, expansion, and selection when the root changes", () => {
     useFileBrowserStore.setState({
       entriesByParent: {
         "": [{ path: "src", name: "src", entryType: "directory", depth: 0 }],
@@ -71,6 +91,9 @@ describe("useFileBrowserStore", () => {
       loadingParents: {
         src: true,
       },
+      expandedPaths: new Set(["src"]),
+      selectedPath: "src",
+      deepTruncated: true,
     });
 
     useFileBrowserStore.getState().setRootPath("/tmp/other");
@@ -78,6 +101,9 @@ describe("useFileBrowserStore", () => {
     expect(useFileBrowserStore.getState().entriesByParent).toEqual({});
     expect(useFileBrowserStore.getState().loadedParents).toEqual({});
     expect(useFileBrowserStore.getState().loadingParents).toEqual({});
+    expect(useFileBrowserStore.getState().expandedPaths.size).toBe(0);
+    expect(useFileBrowserStore.getState().selectedPath).toBeNull();
+    expect(useFileBrowserStore.getState().deepTruncated).toBe(false);
   });
 
   it("keeps cached entries when response is unchanged", async () => {
@@ -92,5 +118,120 @@ describe("useFileBrowserStore", () => {
     await useFileBrowserStore.getState().loadChildren();
 
     expect(useFileBrowserStore.getState().entriesByParent[""]).toBe(entries);
+  });
+
+  it("expandAll groups entries by parent and expands every directory", async () => {
+    vi.mocked(platform.listDirectoryFilesDeep).mockResolvedValue({
+      entries: [
+        dir("src", 0),
+        file("src/main.ts", 1),
+        dir("src/utils", 1),
+        file("src/utils/helper.ts", 2),
+        file("README.md", 0),
+      ],
+      truncated: false,
+    });
+
+    await useFileBrowserStore.getState().expandAll();
+
+    const state = useFileBrowserStore.getState();
+    expect(platform.listDirectoryFilesDeep).toHaveBeenCalledWith("/tmp/repo");
+    expect(state.entriesByParent[""]).toEqual([dir("src", 0), file("README.md", 0)]);
+    expect(state.entriesByParent.src).toEqual([file("src/main.ts", 1), dir("src/utils", 1)]);
+    expect(state.entriesByParent["src/utils"]).toEqual([file("src/utils/helper.ts", 2)]);
+    expect(state.loadedParents).toEqual({ "": true, src: true, "src/utils": true });
+    expect([...state.expandedPaths].sort()).toEqual(["src", "src/utils"]);
+    expect(state.deepTruncated).toBe(false);
+    expect(state.bulkLoading).toBe(false);
+  });
+
+  it("expandAll records the truncated flag", async () => {
+    vi.mocked(platform.listDirectoryFilesDeep).mockResolvedValue({
+      entries: [dir("src", 0)],
+      truncated: true,
+    });
+
+    await useFileBrowserStore.getState().expandAll();
+
+    expect(useFileBrowserStore.getState().deepTruncated).toBe(true);
+  });
+
+  it("collapseAll clears expansion but keeps cached entries", () => {
+    const entries = { "": [dir("src", 0)], src: [file("src/main.ts", 1)] };
+    useFileBrowserStore.setState({
+      entriesByParent: entries,
+      loadedParents: { "": true, src: true },
+      expandedPaths: new Set(["src"]),
+    });
+
+    useFileBrowserStore.getState().collapseAll();
+
+    const state = useFileBrowserStore.getState();
+    expect(state.expandedPaths.size).toBe(0);
+    expect(state.entriesByParent).toBe(entries);
+    expect(state.loadedParents).toEqual({ "": true, src: true });
+  });
+
+  it("refresh preserves expansion and selection", async () => {
+    useFileBrowserStore.setState({
+      entriesByParent: { "": [dir("src", 0)], src: [file("src/main.ts", 1)] },
+      loadedParents: { "": true, src: true },
+      expandedPaths: new Set(["src"]),
+      selectedPath: "src/main.ts",
+    });
+    vi.mocked(platform.listDirectoryFiles).mockImplementation(async (_root, parent) => {
+      if (parent === "") return [dir("src", 0)];
+      if (parent === "src") return [file("src/main.ts", 1)];
+      return [];
+    });
+
+    await useFileBrowserStore.getState().refresh();
+
+    const state = useFileBrowserStore.getState();
+    expect(platform.listDirectoryFiles).toHaveBeenCalledWith("/tmp/repo", "");
+    expect(platform.listDirectoryFiles).toHaveBeenCalledWith("/tmp/repo", "src");
+    expect(state.entriesByParent[""]).toEqual([dir("src", 0)]);
+    expect(state.entriesByParent.src).toEqual([file("src/main.ts", 1)]);
+    expect(state.loadedParents).toEqual({ "": true, src: true });
+    expect([...state.expandedPaths]).toEqual(["src"]);
+    expect(state.selectedPath).toBe("src/main.ts");
+    expect(state.refreshing).toBe(false);
+  });
+
+  it("refresh prunes vanished directories from expansion and selection", async () => {
+    useFileBrowserStore.setState({
+      entriesByParent: {
+        "": [dir("src", 0)],
+        src: [dir("src/old", 1)],
+        "src/old": [file("src/old/gone.ts", 2)],
+      },
+      loadedParents: { "": true, src: true, "src/old": true },
+      expandedPaths: new Set(["src", "src/old"]),
+      selectedPath: "src/old/gone.ts",
+    });
+    vi.mocked(platform.listDirectoryFiles).mockImplementation(async (_root, parent) => {
+      if (parent === "") return [dir("src", 0)];
+      if (parent === "src") return [file("src/main.ts", 1)];
+      throw new Error("no such directory");
+    });
+
+    await useFileBrowserStore.getState().refresh();
+
+    const state = useFileBrowserStore.getState();
+    expect(state.entriesByParent["src/old"]).toBeUndefined();
+    expect(state.entriesByParent.src).toEqual([file("src/main.ts", 1)]);
+    expect([...state.expandedPaths]).toEqual(["src"]);
+    expect(state.selectedPath).toBeNull();
+    expect(state.loadedParents).toEqual({ "": true, src: true });
+  });
+
+  it("collapseDirectoryDeep collapses a directory and its expanded descendants", () => {
+    useFileBrowserStore.setState({
+      expandedPaths: new Set(["src", "src/utils", "src/utils/nested", "lib"]),
+    });
+
+    useFileBrowserStore.getState().collapseDirectoryDeep("src");
+
+    expect([...useFileBrowserStore.getState().expandedPaths]).toEqual(["lib"]);
   });
 });

@@ -21,6 +21,7 @@ import { initBrowserWebviewBridge } from "../../lib/browser-webview";
 import TerminalPanel from "../terminal/TerminalPanel";
 import ChangesPanel from "./ChangesPanel";
 import BrowserPanel from "./BrowserPanel";
+import FileViewerPanel from "../file-viewer/FileViewerPanel";
 import PipTerminal from "./PipTerminal";
 import GlobalTerminalPanel from "../terminal/GlobalTerminalPanel";
 import { ResizablePanelGroup } from "../ui/resizable-panel-group";
@@ -56,6 +57,7 @@ function AppTabContent() {
   const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, worktreePath));
   const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
   const browserTabs = tabs.filter((tab) => tab.type === "browser");
+  const fileTabs = tabs.filter((tab) => tab.type === "file");
   const isTerminal = activeTabId === "terminal";
   const isChanges = activeTabId === "changes";
   const activeTabIsBrowser = browserTabs.some((tab) => tab.id === activeTabId);
@@ -332,6 +334,17 @@ function AppTabContent() {
           style={{ display: tab.id === activeTabId ? "block" : "none" }}
         >
           <BrowserPanel tabId={tab.id} isActive={tab.id === activeTabId} />
+        </div>
+      ))}
+
+      {/* File viewer tabs stay mounted so scroll/zoom state survives switches */}
+      {fileTabs.map((tab) => (
+        <div
+          key={tab.id}
+          className={cn("absolute inset-0")}
+          style={{ display: tab.id === activeTabId ? "block" : "none" }}
+        >
+          <FileViewerPanel tabId={tab.id} isActive={tab.id === activeTabId} />
         </div>
       ))}
 

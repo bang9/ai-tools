@@ -26,8 +26,21 @@ interface FileBrowserState {
   entriesByParent: Record<string, DirectoryFileEntry[]>;
   loadedParents: Record<string, boolean>;
   loadingParents: Record<string, boolean>;
+  expandedPaths: Set<string>;
+  selectedPath: string | null;
+  bulkLoading: boolean;
+  refreshing: boolean;
+  deepTruncated: boolean;
   setRootPath: (path: string | null) => void;
   loadChildren: (parentPath?: string | null) => Promise<void>;
+  setSelectedPath: (path: string | null) => void;
+  expandDirectory: (path: string) => void;
+  collapseDirectory: (path: string) => void;
+  collapseDirectoryDeep: (path: string) => void;
+  toggleDirectory: (path: string) => void;
+  expandAll: () => Promise<void>;
+  collapseAll: () => void;
+  refresh: () => Promise<void>;
 }
 
 const ROOT_PARENT = "";
@@ -36,11 +49,22 @@ function parentKey(parentPath?: string | null): string {
   return parentPath?.replace(/^\/+|\/+$/g, "") ?? ROOT_PARENT;
 }
 
+/** Parent key for an entry path — the segment before the last "/", or "" for top-level. */
+function groupParentKey(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? ROOT_PARENT : path.slice(0, index);
+}
+
 export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
   rootPath: null,
   entriesByParent: {},
   loadedParents: {},
   loadingParents: {},
+  expandedPaths: new Set(),
+  selectedPath: null,
+  bulkLoading: false,
+  refreshing: false,
+  deepTruncated: false,
 
   setRootPath: (path) => {
     if (path === get().rootPath) return;
@@ -49,6 +73,11 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
       entriesByParent: {},
       loadedParents: {},
       loadingParents: {},
+      expandedPaths: new Set(),
+      selectedPath: null,
+      bulkLoading: false,
+      refreshing: false,
+      deepTruncated: false,
     });
   },
 
@@ -87,5 +116,160 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
       loadedParents: { ...state.loadedParents, [key]: true },
       loadingParents: { ...state.loadingParents, [key]: false },
     }));
+  },
+
+  setSelectedPath: (path) => set({ selectedPath: path }),
+
+  expandDirectory: (path) => {
+    const current = get().expandedPaths;
+    if (!current.has(path)) {
+      const next = new Set(current);
+      next.add(path);
+      set({ expandedPaths: next });
+    }
+    void get().loadChildren(path);
+  },
+
+  collapseDirectory: (path) => {
+    const current = get().expandedPaths;
+    if (!current.has(path)) return;
+    const next = new Set(current);
+    next.delete(path);
+    set({ expandedPaths: next });
+  },
+
+  collapseDirectoryDeep: (path) => {
+    const current = get().expandedPaths;
+    const prefix = `${path}/`;
+    let changed = false;
+    const next = new Set<string>();
+    for (const candidate of current) {
+      if (candidate === path || candidate.startsWith(prefix)) {
+        changed = true;
+        continue;
+      }
+      next.add(candidate);
+    }
+    if (changed) set({ expandedPaths: next });
+  },
+
+  toggleDirectory: (path) => {
+    if (get().expandedPaths.has(path)) {
+      get().collapseDirectory(path);
+    } else {
+      get().expandDirectory(path);
+    }
+  },
+
+  expandAll: async () => {
+    const rootPath = get().rootPath;
+    if (!rootPath) return;
+
+    set({ bulkLoading: true });
+
+    const listing = await runCommandSafely(() => platform.listDirectoryFilesDeep(rootPath), {
+      errorToast: false,
+    });
+    if (get().rootPath !== rootPath) return;
+
+    if (!listing) {
+      set({ bulkLoading: false });
+      return;
+    }
+
+    const entriesByParent: Record<string, DirectoryFileEntry[]> = {};
+    const loadedParents: Record<string, boolean> = { [ROOT_PARENT]: true };
+    const expandedPaths = new Set<string>();
+
+    for (const entry of listing.entries) {
+      const parent = groupParentKey(entry.path);
+      (entriesByParent[parent] ??= []).push(entry);
+      if (entry.entryType === "directory") {
+        loadedParents[entry.path] = true;
+        expandedPaths.add(entry.path);
+      }
+    }
+
+    set({
+      entriesByParent,
+      loadedParents,
+      loadingParents: {},
+      expandedPaths,
+      deepTruncated: listing.truncated,
+      bulkLoading: false,
+    });
+  },
+
+  collapseAll: () => set({ expandedPaths: new Set() }),
+
+  refresh: async () => {
+    const rootPath = get().rootPath;
+    if (!rootPath) return;
+
+    const snapshot = [ROOT_PARENT, ...get().expandedPaths];
+    set({ refreshing: true });
+
+    const results = await Promise.all(
+      snapshot.map(async (parent) => {
+        const entries = await runCommandSafely(
+          () => platform.listDirectoryFiles(rootPath, parent),
+          { errorToast: false },
+        );
+        return { parent, entries };
+      }),
+    );
+    if (get().rootPath !== rootPath) return;
+
+    const refreshed = new Map<string, DirectoryFileEntry[]>();
+    for (const { parent, entries } of results) {
+      if (entries) refreshed.set(parent, entries);
+    }
+
+    const existingDirs = new Set<string>();
+    for (const entries of refreshed.values()) {
+      for (const entry of entries) {
+        if (entry.entryType === "directory") existingDirs.add(entry.path);
+      }
+    }
+
+    const isValidParent = (parent: string): boolean => {
+      if (parent === ROOT_PARENT) return true;
+      let acc = "";
+      for (const segment of parent.split("/")) {
+        acc = acc === "" ? segment : `${acc}/${segment}`;
+        if (!existingDirs.has(acc)) return false;
+      }
+      return true;
+    };
+
+    const entriesByParent: Record<string, DirectoryFileEntry[]> = {};
+    const loadedParents: Record<string, boolean> = {};
+    for (const [parent, entries] of refreshed) {
+      if (!isValidParent(parent)) continue;
+      entriesByParent[parent] = entries;
+      loadedParents[parent] = true;
+    }
+
+    const allPaths = new Set<string>();
+    for (const entries of Object.values(entriesByParent)) {
+      for (const entry of entries) allPaths.add(entry.path);
+    }
+
+    const nextExpanded = new Set<string>();
+    for (const path of get().expandedPaths) {
+      if (existingDirs.has(path)) nextExpanded.add(path);
+    }
+
+    const selectedPath = get().selectedPath;
+    const nextSelected = selectedPath && allPaths.has(selectedPath) ? selectedPath : null;
+
+    set({
+      entriesByParent,
+      loadedParents,
+      loadingParents: {},
+      expandedPaths: nextExpanded,
+      selectedPath: nextSelected,
+      refreshing: false,
+    });
   },
 }));

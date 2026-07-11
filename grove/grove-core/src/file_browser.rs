@@ -1,9 +1,18 @@
 use crate::process_env::enriched_path;
-use crate::DirectoryFileEntry;
+use crate::{DeepDirectoryListing, DirectoryFileEntry, WorkspaceFileContent};
+use base64::Engine;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path};
 use std::process::Command;
+
+/// Hard cap on entries returned by the deep listing so expand-all stays
+/// responsive on pathological trees; the response is flagged truncated.
+const MAX_DEEP_ENTRIES: usize = 50_000;
+const MAX_TEXT_FILE_SIZE: u64 = 10 * 1024 * 1024;
+const MAX_IMAGE_FILE_SIZE: u64 = 20 * 1024 * 1024;
+const BINARY_PROBE_BYTES: usize = 8192;
 
 fn normalize_parent_path(parent_path: Option<&str>) -> Result<String, String> {
     let raw = parent_path.unwrap_or("").trim_matches('/');
@@ -186,6 +195,243 @@ pub fn list_directory_files_impl(
     }
 }
 
+fn parent_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(index) => &path[..index],
+        None => "",
+    }
+}
+
+fn sort_deep_entries(entries: &mut [DirectoryFileEntry]) {
+    entries.sort_by(|left, right| {
+        let left_dir = left.entry_type == "directory";
+        let right_dir = right.entry_type == "directory";
+        parent_of(&left.path)
+            .cmp(parent_of(&right.path))
+            .then_with(|| right_dir.cmp(&left_dir))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+}
+
+fn insert_with_ancestors(
+    entries: &mut HashMap<String, DirectoryFileEntry>,
+    file_path: &str,
+) {
+    let parts: Vec<&str> = file_path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return;
+    }
+
+    let mut current = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if !current.is_empty() {
+            current.push('/');
+        }
+        current.push_str(part);
+        let is_file = index == parts.len() - 1;
+        entries
+            .entry(current.clone())
+            .or_insert_with(|| DirectoryFileEntry {
+                path: current.clone(),
+                name: (*part).to_string(),
+                entry_type: if is_file { "file" } else { "directory" }.to_string(),
+                depth: index,
+            });
+    }
+}
+
+fn list_git_deep(root: &Path) -> Result<DeepDirectoryListing, String> {
+    let output = Command::new("git")
+        .args(["ls-files", "-co", "--exclude-standard"])
+        .current_dir(root)
+        .env("PATH", enriched_path())
+        .output()
+        .map_err(|e| format!("Failed to list file browser entries: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to list file browser entries: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let mut entries: HashMap<String, DirectoryFileEntry> = HashMap::new();
+    for raw_path in String::from_utf8_lossy(&output.stdout).lines() {
+        let path = raw_path.trim_end_matches('\r');
+        if path.is_empty() {
+            continue;
+        }
+        insert_with_ancestors(&mut entries, path);
+    }
+
+    let mut result = entries.into_values().collect::<Vec<_>>();
+    sort_deep_entries(&mut result);
+    let truncated = result.len() > MAX_DEEP_ENTRIES;
+    result.truncate(MAX_DEEP_ENTRIES);
+    Ok(DeepDirectoryListing {
+        entries: result,
+        truncated,
+    })
+}
+
+fn list_fs_deep(root: &Path) -> Result<DeepDirectoryListing, String> {
+    let mut result = Vec::new();
+    let mut queue = std::collections::VecDeque::from([String::new()]);
+    let mut truncated = false;
+
+    while let Some(parent) = queue.pop_front() {
+        // Subdirectories can disappear or be unreadable mid-walk; skip them
+        // instead of failing the whole listing.
+        let Ok(children) = list_fs_children(root, &parent) else {
+            continue;
+        };
+        for child in children {
+            if result.len() >= MAX_DEEP_ENTRIES {
+                truncated = true;
+                break;
+            }
+            if child.entry_type == "directory" {
+                queue.push_back(child.path.clone());
+            }
+            result.push(child);
+        }
+        if truncated {
+            break;
+        }
+    }
+
+    sort_deep_entries(&mut result);
+    Ok(DeepDirectoryListing {
+        entries: result,
+        truncated,
+    })
+}
+
+pub fn list_directory_files_deep_impl(root_path: &str) -> Result<DeepDirectoryListing, String> {
+    let root = Path::new(root_path);
+    if !root.is_dir() {
+        return Err("File browser root does not exist".to_string());
+    }
+
+    if is_git_worktree(root) {
+        list_git_deep(root)
+    } else {
+        list_fs_deep(root)
+    }
+}
+
+fn image_mime_for_name(name: &str) -> Option<&'static str> {
+    let extension = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "svg" => Some("image/svg+xml"),
+        "avif" => Some("image/avif"),
+        _ => None,
+    }
+}
+
+pub fn read_workspace_file_impl(
+    root_path: &str,
+    file_path: &str,
+) -> Result<WorkspaceFileContent, String> {
+    let root = Path::new(root_path);
+    if !root.is_dir() {
+        return Err("File browser root does not exist".to_string());
+    }
+
+    let relative = normalize_parent_path(Some(file_path))?;
+    if relative.is_empty() {
+        return Err("File path is required".to_string());
+    }
+
+    let full_path = root.join(&relative);
+    if !full_path.is_file() {
+        return Err("File does not exist".to_string());
+    }
+
+    let size = fs::metadata(&full_path)
+        .map_err(|e| format!("Failed to read file metadata: {e}"))?
+        .len();
+    let name = relative.rsplit('/').next().unwrap_or(&relative);
+
+    if let Some(mime_type) = image_mime_for_name(name) {
+        if size > MAX_IMAGE_FILE_SIZE {
+            return Ok(WorkspaceFileContent {
+                kind: "tooLarge".to_string(),
+                content: String::new(),
+                size,
+                mime_type: Some(mime_type.to_string()),
+            });
+        }
+        let bytes = fs::read(&full_path).map_err(|e| format!("Failed to read file: {e}"))?;
+        return Ok(WorkspaceFileContent {
+            kind: "image".to_string(),
+            content: base64::engine::general_purpose::STANDARD.encode(bytes),
+            size,
+            mime_type: Some(mime_type.to_string()),
+        });
+    }
+
+    // Probe the head of the file first so huge binaries are classified without
+    // reading them fully.
+    let mut probe = vec![0_u8; BINARY_PROBE_BYTES];
+    let probe_len = {
+        let mut file =
+            fs::File::open(&full_path).map_err(|e| format!("Failed to read file: {e}"))?;
+        let mut filled = 0;
+        loop {
+            let read = file
+                .read(&mut probe[filled..])
+                .map_err(|e| format!("Failed to read file: {e}"))?;
+            if read == 0 || filled + read == BINARY_PROBE_BYTES {
+                filled += read;
+                break;
+            }
+            filled += read;
+        }
+        filled
+    };
+    if probe[..probe_len].contains(&0) {
+        return Ok(WorkspaceFileContent {
+            kind: "binary".to_string(),
+            content: String::new(),
+            size,
+            mime_type: None,
+        });
+    }
+
+    if size > MAX_TEXT_FILE_SIZE {
+        return Ok(WorkspaceFileContent {
+            kind: "tooLarge".to_string(),
+            content: String::new(),
+            size,
+            mime_type: None,
+        });
+    }
+
+    let bytes = fs::read(&full_path).map_err(|e| format!("Failed to read file: {e}"))?;
+    if bytes.contains(&0) {
+        return Ok(WorkspaceFileContent {
+            kind: "binary".to_string(),
+            content: String::new(),
+            size,
+            mime_type: None,
+        });
+    }
+
+    Ok(WorkspaceFileContent {
+        kind: "text".to_string(),
+        content: String::from_utf8_lossy(&bytes).into_owned(),
+        size,
+        mime_type: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +504,129 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn list_directory_files_deep_lists_full_git_tree() {
+        let _lock = env_lock();
+        let repo = temp_repo("deep-git");
+
+        git(&repo, &["init"]);
+        fs::create_dir_all(repo.join("src/nested")).unwrap();
+        fs::create_dir_all(repo.join("build")).unwrap();
+        fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+        fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(repo.join("src/nested/mod.rs"), "// nested\n").unwrap();
+        fs::write(repo.join("build/cache.txt"), "ignored\n").unwrap();
+        git(&repo, &["add", "."]);
+
+        let listing = list_directory_files_deep_impl(repo.to_str().unwrap()).unwrap();
+        assert!(!listing.truncated);
+        let paths = listing
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"src"));
+        assert!(paths.contains(&"src/nested"));
+        assert!(paths.contains(&"src/nested/mod.rs"));
+        assert!(paths.contains(&"src/main.rs"));
+        assert!(!paths.contains(&"build"));
+
+        let nested_dir = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "src/nested")
+            .unwrap();
+        assert_eq!(nested_dir.entry_type, "directory");
+        assert_eq!(nested_dir.depth, 1);
+        let nested_file = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "src/nested/mod.rs")
+            .unwrap();
+        assert_eq!(nested_file.depth, 2);
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn list_directory_files_deep_walks_plain_directories() {
+        let root = temp_repo("deep-plain");
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("a/b/deep.txt"), "deep\n").unwrap();
+        fs::write(root.join("top.md"), "top\n").unwrap();
+
+        let listing = list_directory_files_deep_impl(root.to_str().unwrap()).unwrap();
+        let paths = listing
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["a", "top.md", "a/b", "a/b/deep.txt"]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_workspace_file_reads_text() {
+        let root = temp_repo("read-text");
+        fs::write(root.join("hello.txt"), "hello world\n").unwrap();
+
+        let result = read_workspace_file_impl(root.to_str().unwrap(), "hello.txt").unwrap();
+        assert_eq!(result.kind, "text");
+        assert_eq!(result.content, "hello world\n");
+        assert_eq!(result.size, 12);
+        assert_eq!(result.mime_type, None);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_workspace_file_detects_binary() {
+        let root = temp_repo("read-binary");
+        fs::write(root.join("blob.bin"), [0_u8, 159, 146, 150, 0, 1]).unwrap();
+
+        let result = read_workspace_file_impl(root.to_str().unwrap(), "blob.bin").unwrap();
+        assert_eq!(result.kind, "binary");
+        assert!(result.content.is_empty());
+        assert_eq!(result.size, 6);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_workspace_file_encodes_images_as_base64() {
+        let root = temp_repo("read-image");
+        let bytes = [0x89_u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        fs::write(root.join("pixel.png"), bytes).unwrap();
+
+        let result = read_workspace_file_impl(root.to_str().unwrap(), "pixel.png").unwrap();
+        assert_eq!(result.kind, "image");
+        assert_eq!(result.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(result.content.as_bytes())
+                .unwrap(),
+            bytes
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_workspace_file_rejects_escaping_paths() {
+        let root = temp_repo("read-escape");
+        fs::write(root.join("inside.txt"), "inside\n").unwrap();
+
+        assert!(read_workspace_file_impl(root.to_str().unwrap(), "../outside.txt").is_err());
+        assert!(read_workspace_file_impl(root.to_str().unwrap(), "/etc/hosts").is_err());
+        assert!(read_workspace_file_impl(root.to_str().unwrap(), "").is_err());
+        assert!(read_workspace_file_impl(root.to_str().unwrap(), "missing.txt").is_err());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

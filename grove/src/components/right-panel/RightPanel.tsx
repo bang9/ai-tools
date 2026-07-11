@@ -48,8 +48,6 @@ export default function RightPanel() {
   const { terminalPath, worktreePath } = useResolvedSidebarSelection();
   const branchName = useWorktreeBranchLabel(worktreePath);
   const store = useDiff(worktreePath);
-  const fileBrowserEntriesByParent = useFileBrowserStore((s) => s.entriesByParent);
-  const fileBrowserLoadingParents = useFileBrowserStore((s) => s.loadingParents);
   const setFileBrowserRootPath = useFileBrowserStore((s) => s.setRootPath);
   const loadFileBrowserChildren = useFileBrowserStore((s) => s.loadChildren);
   const addTab = useTabStore((s) => s.addTab);
@@ -83,14 +81,7 @@ export default function RightPanel() {
         );
       }
 
-      return (
-        <FileBrowserPanel
-          rootPath={fileBrowserRootPath}
-          entriesByParent={fileBrowserEntriesByParent}
-          loadingParents={fileBrowserLoadingParents}
-          loadChildren={loadFileBrowserChildren}
-        />
-      );
+      return <FileBrowserPanel rootPath={fileBrowserRootPath} />;
     }
 
     if (!worktreePath) {

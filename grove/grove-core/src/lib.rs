@@ -260,6 +260,24 @@ pub struct DirectoryFileEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeepDirectoryListing {
+    pub entries: Vec<DirectoryFileEntry>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileContent {
+    /// "text" | "image" | "binary" | "tooLarge"
+    pub kind: String,
+    /// UTF-8 text for text files, base64 payload for images, empty otherwise.
+    pub content: String,
+    pub size: u64,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommitInfo {
     pub hash: String,
     pub short_hash: String,

@@ -1,15 +1,30 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  FoldVertical,
+  Folder,
+  FolderOpen,
+  Loader2,
+  RotateCw,
+  UnfoldVertical,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
 import type { DirectoryFileEntry } from "../../types";
 import { cn } from "../../lib/cn";
 import { revealInFinder } from "../../lib/platform";
 import { runCommandSafely } from "../../lib/command";
+import { getFileTypeIcon } from "../../lib/file-type-icons";
+import { useFileBrowserStore } from "../../store/file-browser";
+import { useFileViewerStore } from "../../store/file-viewer";
+import { IconButton } from "../ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "../ui/context-menu";
 
@@ -44,19 +59,25 @@ function collectVisibleEntries(
 
 interface Props {
   rootPath: string;
-  entriesByParent: Record<string, DirectoryFileEntry[]>;
-  loadingParents: Record<string, boolean>;
-  loadChildren: (parentPath?: string | null) => Promise<void>;
 }
 
-export default function FileBrowserPanel({
-  rootPath,
-  entriesByParent,
-  loadingParents,
-  loadChildren,
-}: Props) {
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+export default function FileBrowserPanel({ rootPath }: Props) {
+  const entriesByParent = useFileBrowserStore((s) => s.entriesByParent);
+  const loadingParents = useFileBrowserStore((s) => s.loadingParents);
+  const expandedPaths = useFileBrowserStore((s) => s.expandedPaths);
+  const selectedPath = useFileBrowserStore((s) => s.selectedPath);
+  const bulkLoading = useFileBrowserStore((s) => s.bulkLoading);
+  const refreshing = useFileBrowserStore((s) => s.refreshing);
+  const deepTruncated = useFileBrowserStore((s) => s.deepTruncated);
+  const setSelectedPath = useFileBrowserStore((s) => s.setSelectedPath);
+  const expandDirectory = useFileBrowserStore((s) => s.expandDirectory);
+  const collapseDirectory = useFileBrowserStore((s) => s.collapseDirectory);
+  const collapseDirectoryDeep = useFileBrowserStore((s) => s.collapseDirectoryDeep);
+  const toggleDirectory = useFileBrowserStore((s) => s.toggleDirectory);
+  const expandAll = useFileBrowserStore((s) => s.expandAll);
+  const collapseAll = useFileBrowserStore((s) => s.collapseAll);
+  const refresh = useFileBrowserStore((s) => s.refresh);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const visibleEntries = useMemo(
     () => collectVisibleEntries(entriesByParent, expandedPaths),
@@ -69,58 +90,38 @@ export default function FileBrowserPanel({
     overscan: 12,
   });
   const virtualRows = rowVirtualizer.getVirtualItems();
-  const loading = Object.values(loadingParents).some(Boolean);
-
-  useEffect(() => {
-    setSelectedPath(null);
-    setExpandedPaths(new Set());
-  }, [rootPath]);
+  const loading = bulkLoading || Object.values(loadingParents).some(Boolean);
 
   useEffect(() => {
     if (selectedPath && !visibleEntries.some((entry) => entry.path === selectedPath)) {
       setSelectedPath(null);
     }
-  }, [selectedPath, visibleEntries]);
+  }, [selectedPath, setSelectedPath, visibleEntries]);
 
-  const openEntry = useCallback(
+  const revealEntry = useCallback(
     (entry: DirectoryFileEntry) => {
       void runCommandSafely(() => revealInFinder(joinRootPath(rootPath, entry.path)));
     },
     [rootPath],
   );
 
-  const expandDirectory = useCallback(
-    (path: string) => {
-      setExpandedPaths((current) => {
-        if (current.has(path)) return current;
-        const next = new Set(current);
-        next.add(path);
-        return next;
-      });
-      void loadChildren(path);
+  const openFile = useCallback(
+    (entry: DirectoryFileEntry) => {
+      useFileViewerStore.getState().openFile({ rootPath, path: entry.path, name: entry.name });
     },
-    [loadChildren],
+    [rootPath],
   );
 
-  const collapseDirectory = useCallback((path: string) => {
-    setExpandedPaths((current) => {
-      if (!current.has(path)) return current;
-      const next = new Set(current);
-      next.delete(path);
-      return next;
-    });
+  const copyAbsolutePath = useCallback(
+    (entry: DirectoryFileEntry) => {
+      void navigator.clipboard.writeText(joinRootPath(rootPath, entry.path));
+    },
+    [rootPath],
+  );
+
+  const copyRelativePath = useCallback((entry: DirectoryFileEntry) => {
+    void navigator.clipboard.writeText(entry.path);
   }, []);
-
-  const toggleDirectory = useCallback(
-    (path: string) => {
-      if (expandedPaths.has(path)) {
-        collapseDirectory(path);
-      } else {
-        expandDirectory(path);
-      }
-    },
-    [collapseDirectory, expandedPaths, expandDirectory],
-  );
 
   const selectByIndex = useCallback(
     (index: number) => {
@@ -129,7 +130,7 @@ export default function FileBrowserPanel({
       setSelectedPath(entry.path);
       rowVirtualizer.scrollToIndex(index, { align: "auto" });
     },
-    [rowVirtualizer, visibleEntries],
+    [rowVirtualizer, setSelectedPath, visibleEntries],
   );
 
   const handleKeyDown = useCallback(
@@ -199,7 +200,7 @@ export default function FileBrowserPanel({
         if (currentEntry.entryType === "directory") {
           toggleDirectory(currentEntry.path);
         } else {
-          openEntry(currentEntry);
+          openFile(currentEntry);
         }
         return;
       }
@@ -214,8 +215,7 @@ export default function FileBrowserPanel({
       entriesByParent,
       expandedPaths,
       expandDirectory,
-      openEntry,
-      rowVirtualizer,
+      openFile,
       selectByIndex,
       selectedPath,
       toggleDirectory,
@@ -236,10 +236,43 @@ export default function FileBrowserPanel({
         >
           {visibleEntries.length}
         </span>
-        {loading && (
-          <Loader2 className={cn("ml-auto size-3.5 shrink-0 animate-spin text-muted-foreground")} />
-        )}
+        <div className={cn("ml-auto flex items-center gap-0.5")}>
+          <IconButton
+            title="Expand all"
+            aria-label="Expand all"
+            disabled={bulkLoading}
+            onClick={() => void expandAll()}
+          >
+            {bulkLoading ? (
+              <Loader2 className={cn("size-4 animate-spin")} />
+            ) : (
+              <UnfoldVertical className={cn("size-4")} />
+            )}
+          </IconButton>
+          <IconButton title="Collapse all" aria-label="Collapse all" onClick={() => collapseAll()}>
+            <FoldVertical className={cn("size-4")} />
+          </IconButton>
+          <IconButton
+            title="Refresh"
+            aria-label="Refresh"
+            disabled={refreshing}
+            onClick={() => void refresh()}
+          >
+            <RotateCw
+              className={cn("size-4", {
+                "animate-spin": refreshing,
+              })}
+            />
+          </IconButton>
+        </div>
       </div>
+      {deepTruncated && (
+        <div
+          className={cn("shrink-0 border-b border-border px-4 py-1 text-xs text-muted-foreground")}
+        >
+          Tree truncated — too many entries
+        </div>
+      )}
       {visibleEntries.length === 0 ? (
         <div
           className={cn("flex flex-1 items-center justify-center text-sm text-muted-foreground")}
@@ -261,7 +294,10 @@ export default function FileBrowserPanel({
               const selected = selectedPath === entry.path;
               const expanded = !isFile && expandedPaths.has(entry.path);
               const directoryLoading = !!loadingParents[entry.path];
-              const Icon = isFile ? FileText : Folder;
+              const Icon = (() => {
+                if (isFile) return getFileTypeIcon(entry.name);
+                return expanded ? FolderOpen : Folder;
+              })();
               const ToggleIcon = expanded ? ChevronDown : ChevronRight;
               const disclosure = (() => {
                 if (isFile) {
@@ -315,12 +351,13 @@ export default function FileBrowserPanel({
                         )}
                         style={{ paddingLeft: 16 + entry.depth * 14 }}
                         draggable={false}
-                        onClick={() => setSelectedPath(entry.path)}
+                        onClick={() => {
+                          setSelectedPath(entry.path);
+                          if (!isFile) toggleDirectory(entry.path);
+                        }}
                         onDragStart={(event) => event.preventDefault()}
                         onDoubleClick={() => {
-                          if (isFile) {
-                            openEntry(entry);
-                          }
+                          if (isFile) openFile(entry);
                         }}
                         aria-expanded={isFile ? undefined : expanded}
                         aria-selected={selected}
@@ -341,13 +378,31 @@ export default function FileBrowserPanel({
                       </div>
                     </ContextMenuTrigger>
                     <ContextMenuContent>
-                      <ContextMenuItem onSelect={() => openEntry(entry)}>
-                        {isFile ? (
-                          <FileText className={cn("mr-1.5 size-3.5")} />
-                        ) : (
-                          <FolderOpen className={cn("mr-1.5 size-3.5")} />
-                        )}
-                        {isFile ? "Open" : "Open in Finder"}
+                      {isFile && (
+                        <>
+                          <ContextMenuItem onSelect={() => openFile(entry)}>
+                            <Eye className={cn("mr-1.5 size-3.5")} />
+                            View File
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                        </>
+                      )}
+                      {!isFile && (
+                        <ContextMenuItem onSelect={() => collapseDirectoryDeep(entry.path)}>
+                          <FoldVertical className={cn("mr-1.5 size-3.5")} />
+                          Collapse Folder
+                        </ContextMenuItem>
+                      )}
+                      <ContextMenuItem onSelect={() => revealEntry(entry)}>
+                        <FolderOpen className={cn("mr-1.5 size-3.5")} />
+                        Reveal in Finder
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onSelect={() => copyAbsolutePath(entry)}>
+                        Copy Path
+                      </ContextMenuItem>
+                      <ContextMenuItem onSelect={() => copyRelativePath(entry)}>
+                        Copy Relative Path
                       </ContextMenuItem>
                     </ContextMenuContent>
                   </ContextMenu>
