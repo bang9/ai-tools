@@ -149,6 +149,16 @@ pub async fn load_panel_layouts() -> Result<String> {
 }
 
 #[napi]
+pub async fn save_ui_state(state: String) -> Result<()> {
+    blocking_core(move || grove_core::config::save_ui_state_impl(&state)).await
+}
+
+#[napi]
+pub async fn load_ui_state() -> Result<String> {
+    blocking_core(grove_core::config::load_ui_state_impl).await
+}
+
+#[napi]
 pub async fn run_terminal_gc(dry_run: bool) -> Result<String> {
     blocking_json(move || grove_core::pty::run_terminal_gc(dry_run)).await
 }
@@ -398,6 +408,19 @@ pub async fn list_directory_files_deep(root_path: String) -> Result<String> {
 pub async fn read_workspace_file(root_path: String, file_path: String) -> Result<String> {
     blocking_json(move || {
         grove_core::file_browser::read_workspace_file_impl(&root_path, &file_path)
+    })
+    .await
+}
+
+#[napi]
+pub async fn detect_installed_browsers() -> Result<String> {
+    blocking_json(move || Ok(grove_core::browser_cookies::detect_installed_browsers_impl())).await
+}
+
+#[napi]
+pub async fn read_browser_cookies(family: String, host_filter: Option<String>) -> Result<String> {
+    blocking_json(move || {
+        grove_core::browser_cookies::read_browser_cookies_impl(&family, host_filter.as_deref())
     })
     .await
 }

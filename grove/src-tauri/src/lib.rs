@@ -1,4 +1,5 @@
 mod browser;
+mod browser_cookie_inject;
 mod eventbus;
 use grove_core::{
     AppConfig, BehindInfo, CloningProject, CommitInfo, CreatePtyRequest, CreatePtyRestore,
@@ -73,6 +74,16 @@ async fn save_panel_layouts(layouts: String) -> Result<(), String> {
 #[tauri::command]
 async fn load_panel_layouts() -> Result<String, String> {
     blocking(grove_core::config::load_panel_layouts_impl).await
+}
+
+#[tauri::command]
+async fn save_ui_state(state: String) -> Result<(), String> {
+    blocking(move || grove_core::config::save_ui_state_impl(&state)).await
+}
+
+#[tauri::command]
+async fn load_ui_state() -> Result<String, String> {
+    blocking(grove_core::config::load_ui_state_impl).await
 }
 
 // === GIT PROJECT COMMANDS (W2) ===
@@ -642,6 +653,8 @@ pub fn run() {
             load_terminal_layouts,
             save_panel_layouts,
             load_panel_layouts,
+            save_ui_state,
+            load_ui_state,
             // Git Project (W2)
             list_projects,
             start_clone,
@@ -730,6 +743,8 @@ pub fn run() {
             browser::browser_close,
             browser::browser_close_all,
             browser::browser_open_devtools,
+            browser::detect_installed_browsers,
+            browser::browser_import_cookies,
         ])
         .manage(browser::BrowserState::default())
         .plugin(tauri_plugin_updater::Builder::new().build())

@@ -89,10 +89,13 @@ export default function FileBrowserPanel({ rootPath }: Props) {
   const loading = Object.values(loadingParents).some(Boolean);
 
   useEffect(() => {
+    // Don't prune while directories are still loading — a restored selection
+    // may simply not be visible yet.
+    if (loading) return;
     if (selectedPath && !visibleEntries.some((entry) => entry.path === selectedPath)) {
       setSelectedPath(null);
     }
-  }, [selectedPath, setSelectedPath, visibleEntries]);
+  }, [loading, selectedPath, setSelectedPath, visibleEntries]);
 
   const revealEntry = useCallback(
     (entry: DirectoryFileEntry) => {

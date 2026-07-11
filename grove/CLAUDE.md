@@ -113,6 +113,7 @@ grove-core/src/            # Shared Rust backend (used by both Tauri and Electro
 - `~/.grove/terminal-layouts.json` — split tree structure + size ratios per worktree
 - `~/.grove/terminal-session-snapshots.json` — terminal scrollback/CWD snapshots per pane
 - `~/.grove/panel-layouts.json` — main panel and global terminal ratios
+- `~/.grove/ui-state.json` — persisted UI state: per-worktree tab sessions (file/browser tabs) and per-root file browser expansion/selection
 - `~/.grove/missions.json` — mission metadata and project membership
 - `~/.grove/notes.json` — sidebar notes keyed by source, worktree, and mission ids
 - `~/.grove/missions/<id>/` — mission worktree roots

@@ -24,6 +24,7 @@ import type {
   BrowserBounds,
   BrowserNavEvent,
   BrowserNewWindowEvent,
+  DetectedBrowser,
   Platform,
   PtyOutputTransport,
   UnlistenFn,
@@ -150,6 +151,8 @@ export interface TerminalGcReport {
   killedSessionNames: string[];
   skippedAttachedWorktreePaths: string[];
   leftoverProcessIds: number[];
+  reapedPtyIds: string[];
+  deadReaderPtyIds: string[];
 }
 
 export function getCommandErrorMessage(error: unknown): string {
@@ -217,6 +220,14 @@ export async function savePanelLayouts(layouts: string): Promise<void> {
 
 export async function loadPanelLayouts(): Promise<string> {
   return platform.invoke<string>("load_panel_layouts");
+}
+
+export async function saveUiState(state: string): Promise<void> {
+  return platform.invoke("save_ui_state", { state });
+}
+
+export async function loadUiState(): Promise<string> {
+  return platform.invoke<string>("load_ui_state");
 }
 
 // === GIT PROJECT COMMANDS (W2) ===
@@ -394,6 +405,15 @@ export async function browserCloseAll(): Promise<void> {
 
 export async function browserOpenDevtools(tabId: string): Promise<void> {
   return platform.invoke("browser_open_devtools", { tabId });
+}
+
+export async function browserDetectBrowsers(): Promise<DetectedBrowser[]> {
+  return platform.invoke("detect_installed_browsers");
+}
+
+/** Import cookies from `family` into the browser session; resolves to the count set. */
+export async function browserImportCookies(family: string, host?: string): Promise<number> {
+  return platform.invoke("browser_import_cookies", { family, host });
 }
 
 /** Electron exposes real session history (webContents.navigationHistory). */

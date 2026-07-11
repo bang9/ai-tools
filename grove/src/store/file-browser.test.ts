@@ -12,6 +12,7 @@ vi.mock("../lib/command", () => ({
 import * as platform from "../lib/platform";
 import { runCommandSafely } from "../lib/command";
 import type { DirectoryFileEntry } from "../types";
+import { primeUiStateCacheForTests, readUiStateCacheForTests } from "../lib/ui-state-storage";
 import { useFileBrowserStore } from "./file-browser";
 
 function dir(path: string, depth: number): DirectoryFileEntry {
@@ -233,5 +234,57 @@ describe("useFileBrowserStore", () => {
     useFileBrowserStore.getState().collapseDirectoryDeep("src");
 
     expect([...useFileBrowserStore.getState().expandedPaths]).toEqual(["lib"]);
+  });
+
+  describe("persisted ui state", () => {
+    const STORAGE_KEY = "grove.fileBrowserUi.v1";
+
+    beforeEach(() => {
+      primeUiStateCacheForTests({});
+    });
+
+    it("setRootPath restores persisted expansion and loadChildren cascades into it", async () => {
+      primeUiStateCacheForTests({
+        [STORAGE_KEY]: {
+          "/tmp/other": {
+            expandedPaths: ["src", "src/utils"],
+            selectedPath: "src/utils/helper.ts",
+            lastUsed: 1,
+          },
+        },
+      });
+      vi.mocked(platform.listDirectoryFiles).mockImplementation(async (_root, parent) => {
+        if (parent === "") return [dir("src", 0)];
+        if (parent === "src") return [dir("src/utils", 1), file("src/main.ts", 1)];
+        if (parent === "src/utils") return [file("src/utils/helper.ts", 2)];
+        throw new Error(`unexpected parent: ${parent}`);
+      });
+
+      useFileBrowserStore.getState().setRootPath("/tmp/other");
+      expect([...useFileBrowserStore.getState().expandedPaths]).toEqual(["src", "src/utils"]);
+      expect(useFileBrowserStore.getState().selectedPath).toBe("src/utils/helper.ts");
+
+      await useFileBrowserStore.getState().loadChildren("");
+      await vi.waitFor(() => {
+        const state = useFileBrowserStore.getState();
+        expect(state.loadedParents["src/utils"]).toBe(true);
+      });
+      expect(useFileBrowserStore.getState().entriesByParent["src/utils"]).toEqual([
+        file("src/utils/helper.ts", 2),
+      ]);
+    });
+
+    it("saves expansion and selection changes for the active root", () => {
+      useFileBrowserStore.getState().setRootPath("/tmp/save-root");
+      useFileBrowserStore.setState({ expandedPaths: new Set(["src"]) });
+      useFileBrowserStore.getState().setSelectedPath("src/main.ts");
+
+      const saved = readUiStateCacheForTests()[STORAGE_KEY] as Record<
+        string,
+        { expandedPaths: string[]; selectedPath: string | null }
+      >;
+      expect(saved["/tmp/save-root"].expandedPaths).toEqual(["src"]);
+      expect(saved["/tmp/save-root"].selectedPath).toBe("src/main.ts");
+    });
   });
 });

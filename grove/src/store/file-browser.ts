@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { DirectoryFileEntry } from "../types";
 import * as platform from "../lib/platform";
 import { runCommandSafely } from "../lib/command";
+import { loadFileBrowserUiState, saveFileBrowserUiState } from "../lib/file-browser-ui-persistence";
 
 function entriesEqual(a: DirectoryFileEntry[], b: DirectoryFileEntry[]): boolean {
   if (a === b) return true;
@@ -68,13 +69,16 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
 
   setRootPath: (path) => {
     if (path === get().rootPath) return;
+    // Restore this root's persisted expansion/selection; loadChildren cascades
+    // into restored-expanded directories as their parents load.
+    const restored = path ? loadFileBrowserUiState(path) : null;
     set({
       rootPath: path,
       entriesByParent: {},
       loadedParents: {},
       loadingParents: {},
-      expandedPaths: new Set(),
-      selectedPath: null,
+      expandedPaths: new Set(restored?.expandedPaths ?? []),
+      selectedPath: restored?.selectedPath ?? null,
       bulkLoading: false,
       refreshing: false,
       deepTruncated: false,
@@ -108,14 +112,27 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
         loadedParents: { ...state.loadedParents, [key]: true },
         loadingParents: { ...state.loadingParents, [key]: false },
       }));
-      return;
+    } else {
+      set((state) => ({
+        entriesByParent: { ...state.entriesByParent, [key]: next },
+        loadedParents: { ...state.loadedParents, [key]: true },
+        loadingParents: { ...state.loadingParents, [key]: false },
+      }));
     }
 
-    set((state) => ({
-      entriesByParent: { ...state.entriesByParent, [key]: next },
-      loadedParents: { ...state.loadedParents, [key]: true },
-      loadingParents: { ...state.loadingParents, [key]: false },
-    }));
+    // Cascade into expanded-but-unloaded subdirectories (restored expansion
+    // after a restart, or expansion pruned back in by refresh).
+    const { expandedPaths, loadedParents, loadingParents } = get();
+    for (const entry of get().entriesByParent[key] ?? []) {
+      if (
+        entry.entryType === "directory" &&
+        expandedPaths.has(entry.path) &&
+        !loadedParents[entry.path] &&
+        !loadingParents[entry.path]
+      ) {
+        void get().loadChildren(entry.path);
+      }
+    }
   },
 
   setSelectedPath: (path) => set({ selectedPath: path }),
@@ -273,3 +290,18 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
     });
   },
 }));
+
+// Persist expansion/selection per root so the tree survives app restarts.
+// setRootPath writes the restored state in the same set(), so this write-back
+// is idempotent and never clobbers another root's saved state.
+useFileBrowserStore.subscribe((state, previous) => {
+  if (!state.rootPath) return;
+  if (
+    state.rootPath === previous.rootPath &&
+    state.expandedPaths === previous.expandedPaths &&
+    state.selectedPath === previous.selectedPath
+  ) {
+    return;
+  }
+  saveFileBrowserUiState(state.rootPath, state.expandedPaths, state.selectedPath);
+});

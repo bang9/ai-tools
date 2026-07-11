@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Copy, File, FolderOpen, Globe, RotateCw, WrapText } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
@@ -29,10 +29,20 @@ function isHtmlFile(name: string): boolean {
   return /\.(html?|xhtml)$/i.test(name);
 }
 
-function FileViewerPanel({ tabId }: FileViewerPanelProps) {
+function FileViewerPanel({ tabId, isActive }: FileViewerPanelProps) {
   const entry = useFileViewerStore(selectFileViewerTab(tabId));
   const reload = useFileViewerStore((s) => s.reload);
+  const load = useFileViewerStore((s) => s.load);
   const [wrap, setWrap] = useState(false);
+
+  // Session-restored tabs start "idle" with no content — load lazily the
+  // first time the tab is shown.
+  const entryStatus = entry?.status ?? null;
+  useEffect(() => {
+    if (isActive && entryStatus === "idle") {
+      void load(tabId);
+    }
+  }, [entryStatus, isActive, load, tabId]);
 
   const handleReload = useCallback(() => {
     void reload(tabId);

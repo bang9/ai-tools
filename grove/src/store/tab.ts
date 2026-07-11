@@ -38,6 +38,18 @@ const DEFAULT_SESSION: TabSession = {
   activeTabId: "terminal",
 };
 
+/** Rebuild a session from persisted closable tabs, pinned tabs included. */
+export function createSessionWithClosableTabs(
+  closableTabs: AppTab[],
+  activeTabId: string,
+): TabSession {
+  const tabs = [TERMINAL_TAB, CHANGES_TAB, ...closableTabs];
+  return {
+    tabs,
+    activeTabId: tabs.some((tab) => tab.id === activeTabId) ? activeTabId : "terminal",
+  };
+}
+
 function getSessionForWorktree(state: TabState, worktreePath: string | null): TabSession {
   if (!worktreePath) return DEFAULT_SESSION;
   return state.sessions[worktreePath] ?? DEFAULT_SESSION;

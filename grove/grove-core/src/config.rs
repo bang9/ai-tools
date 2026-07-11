@@ -600,6 +600,23 @@ pub fn load_panel_layouts_impl() -> Result<String, String> {
     }
 }
 
+// ── Persistent UI state (tab sessions, file browser expansion, …) ──
+
+pub fn save_ui_state_impl(state: &str) -> Result<(), String> {
+    let path = grove_data_path("ui-state.json")?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(&path, state).map_err(|e| e.to_string())
+}
+
+pub fn load_ui_state_impl() -> Result<String, String> {
+    let path = grove_data_path("ui-state.json")?;
+    if path.exists() {
+        fs::read_to_string(&path).map_err(|e| e.to_string())
+    } else {
+        Ok("{}".to_string())
+    }
+}
+
 // ── Terminal layout persistence ──
 
 pub fn save_terminal_layouts_impl(layouts: &str) -> Result<(), String> {
