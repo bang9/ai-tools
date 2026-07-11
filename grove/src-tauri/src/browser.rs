@@ -591,6 +591,36 @@ fn open_detached_devtools(webview: &Webview, tab_id: String) {
     webview.open_devtools();
 }
 
+/// Detect installed browsers whose cookies Grove can import.
+#[tauri::command]
+pub fn detect_installed_browsers() -> Vec<grove_core::browser_cookies::DetectedBrowser> {
+    grove_core::browser_cookies::detect_installed_browsers_impl()
+}
+
+/// Import cookies from `family` (optionally scoped to `host`) into WebKit's
+/// shared cookie store so the embedded browser is logged in. Decryption +
+/// Keychain access run on this command thread; the objc2 cookie injection is
+/// hopped to the main thread (WebKit objects are not thread-safe).
+#[tauri::command]
+pub fn browser_import_cookies(
+    app: AppHandle,
+    family: String,
+    host: Option<String>,
+) -> Result<usize, String> {
+    let cookies = grove_core::browser_cookies::read_browser_cookies_impl(&family, host.as_deref())?;
+    if cookies.is_empty() {
+        return Ok(0);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let count = crate::browser_cookie_inject::set_cookies(&cookies);
+        let _ = tx.send(count);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|e| e.to_string())
+}
+
 /// Close every browser webview. A freshly reloaded renderer calls this once to
 /// clean up webviews orphaned by its previous session (tab state is in-memory).
 #[tauri::command]

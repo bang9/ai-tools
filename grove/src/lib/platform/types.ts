@@ -28,6 +28,13 @@ export interface BrowserNewWindowEvent {
   url: string;
 }
 
+/** A browser Grove can import cookies from (from grove-core detection). */
+export interface DetectedBrowser {
+  family: string;
+  label: string;
+  available: boolean;
+}
+
 export interface Platform {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T = unknown>(event: string, handler: (payload: T) => void): Promise<UnlistenFn>;

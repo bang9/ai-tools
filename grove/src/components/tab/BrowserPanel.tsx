@@ -30,6 +30,7 @@ import {
   syncBrowserBounds,
 } from "../../lib/browser-webview";
 import { useOverlayPresence } from "../../hooks/useOverlayPresence";
+import BrowserCookieImportMenu from "./BrowserCookieImportMenu";
 
 const QUICK_URLS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"];
 
@@ -484,6 +485,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
           )}
         </form>
 
+        <BrowserCookieImportMenu url={url} onImported={handleReload} />
         <IconButton
           onClick={handleOpenDevtools}
           disabled={!url}
