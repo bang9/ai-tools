@@ -92,7 +92,9 @@ function SortableChip({ tabId, children }: { tabId: string; children: ReactNode 
     id: tabId,
   });
   const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    // Translate only — the sortable strategy's scale component would stretch
+    // the dragged chip to each neighbor's width as it passes over them.
+    transform: CSS.Translate.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
     touchAction: "none",
