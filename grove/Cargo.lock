@@ -1347,6 +1347,7 @@ dependencies = [
  "dirs 5.0.1",
  "git2",
  "hmac",
+ "libc",
  "pbkdf2",
  "plist",
  "portable-pty",

@@ -10,11 +10,22 @@
 //! - [`framing`] — the STREAM channel: the length-prefixed binary GCKL frame
 //!   codec for `Data`/`Exit`/`Resize`. Raw PTY bytes NEVER ride NDJSON.
 //!
-//! P1 is pure types + framing — there are no sockets, spawning, or I/O loops
-//! here yet; those land in later phases (client/supervisor/daemon bin).
+//! P3 adds [`client`] — the in-process DaemonClient (control+stream sockets,
+//! RPC correlation, generation-guarded reconnect, sticky cold-restore cache) plus
+//! the blocking bridge. It is unix-only (the endpoint is a unix socket; the
+//! Windows named-pipe transport lands with the supervisor).
+//!
+//! P4 adds [`supervisor`] — the connect-or-spawn adoption gate (signed-bin copy,
+//! detached spawn + readiness, pid-identity kill-stale). Also unix-only.
 
 pub mod framing;
 pub mod protocol;
+
+#[cfg(unix)]
+pub mod client;
+
+#[cfg(unix)]
+pub mod supervisor;
 
 pub use framing::{
     seq_is_monotonic, ExitStatus, FrameError, SeqTracker, StreamDecoder, StreamFrame,
@@ -27,4 +38,17 @@ pub use protocol::{
     write_secret_file, ClientKind, ControlMessage, DaemonPidFile, DaemonSocket, Hello, HelloAck,
     Notify, ProtocolError, RpcError, RpcReply, RpcRequest, GROVE_DAEMON_PROTOCOL_VERSION,
     MAX_CONTROL_LINE_BYTES,
+};
+
+#[cfg(unix)]
+pub use client::{
+    BridgeError, ClientError, ClientHandle, ColdRestoreCache, ColdRestorePayload, CreateOrAttach,
+    CreateOrAttachResult, DaemonClient, DaemonClientOptions, SessionInfo, StreamSubscriber,
+    DEFAULT_REQUEST_TIMEOUT,
+};
+
+#[cfg(unix)]
+pub use supervisor::{
+    ensure_running, kill_stale, EnsureOutcome, EnsureResult, EnsureRunningConfig, Supervisor,
+    SupervisorError,
 };

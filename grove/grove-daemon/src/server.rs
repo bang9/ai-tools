@@ -9,7 +9,7 @@
 //! wire. Client disconnect is disconnect-not-kill: sessions keep running (L7).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -122,6 +122,10 @@ pub struct Daemon {
     hub: StreamHub,
     shutdown: TokioNotify,
     shutdown_flag: AtomicBool,
+    /// Count of successful CONTROL hello handshakes. Backs the P3 client
+    /// integration test that asserts concurrent `ensure_connected` callers
+    /// coalesce into exactly ONE control connection (design P7).
+    control_hellos: AtomicU64,
 }
 
 impl Daemon {
@@ -133,6 +137,7 @@ impl Daemon {
             hub: StreamHub::default(),
             shutdown: TokioNotify::new(),
             shutdown_flag: AtomicBool::new(false),
+            control_hellos: AtomicU64::new(0),
         })
     }
 
@@ -225,7 +230,10 @@ impl Daemon {
         }
 
         match hello.kind {
-            ClientKind::Control => self.run_control(reader, write_half).await,
+            ClientKind::Control => {
+                self.control_hellos.fetch_add(1, Ordering::SeqCst);
+                self.run_control(reader, write_half).await
+            }
             ClientKind::Stream => self.run_stream(reader, write_half).await,
         }
     }
@@ -338,6 +346,19 @@ impl Daemon {
                     self.kill_all_sessions();
                 }
                 self.trigger_shutdown();
+                Ok(json!({}))
+            }
+            // Test-only introspection backing the P3 client integration suite.
+            // `debugControlHelloCount` proves connect-coalescing (one control
+            // hello for N concurrent callers); `debugSleep` is a stalled method
+            // for the per-request-timeout + in-flight-rejection tests. Both are
+            // cheap and side-effect-free, so they stay compiled in.
+            "debugControlHelloCount" => {
+                Ok(json!({ "count": self.control_hellos.load(Ordering::SeqCst) }))
+            }
+            "debugSleep" => {
+                let ms = params.get("ms").and_then(Value::as_u64).unwrap_or(0);
+                tokio::time::sleep(Duration::from_millis(ms)).await;
                 Ok(json!({}))
             }
             other => Err(RpcError {
@@ -491,6 +512,12 @@ impl Daemon {
                     let _ = session.resize(cols, rows);
                 }
             }
+            // P16 sticky cold-restore scaffold: the client clears its per-session
+            // cache locally and sends this so the daemon can drop any retained
+            // cold-restore payload. Accepted no-op until the checkpointer wires
+            // real cold restore (design P7/P8); acking a session it never held is
+            // harmless.
+            "ackColdRestore" => {}
             _ => {}
         }
     }
