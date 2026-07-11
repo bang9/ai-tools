@@ -122,10 +122,10 @@ function ImageViewer({ data, name }: ImageViewerProps) {
         )}
       >
         <IconButton onClick={() => zoomBy(1 / ZOOM_STEP)} title="Zoom out" aria-label="Zoom out">
-          <ZoomOut className={cn("size-3.5")} />
+          <ZoomOut className={cn("size-3")} />
         </IconButton>
         <IconButton onClick={() => zoomBy(ZOOM_STEP)} title="Zoom in" aria-label="Zoom in">
-          <ZoomIn className={cn("size-3.5")} />
+          <ZoomIn className={cn("size-3")} />
         </IconButton>
         <button
           type="button"
@@ -137,7 +137,7 @@ function ImageViewer({ data, name }: ImageViewerProps) {
             { "bg-accent/10 text-foreground": zoom === null },
           )}
         >
-          <Maximize2 className={cn("size-3.5")} />
+          <Maximize2 className={cn("size-3")} />
           Fit
         </button>
         <button

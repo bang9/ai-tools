@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
-import { Copy, File, FolderOpen, RotateCw, WrapText } from "lucide-react";
+import { Copy, File, FolderOpen, Globe, RotateCw, WrapText } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { revealInFinder } from "../../lib/platform";
+import { openExternal, revealInFinder } from "../../lib/platform";
 import { runCommandSafely } from "../../lib/command";
 import { formatFileSize } from "../../lib/format-size";
 import { useFileViewerStore, selectFileViewerTab } from "../../store/file-viewer";
@@ -17,6 +17,14 @@ interface FileViewerPanelProps {
 
 function joinPath(rootPath: string, filePath: string): string {
   return `${rootPath.replace(/\/$/, "")}/${filePath}`;
+}
+
+function toFileUrl(absolutePath: string): string {
+  return `file://${absolutePath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function isHtmlFile(name: string): boolean {
+  return /\.(html?|xhtml)$/i.test(name);
 }
 
 function FileViewerPanel({ tabId }: FileViewerPanelProps) {
@@ -40,6 +48,13 @@ function FileViewerPanel({ tabId }: FileViewerPanelProps) {
     });
   }, [entry]);
 
+  const handleOpenInBrowser = useCallback(() => {
+    if (!entry) return;
+    void runCommandSafely(() => openExternal(toFileUrl(joinPath(entry.rootPath, entry.path))), {
+      errorToast: "Failed to open in browser",
+    });
+  }, [entry]);
+
   if (!entry) return null;
 
   const isText = entry.status === "loaded" && entry.data?.kind === "text";
@@ -52,15 +67,24 @@ function FileViewerPanel({ tabId }: FileViewerPanelProps) {
           "flex h-9 shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3",
         )}
       >
-        <span className={cn("shrink-0 truncate text-sm font-medium text-foreground")}>
+        <span className={cn("shrink-0 truncate text-xs font-medium text-foreground")}>
           {entry.name}
         </span>
         <span
-          className={cn("min-w-0 flex-1 truncate text-xs text-muted-foreground")}
+          className={cn("min-w-0 flex-1 truncate text-[11px] text-muted-foreground")}
           title={entry.path}
         >
           {entry.path}
         </span>
+        {isHtmlFile(entry.name) && (
+          <IconButton
+            onClick={handleOpenInBrowser}
+            title="Open in browser"
+            aria-label="Open in browser"
+          >
+            <Globe className={cn("size-3")} />
+          </IconButton>
+        )}
         {isText && (
           <IconButton
             onClick={() => setWrap((value) => !value)}
@@ -69,17 +93,17 @@ function FileViewerPanel({ tabId }: FileViewerPanelProps) {
             aria-pressed={wrap}
             className={cn({ "bg-accent/10 text-foreground": wrap })}
           >
-            <WrapText className={cn("size-3.5")} />
+            <WrapText className={cn("size-3")} />
           </IconButton>
         )}
         <IconButton onClick={handleReload} disabled={loading} title="Reload" aria-label="Reload">
-          <RotateCw className={cn("size-3.5", { "animate-spin": loading })} />
+          <RotateCw className={cn("size-3", { "animate-spin": loading })} />
         </IconButton>
         <IconButton onClick={handleCopyPath} title="Copy path" aria-label="Copy path">
-          <Copy className={cn("size-3.5")} />
+          <Copy className={cn("size-3")} />
         </IconButton>
         <IconButton onClick={handleReveal} title="Reveal in Finder" aria-label="Reveal in Finder">
-          <FolderOpen className={cn("size-3.5")} />
+          <FolderOpen className={cn("size-3")} />
         </IconButton>
       </div>
 

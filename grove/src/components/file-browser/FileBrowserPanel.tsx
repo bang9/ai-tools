@@ -8,7 +8,6 @@ import {
   FolderOpen,
   Loader2,
   RotateCw,
-  UnfoldVertical,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
@@ -66,15 +65,12 @@ export default function FileBrowserPanel({ rootPath }: Props) {
   const loadingParents = useFileBrowserStore((s) => s.loadingParents);
   const expandedPaths = useFileBrowserStore((s) => s.expandedPaths);
   const selectedPath = useFileBrowserStore((s) => s.selectedPath);
-  const bulkLoading = useFileBrowserStore((s) => s.bulkLoading);
   const refreshing = useFileBrowserStore((s) => s.refreshing);
-  const deepTruncated = useFileBrowserStore((s) => s.deepTruncated);
   const setSelectedPath = useFileBrowserStore((s) => s.setSelectedPath);
   const expandDirectory = useFileBrowserStore((s) => s.expandDirectory);
   const collapseDirectory = useFileBrowserStore((s) => s.collapseDirectory);
   const collapseDirectoryDeep = useFileBrowserStore((s) => s.collapseDirectoryDeep);
   const toggleDirectory = useFileBrowserStore((s) => s.toggleDirectory);
-  const expandAll = useFileBrowserStore((s) => s.expandAll);
   const collapseAll = useFileBrowserStore((s) => s.collapseAll);
   const refresh = useFileBrowserStore((s) => s.refresh);
 
@@ -90,7 +86,7 @@ export default function FileBrowserPanel({ rootPath }: Props) {
     overscan: 12,
   });
   const virtualRows = rowVirtualizer.getVirtualItems();
-  const loading = bulkLoading || Object.values(loadingParents).some(Boolean);
+  const loading = Object.values(loadingParents).some(Boolean);
 
   useEffect(() => {
     if (selectedPath && !visibleEntries.some((entry) => entry.path === selectedPath)) {
@@ -237,20 +233,8 @@ export default function FileBrowserPanel({ rootPath }: Props) {
           {visibleEntries.length}
         </span>
         <div className={cn("ml-auto flex items-center gap-0.5")}>
-          <IconButton
-            title="Expand all"
-            aria-label="Expand all"
-            disabled={bulkLoading}
-            onClick={() => void expandAll()}
-          >
-            {bulkLoading ? (
-              <Loader2 className={cn("size-4 animate-spin")} />
-            ) : (
-              <UnfoldVertical className={cn("size-4")} />
-            )}
-          </IconButton>
           <IconButton title="Collapse all" aria-label="Collapse all" onClick={() => collapseAll()}>
-            <FoldVertical className={cn("size-4")} />
+            <FoldVertical className={cn("size-3.5")} />
           </IconButton>
           <IconButton
             title="Refresh"
@@ -259,20 +243,13 @@ export default function FileBrowserPanel({ rootPath }: Props) {
             onClick={() => void refresh()}
           >
             <RotateCw
-              className={cn("size-4", {
+              className={cn("size-3.5", {
                 "animate-spin": refreshing,
               })}
             />
           </IconButton>
         </div>
       </div>
-      {deepTruncated && (
-        <div
-          className={cn("shrink-0 border-b border-border px-4 py-1 text-xs text-muted-foreground")}
-        >
-          Tree truncated — too many entries
-        </div>
-      )}
       {visibleEntries.length === 0 ? (
         <div
           className={cn("flex flex-1 items-center justify-center text-sm text-muted-foreground")}
@@ -319,9 +296,9 @@ export default function FileBrowserPanel({ rootPath }: Props) {
                     }}
                   >
                     {directoryLoading ? (
-                      <Loader2 className={cn("size-3.5 animate-spin")} />
+                      <Loader2 className={cn("size-3 animate-spin")} />
                     ) : (
-                      <ToggleIcon className={cn("size-3.5")} />
+                      <ToggleIcon className={cn("size-3")} />
                     )}
                   </button>
                 );
@@ -364,7 +341,7 @@ export default function FileBrowserPanel({ rootPath }: Props) {
                       >
                         {disclosure}
                         <Icon
-                          className={cn("size-3.5 shrink-0", {
+                          className={cn("size-3 shrink-0", {
                             "text-muted-foreground": !isFile,
                           })}
                         />
