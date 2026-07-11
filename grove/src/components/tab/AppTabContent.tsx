@@ -38,15 +38,18 @@ function findPaneIdForPty(ptyId: string): string | null {
 }
 
 function AppTabContent() {
-  const { worktreePath } = useResolvedSidebarSelection();
+  const { terminalPath, worktreePath } = useResolvedSidebarSelection();
+  // Tabs follow the terminal scope: mission roots have a terminal path but no
+  // worktree, and still need working tab sessions (e.g. file viewer tabs).
+  const tabScopePath = worktreePath ?? terminalPath;
   // This sash resizes the worktree terminal area and the global terminal at
   // once — hold all PTY resizes for the drag.
   const handleDragStateChange = usePtyResizeHold();
   const setActiveWorktree = useTabStore((s) => s.setActiveWorktree);
 
   useEffect(() => {
-    setActiveWorktree(worktreePath);
-  }, [worktreePath, setActiveWorktree]);
+    setActiveWorktree(tabScopePath);
+  }, [tabScopePath, setActiveWorktree]);
 
   // Wire native browser nav events + orphan cleanup at app startup, not just
   // when the first browser tab mounts (idempotent).
@@ -54,8 +57,8 @@ function AppTabContent() {
     initBrowserWebviewBridge();
   }, []);
 
-  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, worktreePath));
-  const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
+  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, tabScopePath));
+  const tabs = useTabStore((state) => selectTabsForWorktree(state, tabScopePath));
   const browserTabs = tabs.filter((tab) => tab.type === "browser");
   const fileTabs = tabs.filter((tab) => tab.type === "file");
   const isTerminal = activeTabId === "terminal";

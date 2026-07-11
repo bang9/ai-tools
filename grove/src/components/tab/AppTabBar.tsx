@@ -153,9 +153,12 @@ function SelectedWorktreePrAction({ worktreePath }: { worktreePath: string | nul
 }
 
 function AppTabBar() {
-  const { worktreePath } = useResolvedSidebarSelection();
-  const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
-  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, worktreePath));
+  const { terminalPath, worktreePath } = useResolvedSidebarSelection();
+  // Same scope as AppTabContent: mission roots (terminal path, no worktree)
+  // get working tab sessions too.
+  const tabScopePath = worktreePath ?? terminalPath;
+  const tabs = useTabStore((state) => selectTabsForWorktree(state, tabScopePath));
+  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, tabScopePath));
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const closeTab = useTabStore((s) => s.closeTab);
   const addTab = useTabStore((s) => s.addTab);
@@ -220,8 +223,8 @@ function AppTabBar() {
           );
         })}
 
-        {/* Add tab dropdown — hidden without a worktree (tabs are per-worktree) */}
-        {worktreePath && (
+        {/* Add tab dropdown — hidden without a tab scope (tabs are per-scope) */}
+        {tabScopePath && (
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
               <IconButton title="Add tab" aria-label="Add tab" className={cn("shrink-0")}>
