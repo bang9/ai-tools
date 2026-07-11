@@ -425,16 +425,18 @@ class TerminalPaneRuntime {
   private readonly boundHandlePtyOutput = (data: Uint8Array) => {
     this.handlePtyOutput(data);
   };
-  // Coalesces dense input bursts into fewer backend writes; flushes to the
-  // current ptyId on a microtask boundary so query replies are never delayed.
+  // Coalesces interactive input, chunks large pastes, and paces the chunk stream
+  // on write acceptance (writePty resolves after the bytes land). Reads ptyId
+  // fresh per write so a mid-drain PTY swap targets the current backend.
   private readonly inputQueue = new PtyInputQueue({
-    flush: (data) => {
+    write: (data) => {
       if (this.disposed || !this.ptyId) {
         return;
       }
-      writePty(this.ptyId, data).catch((error) => {
-        console.error("writePty failed:", error);
-      });
+      return writePty(this.ptyId, data);
+    },
+    onWriteError: (error) => {
+      console.error("writePty failed:", error);
     },
   });
 

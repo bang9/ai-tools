@@ -181,10 +181,12 @@ struct TmuxCapturedContent {
 struct PtyInstance {
     session_name: String,
     worktree_path: String,
-    /// Behind its own per-instance lock so a stalled `write_all` (tmux input
-    /// buffer full) only blocks writes to THIS pty, not every unrelated pty
-    /// serializing on the global registry lock.
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// One dedicated, ordered writer thread per PTY (see PtyWriter). Enqueue is
+    /// strict FIFO across every caller, so two concurrent writePty calls for this
+    /// PTY can never interleave or reorder whole batches (paste body vs trailing
+    /// `\r`); a stalled `write_all` only blocks THIS pty's queue, never the
+    /// registry or any unrelated pty.
+    writer: Arc<PtyWriter>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     tracked: Arc<Mutex<PtyRuntimeState>>,
@@ -322,6 +324,282 @@ fn run_output_flusher(shared: Arc<CoalescerShared>) {
                 .unwrap_or_else(|error| error.into_inner())
                 .0;
         }
+    }
+}
+
+/// Max bytes allowed to queue for a single PTY before the SEND side blocks.
+/// Why: bound memory so a frozen consumer (tmux mid-write_all) can't let an
+/// unbounded paste backlog grow until it OOMs the process. 1 MiB is far above
+/// any real keystroke or paste burst, so healthy writes never block on it.
+const MAX_WRITE_QUEUE_BYTES: usize = 1024 * 1024;
+/// End-to-end deadline for one write() (enqueue wait + the writer thread's
+/// write_all). Why: a frozen tmux blocks write_all indefinitely; without this
+/// the caller's pool thread would hang forever. 30s never trips on a healthy pty.
+const WRITE_DEADLINE: Duration = Duration::from_secs(30);
+const WRITE_TIMEOUT_MSG: &str = "terminal input write timed out; the terminal may be unresponsive";
+const WRITER_CLOSED_MSG: &str = "terminal input writer is shutting down";
+
+/// One queued write batch plus the slot its result lands in. `id` lets a
+/// timed-out caller pull its own still-queued job back out (see drop_queued_job)
+/// so abandoned bytes are never written later, out of order, behind a newer call.
+struct QueuedWrite {
+    id: u64,
+    bytes: Vec<u8>,
+    completion: Arc<WriteCompletion>,
+}
+
+struct WriterInner {
+    queue: VecDeque<QueuedWrite>,
+    queued_bytes: usize,
+    next_id: u64,
+    closed: bool,
+}
+
+struct WriterShared {
+    inner: Mutex<WriterInner>,
+    /// Writer thread waits here for a new job or `closed`.
+    job_ready: Condvar,
+    /// Senders blocked on the byte cap wait here for the queue to drain.
+    space_free: Condvar,
+}
+
+/// Per-write completion slot. The writer thread stores the write_all Result here
+/// AFTER the bytes land (and after Enter-detection), then notifies; the calling
+/// thread blocks on it. Storing the outcome in the slot (not just signalling)
+/// means a writer that finishes before the caller waits is never a lost wakeup.
+struct WriteCompletion {
+    result: Mutex<Option<Result<(), String>>>,
+    done: Condvar,
+}
+
+/// Handle to a PTY's dedicated, ordered writer thread. `write` enqueues bytes in
+/// strict FIFO order regardless of how many threads call concurrently, then
+/// blocks the caller until the writer thread's `write_all` for exactly those
+/// bytes returns (or the deadline elapses). Mirrors the OutputCoalescer
+/// sole-flusher pattern on the input side: one thread is the SOLE writer, so
+/// concurrent writePty calls can never interleave or reorder whole batches.
+struct PtyWriter {
+    shared: Arc<WriterShared>,
+    deadline: Duration,
+}
+
+impl PtyWriter {
+    fn spawn(
+        writer: Box<dyn Write + Send>,
+        tracked: Arc<Mutex<PtyRuntimeState>>,
+        deadline: Duration,
+    ) -> Arc<Self> {
+        let shared = Arc::new(WriterShared {
+            inner: Mutex::new(WriterInner {
+                queue: VecDeque::new(),
+                queued_bytes: 0,
+                next_id: 0,
+                closed: false,
+            }),
+            job_ready: Condvar::new(),
+            space_free: Condvar::new(),
+        });
+        let writer_shared = Arc::clone(&shared);
+        std::thread::spawn(move || run_pty_writer(writer, writer_shared, tracked));
+        Arc::new(Self { shared, deadline })
+    }
+
+    fn write(&self, data: &[u8]) -> Result<(), String> {
+        // Why: an empty write delivers nothing; skip the queue so it never holds
+        // a slot or waits on a completion. Matches today's write_all(&[]) => Ok.
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let deadline_at = Instant::now() + self.deadline;
+        let len = data.len();
+        let completion = Arc::new(WriteCompletion {
+            result: Mutex::new(None),
+            done: Condvar::new(),
+        });
+
+        // Phase 1: enqueue in FIFO order. If the queue is over the byte cap,
+        // block on `space_free` (with the deadline) so a runaway backlog can't
+        // grow unbounded. An empty queue always admits the job even if it alone
+        // exceeds the cap, so an oversized paste makes progress vs deadlocking.
+        let job_id = {
+            let mut inner = lock_recover(&self.shared.inner);
+            loop {
+                if inner.closed {
+                    return Err(WRITER_CLOSED_MSG.to_string());
+                }
+                let fits =
+                    inner.queued_bytes == 0 || inner.queued_bytes + len <= MAX_WRITE_QUEUE_BYTES;
+                if fits {
+                    let id = inner.next_id;
+                    inner.next_id = inner.next_id.wrapping_add(1);
+                    inner.queued_bytes += len;
+                    inner.queue.push_back(QueuedWrite {
+                        id,
+                        bytes: data.to_vec(),
+                        completion: Arc::clone(&completion),
+                    });
+                    self.shared.job_ready.notify_one();
+                    break id;
+                }
+                let now = Instant::now();
+                if now >= deadline_at {
+                    return Err(WRITE_TIMEOUT_MSG.to_string());
+                }
+                let (guard, timeout) = self
+                    .shared
+                    .space_free
+                    .wait_timeout(inner, deadline_at - now)
+                    .unwrap_or_else(|error| error.into_inner());
+                inner = guard;
+                if timeout.timed_out() && Instant::now() >= deadline_at {
+                    return Err(WRITE_TIMEOUT_MSG.to_string());
+                }
+            }
+        };
+
+        // Phase 2: wait for the writer thread to finish write_all (and
+        // Enter-detection) for THIS job, or the deadline. On timeout pull the
+        // job back out if it hasn't started, so its abandoned bytes are dropped
+        // with the error instead of written later behind a newer call.
+        let mut slot = lock_recover(&completion.result);
+        loop {
+            if let Some(result) = slot.take() {
+                return result;
+            }
+            let now = Instant::now();
+            if now >= deadline_at {
+                drop(slot);
+                self.drop_queued_job(job_id, len);
+                return Err(WRITE_TIMEOUT_MSG.to_string());
+            }
+            let (guard, timeout) = completion
+                .done
+                .wait_timeout(slot, deadline_at - now)
+                .unwrap_or_else(|error| error.into_inner());
+            slot = guard;
+            if timeout.timed_out() && slot.is_none() && Instant::now() >= deadline_at {
+                drop(slot);
+                self.drop_queued_job(job_id, len);
+                return Err(WRITE_TIMEOUT_MSG.to_string());
+            }
+        }
+    }
+
+    /// Remove a still-queued job on deadline so the writer thread never writes
+    /// its abandoned bytes out of order behind a later call. No-op once the
+    /// writer has dequeued it (mid or post write_all — those bytes can't be
+    /// pulled back, but that in-flight write is the only one affected).
+    fn drop_queued_job(&self, job_id: u64, len: usize) {
+        let mut inner = lock_recover(&self.shared.inner);
+        if let Some(pos) = inner.queue.iter().position(|job| job.id == job_id) {
+            inner.queue.remove(pos);
+            inner.queued_bytes = inner.queued_bytes.saturating_sub(len);
+            self.shared.space_free.notify_all();
+        }
+    }
+}
+
+impl Drop for PtyWriter {
+    fn drop(&mut self) {
+        // Why: when the instance leaves the registry (close/teardown) the last
+        // handle drops here. Signal the writer thread to exit: if idle it wakes
+        // and returns; if blocked in write_all on a frozen tmux it returns once
+        // write_all finally errors (EPIPE after the master fd is dropped).
+        let mut inner = lock_recover(&self.shared.inner);
+        inner.closed = true;
+        self.shared.job_ready.notify_all();
+        self.shared.space_free.notify_all();
+    }
+}
+
+/// Sole writer for a PTY's input. Pops jobs in FIFO order, runs `write_all` off
+/// the queue lock (so a stalled write never blocks enqueues), then — after the
+/// bytes land — runs Enter-detection and signals the job's completion. Exits
+/// once `closed` is set and the queue is drained, or once a write fails after
+/// close (EPIPE on a torn-down master fd).
+fn run_pty_writer(
+    mut writer: Box<dyn Write + Send>,
+    shared: Arc<WriterShared>,
+    tracked: Arc<Mutex<PtyRuntimeState>>,
+) {
+    loop {
+        let job = {
+            let mut inner = lock_recover(&shared.inner);
+            loop {
+                if let Some(job) = inner.queue.pop_front() {
+                    inner.queued_bytes = inner.queued_bytes.saturating_sub(job.bytes.len());
+                    // Why: a slot just freed; wake any sender blocked on the cap.
+                    shared.space_free.notify_all();
+                    break Some(job);
+                }
+                if inner.closed {
+                    break None;
+                }
+                inner = shared
+                    .job_ready
+                    .wait(inner)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+        };
+
+        let Some(job) = job else {
+            return;
+        };
+
+        let result = writer.write_all(&job.bytes).map_err(|error| error.to_string());
+        let write_ok = result.is_ok();
+
+        // Why: run Enter-detection BEFORE signalling completion so the caller
+        // stays blocked through the idle→running transition exactly as it did
+        // when this ran inline on the caller thread pre-queue (once per batch
+        // containing `\r`).
+        if write_ok && job.bytes.contains(&b'\r') {
+            run_enter_detection(&tracked);
+        }
+
+        {
+            let mut slot = lock_recover(&job.completion.result);
+            *slot = Some(result);
+            job.completion.done.notify_all();
+        }
+
+        if !write_ok {
+            // Why: a failed write on a closed/torn-down PTY (EPIPE after the
+            // master fd dropped) is the writer thread's cue to exit.
+            let inner = lock_recover(&shared.inner);
+            if inner.closed {
+                return;
+            }
+        }
+    }
+}
+
+/// Enter-detection for hookless tools: on a write batch containing `\r`, if the
+/// tool is idle, reset its idle clock and flip its tmux status to running. Runs
+/// on the writer thread after the byte lands; the tmux shell-out happens off the
+/// tracked lock, matching the pre-queue inline behavior.
+fn run_enter_detection(tracked: &Arc<Mutex<PtyRuntimeState>>) {
+    let transition_session = {
+        let mut state = lock_recover(tracked);
+        let status = state.last_ai_status.clone();
+        let s = status.as_deref();
+        if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
+            state.last_output_at = Some(Instant::now());
+            let running_status = tool_hooks::to_running(s.unwrap());
+            // Why: a chunked paste delivers many \r-bearing writes in one burst;
+            // caching the transition here makes later chunks no-ops so the tmux
+            // shell-out fires once per transition, not once per chunk. If
+            // set-option fails, the status poller re-reads tmux and self-heals.
+            state.last_ai_status = Some(running_status.clone());
+            Some((state.session_name.clone(), running_status))
+        } else {
+            None
+        }
+    };
+
+    if let Some((session_name, running_status)) = transition_session {
+        let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, &running_status);
     }
 }
 
@@ -475,10 +753,11 @@ pub fn create(
         read_pty_output(reader, coalescer, tracked_for_reader);
     });
 
+    let writer_handle = PtyWriter::spawn(writer, Arc::clone(&tracked), WRITE_DEADLINE);
     let instance = PtyInstance {
         session_name,
         worktree_path,
-        writer: Arc::new(Mutex::new(writer)),
+        writer: writer_handle,
         master: pair.master,
         child,
         tracked,
@@ -548,45 +827,18 @@ fn read_pty_output(
 }
 
 pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
-    // Clone the per-instance handles under a short registry lock, then release
-    // it before write_all so a stalled write only blocks this pty, not every
-    // unrelated write/create/close serializing on the global registry lock.
-    let (writer, tracked) = {
+    // Clone the per-instance writer handle under a short registry lock, then
+    // release it before enqueuing so a stalled write only blocks this pty's
+    // ordered queue, not every unrelated write/create/close serializing on the
+    // global registry lock. The handle enqueues FIFO and blocks the caller until
+    // the writer thread's write_all for these exact bytes returns (or deadline).
+    let writer = {
         let reg = lock_recover(registry());
         let instance = reg.get(id).ok_or_else(|| format!("PTY not found: {}", id))?;
-        (Arc::clone(&instance.writer), Arc::clone(&instance.tracked))
+        Arc::clone(&instance.writer)
     };
 
-    lock_recover(&writer)
-        .write_all(data)
-        .map_err(|e| e.to_string())?;
-
-    // Detect Enter for hookless-tool idle→running transition.
-    // Also reset last_output_at so the idle timeout starts from Enter,
-    // not from the previous output (which could be minutes ago).
-    let transition_session = if data.contains(&b'\r') {
-        let mut state = lock_recover(&tracked);
-        let status = state.last_ai_status.clone();
-        let s = status.as_deref();
-        if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
-            state.last_output_at = Some(Instant::now());
-            Some((
-                state.session_name.clone(),
-                tool_hooks::to_running(s.unwrap()),
-            ))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Set tmux option outside of registry lock to avoid holding locks during shell-out.
-    if let Some((session_name, running_status)) = transition_session {
-        let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, &running_status);
-    }
-
-    Ok(())
+    writer.write(data)
 }
 
 pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -2712,6 +2964,47 @@ mod tests {
         }
     }
 
+    /// Write implementation that records each `write_all` batch verbatim, in the
+    /// order the sole writer thread performed it. Used to assert FIFO ordering.
+    struct RecordingWriter {
+        recorded: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.recorded.lock().unwrap().push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Write implementation that blocks on a gate BEFORE recording the bytes,
+    /// so a test can prove write() has not resolved while the writer thread has
+    /// not yet received the bytes.
+    struct GatedRecordingWriter {
+        recorded: Arc<Mutex<Vec<u8>>>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl Write for GatedRecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let (lock, cvar) = &*self.gate;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cvar.wait(released).unwrap();
+            }
+            self.recorded.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn new_mock_master() -> Box<dyn MasterPty + Send> {
         native_pty_system()
             .openpty(PtySize {
@@ -2830,6 +3123,227 @@ mod tests {
         registry().lock().unwrap().remove(&b);
     }
 
+    #[test]
+    fn writes_stay_in_enqueue_order_under_concurrency() {
+        let recorded = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let writer = Box::new(RecordingWriter {
+            recorded: Arc::clone(&recorded),
+        });
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-fifo-{}", Uuid::new_v4().simple()),
+            writer,
+            new_mock_master(),
+        );
+
+        const PRODUCERS: usize = 4;
+        const PER: usize = 25;
+        let mut handles = Vec::new();
+        for p in 0..PRODUCERS {
+            let wid = id.clone();
+            handles.push(std::thread::spawn(move || {
+                // Each producer's calls are program-ordered => enqueue-ordered.
+                for i in 0..PER {
+                    write(&wid, format!("p{p}-{i:03}\r").as_bytes()).unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            PRODUCERS * PER,
+            "every batch must be written exactly once and never split"
+        );
+        for batch in recorded.iter() {
+            let s = String::from_utf8(batch.clone()).unwrap();
+            assert!(
+                s.starts_with('p') && s.ends_with('\r'),
+                "batch was not written atomically: {s:?}"
+            );
+        }
+        // FIFO: within each producer, batches land in ascending program order.
+        for p in 0..PRODUCERS {
+            let seq: Vec<usize> = recorded
+                .iter()
+                .filter_map(|batch| {
+                    let s = std::str::from_utf8(batch).ok()?.trim_end_matches('\r');
+                    let (producer, index) = s.split_once('-')?;
+                    (producer == format!("p{p}")).then(|| index.parse().ok())?
+                })
+                .collect();
+            assert_eq!(
+                seq,
+                (0..PER).collect::<Vec<_>>(),
+                "producer {p}'s batches were reordered"
+            );
+        }
+        drop(recorded);
+
+        registry().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn write_does_not_resolve_before_writer_received_bytes() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let writer = Box::new(GatedRecordingWriter {
+            recorded: Arc::clone(&recorded),
+            gate: Arc::clone(&gate),
+        });
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-resolve-{}", Uuid::new_v4().simple()),
+            writer,
+            new_mock_master(),
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wid = id.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(write(&wid, b"paste-body"));
+        });
+
+        // The writer is gated before recording, so write() must NOT have
+        // resolved and no bytes may have been received yet.
+        assert!(
+            rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "write() resolved before the writer received the bytes"
+        );
+        assert!(recorded.lock().unwrap().is_empty());
+
+        // Release the gate: the writer records the bytes, write_all returns, and
+        // only then does write() resolve.
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+        let result = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("write() must resolve after the writer received the bytes");
+        assert!(result.is_ok());
+        assert_eq!(*recorded.lock().unwrap(), b"paste-body");
+
+        registry().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn write_deadline_releases_caller_and_teardown_completes() {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let blocking = Box::new(BlockingWriter {
+            gate: Arc::clone(&gate),
+        });
+        let id = register_mock_pty_with_writer_deadline(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-deadline-{}", Uuid::new_v4().simple()),
+            blocking,
+            new_mock_master(),
+            Duration::from_millis(200),
+        );
+
+        // The writer thread blocks forever in write_all; write() must still
+        // release the caller at the (injected) deadline with a timeout error.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wid = id.clone();
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            let _ = tx.send(write(&wid, b"paste-body"));
+        });
+        let received = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("caller must be released at the deadline");
+        assert!(received.is_err());
+        assert!(received.unwrap_err().contains("timed out"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "caller was released far past the injected deadline"
+        );
+
+        // Teardown must not deadlock even though the writer thread is still stuck
+        // inside write_all.
+        let (ctx, crx) = std::sync::mpsc::channel();
+        let close_id = id.clone();
+        std::thread::spawn(move || {
+            let _ = ctx.send(close(&close_id));
+        });
+        assert!(
+            crx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "close() deadlocked with a blocked writer thread"
+        );
+
+        // Release the gate so the writer thread exits cleanly instead of leaking.
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn write_enter_detection_fires_once_per_carriage_return() {
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-enter-{}", Uuid::new_v4().simple()),
+            Box::new(io::sink()),
+            new_mock_master(),
+        );
+        let tracked = {
+            let reg = registry().lock().unwrap();
+            Arc::clone(&reg.get(&id).unwrap().tracked)
+        };
+
+        // Seed a hookless idle status; Enter should flip its idle clock.
+        {
+            let mut state = tracked.lock().unwrap();
+            state.last_ai_status = Some("codex:idle".to_string());
+            state.last_output_at = None;
+        }
+
+        // A write with no `\r` must NOT trigger the transition.
+        write(&id, b"echo hi").unwrap();
+        assert!(
+            tracked.lock().unwrap().last_output_at.is_none(),
+            "a batch without \\r must not fire Enter-detection"
+        );
+
+        // A batch containing `\r` fires it exactly once (idle clock now set).
+        write(&id, b"echo hi\r").unwrap();
+        assert!(
+            tracked.lock().unwrap().last_output_at.is_some(),
+            "a batch with \\r must fire Enter-detection"
+        );
+
+        // While already running, a further `\r` must NOT re-fire it.
+        {
+            let mut state = tracked.lock().unwrap();
+            state.last_ai_status = Some("codex:running".to_string());
+            state.last_output_at = None;
+        }
+        write(&id, b"more\r").unwrap();
+        assert!(
+            tracked.lock().unwrap().last_output_at.is_none(),
+            "a running status must not re-fire Enter-detection"
+        );
+
+        registry().lock().unwrap().remove(&id);
+    }
+
     #[derive(Clone, Copy)]
     enum MockChildMode {
         Running,
@@ -2906,6 +3420,16 @@ mod tests {
         writer: Box<dyn Write + Send>,
         master: Box<dyn MasterPty + Send>,
     ) -> String {
+        register_mock_pty_with_writer_deadline(child, session_name, writer, master, WRITE_DEADLINE)
+    }
+
+    fn register_mock_pty_with_writer_deadline(
+        child: MockChild,
+        session_name: String,
+        writer: Box<dyn Write + Send>,
+        master: Box<dyn MasterPty + Send>,
+        deadline: Duration,
+    ) -> String {
         let pty_id = format!("pty-{}", Uuid::new_v4().simple());
         let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
             "/tmp/grove/worktree".into(),
@@ -2920,7 +3444,7 @@ mod tests {
             PtyInstance {
                 session_name,
                 worktree_path: "/tmp/grove/worktree".into(),
-                writer: Arc::new(Mutex::new(writer)),
+                writer: PtyWriter::spawn(writer, Arc::clone(&tracked), deadline),
                 master,
                 child: Box::new(child),
                 tracked,
@@ -4040,18 +4564,27 @@ grove-c 1 notapid
             new_mock_master(),
         );
 
-        let (writer, tracked) = {
+        let (writer_shared, tracked) = {
             let reg = registry().lock().unwrap();
             let instance = reg.get(&id).unwrap();
-            (Arc::clone(&instance.writer), Arc::clone(&instance.tracked))
+            (Arc::clone(&instance.writer.shared), Arc::clone(&instance.tracked))
         };
 
-        poison_mutex(Arc::clone(&writer));
+        // Poison the per-instance write-queue lock the same way a panic while
+        // holding it would, then the tracked lock.
+        with_silenced_panics(|| {
+            let shared = Arc::clone(&writer_shared);
+            let _ = std::thread::spawn(move || {
+                let _guard = shared.inner.lock().unwrap();
+                panic!("intentional poison for test");
+            })
+            .join();
+        });
         poison_mutex(Arc::clone(&tracked));
-        assert!(writer.lock().is_err());
+        assert!(writer_shared.inner.lock().is_err());
         assert!(tracked.lock().is_err());
 
-        // write() recovers the poisoned per-instance writer lock and succeeds.
+        // write() recovers the poisoned per-instance write-queue lock and succeeds.
         assert!(write(&id, b"hello").is_ok());
 
         // A tracked-reading op recovers the poisoned tracked lock too.
@@ -4109,7 +4642,7 @@ grove-c 1 notapid
             let reg = registry().lock().unwrap();
             let instance = reg.get(&id).unwrap();
             let _tracked_guard = lock_recover(&instance.tracked);
-            let _writer_guard = lock_recover(&instance.writer);
+            let _writer_guard = lock_recover(&instance.writer.shared.inner);
         }
         assert!(write(&id, b"still works").is_ok());
 
