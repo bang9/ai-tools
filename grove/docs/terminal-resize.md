@@ -87,12 +87,44 @@ which is the accepted behavior.
   div tracks the container a frame ahead of the canvas repaint, and the strip
   it exposes must show the theme background, not black.
 
+## Applied-size verification (what tmux actually applied)
+
+`shouldSendResize` dedupes against what grove **sent**. But a resize can be
+dropped or **clamped** by tmux — the window-size policy, or a second attached
+client (the broadcast Mirror) coercing the pane to a smaller grid. Two
+mechanisms in `src/lib/terminal-pty-reassert.ts` close the loop on what tmux
+**applied** (read back via the `applied_pty_size` command):
+
+- **Reassertion** (`createPtySizeReassertion`) — after a fit settles (in
+  `scheduleLayoutSync`'s fit branch) and on reveal (its no-fit reveal branch),
+  read the applied grid and re-forward the fitted grid **only on true drift**.
+  It forwards through `forwardReconcileResize` (authoritative — bypasses
+  `shouldSendResize`, since drift is already confirmed) and is suppressed while
+  a drag hold is active.
+- **Post-spawn reconcile** (`reconcilePtySizeAcrossFrames`) — grove spawns every
+  PTY at 80x24. A pane mounting hidden/unsettled can strand there, so after the
+  runtime learns a fresh ptyId + attaches, a bounded cross-frame loop fits and
+  forwards the real grid, verifies via `applied_pty_size`, then hands off to the
+  live ResizeObserver/layout-sync path once visible + stable (or after 180
+  frames). It **pauses** (skips, does not cancel) while a hold is active so it
+  never fights the hold or the fit-stability loop, and runs once per ptyId. grove
+  deliberately omits orca's 0x0 white-screen fallback (80x24 is already usable).
+
+**Non-convergence guard** (`decideDriftReassert`): if tmux returns the SAME
+clamped size twice in a row for the same request, the clamp is **adopted as
+authoritative and the loop STOPS** — no re-fit oscillation, no flicker loop.
+Exactly one corrective resize is emitted per target; a persistent clamp
+(window-size policy, or the Mirror's second client) is accepted rather than
+fought. xterm's grid is never resized to the clamp (that would just re-propose
+the container grid and oscillate).
+
 ## Regression checklist
 
 Automated: `pnpm test` covers `nextFitStability` (hold/confirm/restart/cap),
-`resolvePostFitViewport` (bottom-pin, reading position, clamp), and
-`shouldSendResize` dedupe. Run `pnpm lint && pnpm test` plus `tsc -b` before
-touching this path.
+`resolvePostFitViewport` (bottom-pin, reading position, clamp), `shouldSendResize`
+dedupe, and (`terminal-pty-reassert.test.ts`) the reassertion drift/adopt guard
+and the post-spawn reconcile (spawn-hidden reveal, persistent-clamp bounded stop,
+hold-pause). Run `pnpm lint && pnpm test` plus `tsc -b` before touching this path.
 
 Manual sweep after changing anything in the pipeline (use a worktree with a
 split layout, one pane running `claude` or another TUI, one plain shell with
@@ -114,3 +146,10 @@ long scrollback):
 7. Flip a split orientation (Allotment remount) — panes reattach at the right
    size.
 8. Change the terminal theme — colors apply without a stuck letterbox tint.
+9. Open a new worktree whose layout mounts with a split/side panel already on,
+   so a pane spawns hidden/wide — the TUI must end up sized to the settled pane
+   grid, not stranded at the 80x24 spawn or the wide mount width.
+10. Mirror a pane (broadcast), which attaches a second tmux client that resizes
+    the session — the source pane must not enter a re-fit oscillation/flicker
+    loop; a persistent Mirror-induced clamp is adopted and settles (see
+    `docs/terminal-broadcast.md`).

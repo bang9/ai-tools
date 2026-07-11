@@ -4,6 +4,7 @@ import {
   clipboard,
   ipcMain,
   Menu,
+  powerMonitor,
   session,
   shell,
   WebContentsView,
@@ -37,6 +38,7 @@ const JSON_RESPONSE_COMMANDS = new Set([
   "list_worktrees",
   "get_worktree_pr_url",
   "create_pty",
+  "applied_pty_size",
   "poll_pty_bells",
   "save_terminal_session_snapshot",
   "load_terminal_session_snapshot",
@@ -77,6 +79,7 @@ type NativeMethod = (...args: unknown[]) => Promise<unknown>;
 
 type NativeAddon = Record<string, NativeMethod> & {
   installPanicHook(): void;
+  setAppVersion(version: string): void;
   createPty(
     ptyId: string,
     paneId: string,
@@ -711,6 +714,16 @@ function registerBrowserGuestWindowOpenPolicy() {
   });
 }
 
+function registerDisplayWakeBroadcast() {
+  // A renderer cannot observe OS sleep/wake, and a focus-preserving display wake
+  // fires neither focus nor visibilitychange; relay powerMonitor 'resume' so the
+  // renderer can heal stale WebGL glyph atlases. Scope is 'resume' only — no
+  // 'unlock-screen', which fires on every screen unlock without a GPU reset.
+  powerMonitor.on("resume", () => {
+    broadcast("grove:display-wake", undefined);
+  });
+}
+
 function registerOptionalLogForwarding() {
   const candidateNames = ["setLogListener", "registerLogListener", "onLog"] as const;
 
@@ -858,8 +871,12 @@ app.whenReady().then(() => {
   // Route grove-core thread panics (PTY reader/flusher) into the app log
   // surface; without this they die silently on stderr.
   native.installPanicHook();
+  // Before any PTY create, so spawned shells advertise the real app version
+  // as TERM_PROGRAM_VERSION instead of grove-core's compiled fallback.
+  native.setAppVersion(app.getVersion());
   registerIpcHandlers();
   registerOptionalLogForwarding();
+  registerDisplayWakeBroadcast();
   registerBrowserGuestWindowOpenPolicy();
   createMainWindow();
 
