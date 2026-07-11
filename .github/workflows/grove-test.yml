@@ -76,3 +76,6 @@ jobs:
 
       - name: Run grove-core tests
         run: cargo test -p grove-core -- --test-threads=1
+
+      - name: Run grove-daemon tests
+        run: cargo test -p grove-daemon -- --test-threads=1
