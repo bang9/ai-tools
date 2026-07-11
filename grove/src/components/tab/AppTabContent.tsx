@@ -63,7 +63,6 @@ function AppTabContent() {
   const fileTabs = tabs.filter((tab) => tab.type === "file");
   const isTerminal = activeTabId === "terminal";
   const isChanges = activeTabId === "changes";
-  const activeTabIsBrowser = browserTabs.some((tab) => tab.id === activeTabId);
 
   const theme = useTerminalStore((s) => s.theme);
   const focusedPtyId = useTerminalStore((s) => s.focusedPtyId);
@@ -121,7 +120,6 @@ function AppTabContent() {
         focusedPtyId,
         hasActivePip: Boolean(pip),
         isFocusedPtyMirroring,
-        activeTabIsBrowser,
       })
     ) {
       if (!focusedPtyId) {
@@ -135,16 +133,7 @@ function AppTabContent() {
         startPip(worktreePath, ptyId, paneId, cols, rows, snapshot);
       }
     }
-  }, [
-    activeTabIsBrowser,
-    isFocusedPtyMirroring,
-    isTerminal,
-    focusedPtyId,
-    pip,
-    worktreePath,
-    startPip,
-    stopPip,
-  ]);
+  }, [isFocusedPtyMirroring, isTerminal, focusedPtyId, pip, worktreePath, startPip, stopPip]);
 
   const hasPipBroadcast = !isTerminal && !!worktreePath && !!pip;
 
@@ -302,7 +291,7 @@ function AppTabContent() {
 
   const activePipKey = pip && worktreePath ? buildBroadcastSessionKey(worktreePath, pip) : null;
 
-  const pipElement = hasPipBroadcast && !activeTabIsBrowser && (
+  const pipElement = hasPipBroadcast && (
     <PipTerminal
       key={activePipKey ?? "pip"}
       boundaryRef={pipBoundsRef}

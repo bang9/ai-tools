@@ -18,23 +18,11 @@ describe("useTabStore", () => {
     useBrowserStore.setState({ navs: {} });
   });
 
-  it("initializes with pinned Terminal and Changes tabs", () => {
+  it("initializes empty with the terminal content active", () => {
     initWorktree();
     const tabs = selectCurrentTabs(useTabStore.getState());
     const activeTabId = selectCurrentActiveTabId(useTabStore.getState());
-    expect(tabs).toHaveLength(2);
-    expect(tabs[0]).toEqual({
-      id: "terminal",
-      type: "terminal",
-      title: "Terminal",
-      closable: false,
-    });
-    expect(tabs[1]).toEqual({
-      id: "changes",
-      type: "changes",
-      title: "Changes",
-      closable: false,
-    });
+    expect(tabs).toHaveLength(0);
     expect(activeTabId).toBe("terminal");
   });
 
@@ -46,16 +34,24 @@ describe("useTabStore", () => {
     const id = useTabStore.getState().addTab("browser", "Browser");
     const tabs = selectCurrentTabs(useTabStore.getState());
     expect(id).toBe("uuid-1");
-    expect(tabs).toHaveLength(3);
+    expect(tabs).toHaveLength(1);
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("uuid-1");
   });
 
-  it("addTab changes just activates the pinned Changes tab", () => {
+  it("addTab changes creates a closable singleton and re-activates it later", () => {
     initWorktree();
     const id = useTabStore.getState().addTab("changes", "Changes");
     expect(id).toBe("changes");
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("changes");
-    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
+    expect(selectCurrentTabs(useTabStore.getState())).toEqual([
+      { id: "changes", type: "changes", title: "Changes", closable: true },
+    ]);
+
+    useTabStore.getState().setActiveTab("terminal");
+    const again = useTabStore.getState().addTab("changes", "Changes");
+    expect(again).toBe("changes");
+    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("changes");
+    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(1);
   });
 
   it("allows multiple browser tabs", () => {
@@ -65,7 +61,7 @@ describe("useTabStore", () => {
       .mockReturnValueOnce("b-2" as `${string}-${string}-${string}-${string}-${string}`);
     useTabStore.getState().addTab("browser", "Browser 1");
     useTabStore.getState().addTab("browser", "Browser 2");
-    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(4);
+    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
   });
 
   it("closes browser tab and falls back to terminal", () => {
@@ -76,28 +72,33 @@ describe("useTabStore", () => {
     useTabStore.getState().addTab("browser", "Browser");
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("b-1");
     useTabStore.getState().closeTab("b-1");
-    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
+    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(0);
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
   });
 
-  it("cannot close Terminal tab", () => {
+  it("closes the changes tab and falls back to terminal", () => {
     initWorktree();
-    useTabStore.getState().closeTab("terminal");
-    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
-  });
-
-  it("cannot close Changes tab", () => {
-    initWorktree();
+    useTabStore.getState().addTab("changes", "Changes");
     useTabStore.getState().closeTab("changes");
-    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
+    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(0);
+    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
   });
 
-  it("switches active tab", () => {
+  it("closeTab with unknown id does nothing", () => {
     initWorktree();
-    useTabStore.getState().setActiveTab("changes");
+    useTabStore.getState().closeTab("missing");
+    expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(0);
+    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
+  });
+
+  it("switches active tab, including the terminal sentinel without a tab entry", () => {
+    initWorktree();
+    useTabStore.getState().addTab("changes", "Changes");
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("changes");
     useTabStore.getState().setActiveTab("terminal");
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
+    useTabStore.getState().setActiveTab("changes");
+    expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("changes");
   });
 
   it("closing active browser tab activates previous tab", () => {
@@ -111,7 +112,7 @@ describe("useTabStore", () => {
     expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("p-1");
   });
 
-  it("closing the last closable tab lands on terminal, not a pinned neighbor", () => {
+  it("closing the last closable tab lands on terminal", () => {
     initWorktree();
     vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(
       "p-1" as `${string}-${string}-${string}-${string}-${string}`,
@@ -134,20 +135,20 @@ describe("useTabStore", () => {
         "br-a" as `${string}-${string}-${string}-${string}-${string}`,
       );
       useTabStore.getState().addTab("browser", "Browser");
-      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(3);
+      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(1);
 
       useTabStore.getState().setActiveWorktree("/tmp/b");
-      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(2);
+      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(0);
       expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
 
       useTabStore.getState().setActiveWorktree("/tmp/a");
-      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(3);
+      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(1);
       expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("br-a");
     });
 
     it("can read a selected worktree session before activeWorktree catches up", () => {
       useTabStore.getState().setActiveWorktree("/tmp/a");
-      useTabStore.getState().setActiveTab("changes");
+      useTabStore.getState().addTab("changes", "Changes");
 
       useTabStore.getState().setActiveWorktree("/tmp/b");
 
@@ -155,8 +156,8 @@ describe("useTabStore", () => {
 
       expect(selectActiveTabIdForWorktree(state, "/tmp/a")).toBe("changes");
       expect(selectActiveTabIdForWorktree(state, "/tmp/b")).toBe("terminal");
-      expect(selectTabsForWorktree(state, "/tmp/a")).toHaveLength(2);
-      expect(selectTabsForWorktree(state, "/tmp/b")).toHaveLength(2);
+      expect(selectTabsForWorktree(state, "/tmp/a")).toHaveLength(1);
+      expect(selectTabsForWorktree(state, "/tmp/b")).toHaveLength(0);
     });
 
     it("removeSession cleans up worktree tab state", () => {
@@ -176,12 +177,10 @@ describe("useTabStore", () => {
       expect(tab?.title).toBe("localhost:3000");
     });
 
-    it("ignores pinned tabs and unknown ids", () => {
+    it("ignores unknown ids", () => {
       initWorktree();
-      useTabStore.getState().updateTabTitle("terminal", "Hacked");
       useTabStore.getState().updateTabTitle("missing", "Nope");
-      const tabs = selectCurrentTabs(useTabStore.getState());
-      expect(tabs.find((t) => t.id === "terminal")?.title).toBe("Terminal");
+      expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(0);
     });
   });
 

@@ -13,6 +13,8 @@ import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
 import { useTabStore, selectActiveTabIdForWorktree, selectTabsForWorktree } from "../../store/tab";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
+import { useSelectionCapabilities } from "../../hooks/useSelectionCapabilities";
+import type { SelectionCapabilities } from "../../lib/selection-capabilities";
 import { usePreferencesUiStore } from "../../store/preferences-ui";
 import { useMissionStore } from "../../store/mission";
 import { useProjectStore } from "../../store/project";
@@ -30,10 +32,11 @@ const ADD_TAB_OPTIONS: {
   type: Exclude<AppTabType, "file">;
   label: string;
   icon: typeof Globe;
+  capability: keyof SelectionCapabilities;
 }[] = [
-  { type: "browser", label: "Browser", icon: Globe },
-  { type: "terminal", label: "Terminal", icon: TerminalSquare },
-  { type: "changes", label: "Changes", icon: FileDiff },
+  { type: "browser", label: "Browser", icon: Globe, capability: "browser" },
+  { type: "terminal", label: "Terminal", icon: TerminalSquare, capability: "terminal" },
+  { type: "changes", label: "Changes", icon: FileDiff, capability: "changes" },
 ];
 
 const APP_TAB_CHIP_CLASS = cn(
@@ -282,6 +285,12 @@ function AppTabBar() {
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const closeTab = useTabStore((s) => s.closeTab);
   const addTab = useTabStore((s) => s.addTab);
+  const capabilities = useSelectionCapabilities();
+  // Changes is a singleton per worktree — once open it leaves the + menu.
+  const hasChangesTab = tabs.some((tab) => tab.id === "changes");
+  const addTabOptions = ADD_TAB_OPTIONS.filter(
+    ({ type, capability }) => capabilities[capability] && !(type === "changes" && hasChangesTab),
+  );
   const [menuOpen, setMenuOpen] = useState(false);
   const preferencesOpen = usePreferencesUiStore((state) => state.open);
   const preferencesTab = usePreferencesUiStore((state) => state.activeTab);
@@ -311,17 +320,14 @@ function AppTabBar() {
           "flex items-center gap-1.5 px-2 h-9 shrink-0 min-w-0 border-b border-border bg-sidebar",
         )}
       >
+        {capabilities.terminal && (
+          <TerminalTabGroup
+            terminalPath={terminalPath}
+            isTerminalContentActive={activeTabId === "terminal"}
+            onActivateTerminal={() => setActiveTab("terminal")}
+          />
+        )}
         {tabs.map((tab) => {
-          if (tab.id === "terminal") {
-            return (
-              <TerminalTabGroup
-                key="terminal"
-                terminalPath={terminalPath}
-                isTerminalContentActive={activeTabId === "terminal"}
-                onActivateTerminal={() => setActiveTab("terminal")}
-              />
-            );
-          }
           const isActive = tab.id === activeTabId;
           return (
             <button
@@ -351,8 +357,8 @@ function AppTabBar() {
           );
         })}
 
-        {/* Add tab dropdown — hidden without a tab scope (tabs are per-scope) */}
-        {tabScopePath && (
+        {/* Add tab dropdown — needs a directory selection (tabs are per-scope) */}
+        {capabilities.hasDirectory && (
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
               <IconButton title="Add tab" aria-label="Add tab" className={cn("shrink-0")}>
@@ -360,7 +366,7 @@ function AppTabBar() {
               </IconButton>
             </PopoverTrigger>
             <PopoverContent className={cn("w-auto min-w-[140px] p-1")}>
-              {ADD_TAB_OPTIONS.map(({ type, label, icon: Icon }) => (
+              {addTabOptions.map(({ type, label, icon: Icon }) => (
                 <button
                   key={type}
                   type="button"

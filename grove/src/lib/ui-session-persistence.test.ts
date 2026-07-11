@@ -17,10 +17,12 @@ import { primeUiStateCacheForTests, readUiStateCacheForTests } from "./ui-state-
 import { useTabStore, selectTabsForWorktree } from "../store/tab";
 import { useBrowserStore } from "../store/browser";
 import { useFileViewerStore } from "../store/file-viewer";
+import { useRightPanelStore } from "../store/right-panel";
 
 const TAB_SESSIONS_KEY = "grove.tabSessions.v1";
 const BROWSER_NAVS_KEY = "grove.browserNavs.v1";
 const FILE_VIEWER_TABS_KEY = "grove.fileViewerTabs.v1";
+const RIGHT_PANEL_MODE_KEY = "grove.rightPanelMode.v1";
 
 describe("initUiSessionPersistence", () => {
   beforeEach(() => {
@@ -28,9 +30,10 @@ describe("initUiSessionPersistence", () => {
     useTabStore.setState({ sessions: {}, activeWorktree: null });
     useBrowserStore.setState({ navs: {} });
     useFileViewerStore.setState({ filesByTab: {} });
+    useRightPanelStore.setState({ mode: "commits" });
   });
 
-  it("rehydrates sessions with pinned tabs and companion state", () => {
+  it("rehydrates sessions with companion state", () => {
     primeUiStateCacheForTests({
       [TAB_SESSIONS_KEY]: {
         "/tmp/wt": {
@@ -54,7 +57,7 @@ describe("initUiSessionPersistence", () => {
     initUiSessionPersistence();
 
     const tabs = selectTabsForWorktree(useTabStore.getState(), "/tmp/wt");
-    expect(tabs.map((tab) => tab.id)).toEqual(["terminal", "changes", "f-1", "b-1"]);
+    expect(tabs.map((tab) => tab.id)).toEqual(["f-1", "b-1"]);
     expect(useTabStore.getState().sessions["/tmp/wt"].activeTabId).toBe("f-1");
 
     const fileEntry = useFileViewerStore.getState().filesByTab["f-1"];
@@ -119,5 +122,53 @@ describe("initUiSessionPersistence", () => {
     initUiSessionPersistence();
 
     expect(useTabStore.getState().sessions).toEqual({});
+  });
+
+  it("persists the changes tab in display order and restores it", () => {
+    primeUiStateCacheForTests({
+      [TAB_SESSIONS_KEY]: {
+        "/tmp/wt": {
+          tabs: [
+            { id: "b-1", type: "browser", title: "localhost:3000" },
+            { id: "changes", type: "changes", title: "Changes" },
+          ],
+          activeTabId: "changes",
+        },
+      },
+    });
+
+    initUiSessionPersistence();
+
+    const tabs = selectTabsForWorktree(useTabStore.getState(), "/tmp/wt");
+    expect(tabs.map((tab) => tab.id)).toEqual(["b-1", "changes"]);
+    expect(useTabStore.getState().sessions["/tmp/wt"].activeTabId).toBe("changes");
+
+    // Round-trip: the snapshot keeps the same list and order.
+    useTabStore.getState().setActiveWorktree("/tmp/wt");
+    useTabStore.getState().setActiveTab("terminal");
+    const saved = readUiStateCacheForTests()[TAB_SESSIONS_KEY] as Record<
+      string,
+      { tabs: { id: string }[]; activeTabId: string }
+    >;
+    expect(saved["/tmp/wt"].tabs.map((tab) => tab.id)).toEqual(["b-1", "changes"]);
+    expect(saved["/tmp/wt"].activeTabId).toBe("terminal");
+  });
+
+  it("rehydrates and persists the right panel mode", () => {
+    primeUiStateCacheForTests({ [RIGHT_PANEL_MODE_KEY]: "file-browser" });
+
+    initUiSessionPersistence();
+    expect(useRightPanelStore.getState().mode).toBe("file-browser");
+
+    useRightPanelStore.getState().setMode("commits");
+    expect(readUiStateCacheForTests()[RIGHT_PANEL_MODE_KEY]).toBe("commits");
+  });
+
+  it("ignores an invalid persisted right panel mode", () => {
+    primeUiStateCacheForTests({ [RIGHT_PANEL_MODE_KEY]: "bogus" });
+
+    initUiSessionPersistence();
+
+    expect(useRightPanelStore.getState().mode).toBe("commits");
   });
 });

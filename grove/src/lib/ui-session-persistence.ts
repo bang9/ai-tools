@@ -2,15 +2,17 @@ import type { AppTab } from "../types";
 import { createSessionWithClosableTabs, useTabStore, type TabSession } from "../store/tab";
 import { useBrowserStore, type BrowserNavState } from "../store/browser";
 import { useFileViewerStore, type FileViewerTabState } from "../store/file-viewer";
+import { useRightPanelStore, type RightPanelMode } from "../store/right-panel";
 import { loadJsonState, saveJsonState } from "./ui-state-storage";
 
 const TAB_SESSIONS_KEY = "grove.tabSessions.v1";
 const BROWSER_NAVS_KEY = "grove.browserNavs.v1";
 const FILE_VIEWER_TABS_KEY = "grove.fileViewerTabs.v1";
+const RIGHT_PANEL_MODE_KEY = "grove.rightPanelMode.v1";
 
 interface PersistedTab {
   id: string;
-  type: "browser" | "file";
+  type: "browser" | "file" | "changes";
   title: string;
 }
 
@@ -35,7 +37,7 @@ function isPersistedTab(value: unknown): value is PersistedTab {
   const tab = value as Record<string, unknown>;
   return (
     typeof tab.id === "string" &&
-    (tab.type === "browser" || tab.type === "file") &&
+    (tab.type === "browser" || tab.type === "file" || tab.type === "changes") &&
     typeof tab.title === "string"
   );
 }
@@ -51,12 +53,15 @@ function rehydrateSessions(): {
 
   for (const [worktreePath, persisted] of Object.entries(raw)) {
     if (!persisted || !Array.isArray(persisted.tabs)) continue;
+    // Persisted order is the display order — keep it as-is.
     const closable: AppTab[] = persisted.tabs
       .filter(isPersistedTab)
       .map((tab) => ({ id: tab.id, type: tab.type, title: tab.title, closable: true }));
     if (closable.length === 0) continue;
     for (const tab of closable) {
-      tabIdsByType[tab.type as "browser" | "file"].add(tab.id);
+      if (tab.type === "browser" || tab.type === "file") {
+        tabIdsByType[tab.type].add(tab.id);
+      }
     }
     sessions[worktreePath] = createSessionWithClosableTabs(
       closable,
@@ -119,9 +124,17 @@ function rehydrateBrowserNavs(validIds: Set<string>): Record<string, BrowserNavS
 function persistedSessionsSnapshot(sessions: Record<string, TabSession>) {
   const snapshot: Record<string, PersistedSession> = {};
   for (const [worktreePath, session] of Object.entries(sessions)) {
+    // Full closable tab list in display order (browser, file, changes).
     const closable = session.tabs
-      .filter((tab) => tab.closable && (tab.type === "browser" || tab.type === "file"))
-      .map((tab) => ({ id: tab.id, type: tab.type as "browser" | "file", title: tab.title }));
+      .filter(
+        (tab) =>
+          tab.closable && (tab.type === "browser" || tab.type === "file" || tab.type === "changes"),
+      )
+      .map((tab) => ({
+        id: tab.id,
+        type: tab.type as PersistedTab["type"],
+        title: tab.title,
+      }));
     if (closable.length === 0) continue;
     snapshot[worktreePath] = { tabs: closable, activeTabId: session.activeTabId };
   }
@@ -155,6 +168,11 @@ export function initUiSessionPersistence(): void {
     }));
   }
 
+  const persistedRightPanelMode = loadJsonState<RightPanelMode>(RIGHT_PANEL_MODE_KEY);
+  if (persistedRightPanelMode === "commits" || persistedRightPanelMode === "file-browser") {
+    useRightPanelStore.setState({ mode: persistedRightPanelMode });
+  }
+
   const saveSessions = makeDedupedSaver(TAB_SESSIONS_KEY, () =>
     persistedSessionsSnapshot(useTabStore.getState().sessions),
   );
@@ -173,10 +191,17 @@ export function initUiSessionPersistence(): void {
     return snapshot;
   });
 
+  const saveRightPanelMode = makeDedupedSaver(
+    RIGHT_PANEL_MODE_KEY,
+    () => useRightPanelStore.getState().mode,
+  );
+
   saveSessions();
   saveFileViewerTabs();
   saveBrowserNavs();
+  saveRightPanelMode();
   useTabStore.subscribe(saveSessions);
   useFileViewerStore.subscribe(saveFileViewerTabs);
   useBrowserStore.subscribe(saveBrowserNavs);
+  useRightPanelStore.subscribe(saveRightPanelMode);
 }

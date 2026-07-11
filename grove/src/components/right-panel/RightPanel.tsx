@@ -1,16 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { FolderTree, GitCommit } from "lucide-react";
 import { useDiff } from "../../hooks/useDiff";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
+import { useSelectionCapabilities } from "../../hooks/useSelectionCapabilities";
 import { useWorktreeBranchLabel } from "../../hooks/useWorktreeBranchLabel";
 import { useFileBrowserStore } from "../../store/file-browser";
+import { useRightPanelStore } from "../../store/right-panel";
 import { useTabStore } from "../../store/tab";
 import { cn } from "../../lib/cn";
 import CommitList from "../diff/CommitList";
 import type { CommitInfo } from "../../types";
 import FileBrowserPanel from "../file-browser/FileBrowserPanel";
-
-type RightPanelMode = "commits" | "file-browser";
 
 function RailButton({
   active,
@@ -51,8 +51,18 @@ export default function RightPanel() {
   const setFileBrowserRootPath = useFileBrowserStore((s) => s.setRootPath);
   const loadFileBrowserChildren = useFileBrowserStore((s) => s.loadChildren);
   const addTab = useTabStore((s) => s.addTab);
-  const [mode, setMode] = useState<RightPanelMode>("commits");
+  const capabilities = useSelectionCapabilities();
+  const mode = useRightPanelStore((s) => s.mode);
+  const setMode = useRightPanelStore((s) => s.setMode);
   const fileBrowserRootPath = worktreePath ?? terminalPath;
+
+  // Plain directories (e.g. mission roots) have no git history — commits view
+  // is unavailable there, so fall over to the file browser.
+  useEffect(() => {
+    if (!capabilities.commits && mode === "commits") {
+      setMode("file-browser");
+    }
+  }, [capabilities.commits, mode]);
 
   const handleSelectView = useCallback(
     (view: "changes" | CommitInfo) => {
@@ -114,12 +124,14 @@ export default function RightPanel() {
           "flex w-10 shrink-0 flex-col items-center gap-1 border-l border-border bg-sidebar/90 py-2",
         )}
       >
-        <RailButton
-          active={mode === "commits"}
-          icon={GitCommit}
-          label="Commits"
-          onClick={() => setMode("commits")}
-        />
+        {capabilities.commits && (
+          <RailButton
+            active={mode === "commits"}
+            icon={GitCommit}
+            label="Commits"
+            onClick={() => setMode("commits")}
+          />
+        )}
         <RailButton
           active={mode === "file-browser"}
           disabled={!fileBrowserRootPath}

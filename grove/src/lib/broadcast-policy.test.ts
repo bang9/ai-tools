@@ -21,7 +21,6 @@ describe("broadcast policy", () => {
           focusedPtyId: "pty-1",
           hasActivePip: false,
           isFocusedPtyMirroring: false,
-          activeTabIsBrowser: false,
         }),
       ).toBe(true);
     });
@@ -34,7 +33,6 @@ describe("broadcast policy", () => {
           focusedPtyId: "pty-1",
           hasActivePip: false,
           isFocusedPtyMirroring: true,
-          activeTabIsBrowser: false,
         }),
       ).toBe(false);
     });
@@ -47,12 +45,11 @@ describe("broadcast policy", () => {
           focusedPtyId: "pty-1",
           hasActivePip: false,
           isFocusedPtyMirroring: false,
-          activeTabIsBrowser: false,
         }),
       ).toBe(false);
     });
 
-    it("does not start PiP when the active tab is a native browser webview", () => {
+    it("starts PiP when the active tab is a native browser webview", () => {
       expect(
         shouldStartPipBroadcast({
           isTerminal: false,
@@ -60,9 +57,8 @@ describe("broadcast policy", () => {
           focusedPtyId: "pty-1",
           hasActivePip: false,
           isFocusedPtyMirroring: false,
-          activeTabIsBrowser: true,
         }),
-      ).toBe(false);
+      ).toBe(true);
     });
   });
 });

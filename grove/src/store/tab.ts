@@ -19,34 +19,24 @@ interface TabState {
   removeSession: (worktreePath: string) => void;
 }
 
-const TERMINAL_TAB: AppTab = {
-  id: "terminal",
-  type: "terminal",
-  title: "Terminal",
-  closable: false,
-};
-
-const CHANGES_TAB: AppTab = {
-  id: "changes",
-  type: "changes",
-  title: "Changes",
-  closable: false,
-};
-
+/**
+ * Terminal content is not an AppTab entry: terminal tabs live in the terminal
+ * store and the bar renders them directly. "terminal" stays valid as an
+ * activeTabId sentinel meaning "the terminal content is shown".
+ */
 const DEFAULT_SESSION: TabSession = {
-  tabs: [TERMINAL_TAB, CHANGES_TAB],
+  tabs: [],
   activeTabId: "terminal",
 };
 
-/** Rebuild a session from persisted closable tabs, pinned tabs included. */
+/** Rebuild a session from persisted closable tabs. */
 export function createSessionWithClosableTabs(
   closableTabs: AppTab[],
   activeTabId: string,
 ): TabSession {
-  const tabs = [TERMINAL_TAB, CHANGES_TAB, ...closableTabs];
   return {
-    tabs,
-    activeTabId: tabs.some((tab) => tab.id === activeTabId) ? activeTabId : "terminal",
+    tabs: closableTabs,
+    activeTabId: closableTabs.some((tab) => tab.id === activeTabId) ? activeTabId : "terminal",
   };
 }
 
@@ -96,13 +86,13 @@ export const useTabStore = create<TabState>((set, get) => ({
     const state = get();
     const session = getSession(state);
 
-    // Changes tab is pinned — just activate it
-    if (type === "changes") {
+    // Changes is a per-worktree singleton — re-activate an existing tab
+    if (type === "changes" && session.tabs.some((t) => t.id === "changes")) {
       set(updateSession(state, () => ({ ...session, activeTabId: "changes" })));
       return "changes";
     }
 
-    const id = crypto.randomUUID();
+    const id = type === "changes" ? "changes" : crypto.randomUUID();
     const tab: AppTab = { id, type, title, closable: true };
     set(
       updateSession(state, () => ({
@@ -147,7 +137,8 @@ export const useTabStore = create<TabState>((set, get) => ({
   setActiveTab: (tabId) =>
     set((state) => {
       const session = getSession(state);
-      if (!session.tabs.some((t) => t.id === tabId)) return {};
+      // "terminal" has no tab entry — it addresses the terminal content.
+      if (tabId !== "terminal" && !session.tabs.some((t) => t.id === tabId)) return {};
       return updateSession(state, () => ({
         ...session,
         activeTabId: tabId,
