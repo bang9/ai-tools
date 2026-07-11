@@ -58,8 +58,8 @@ jobs:
           export VAULTKEY_PASSWORD="$TEST_PASSWORD"
 
           "$seed_binary" init --ci "file://$remote_repo"
-          git -C "$HOME/.vaultkey/repo" config user.name "github-actions[bot]"
-          git -C "$HOME/.vaultkey/repo" config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C "$HOME/.vaultkey/repos/default" config user.name "github-actions[bot]"
+          git -C "$HOME/.vaultkey/repos/default" config user.email "github-actions[bot]@users.noreply.github.com"
           "$seed_binary" set "$TEST_SCOPE" "$TEST_KEY" "$TEST_VALUE"
 
       - name: Build local vaultkey binary
@@ -93,7 +93,7 @@ jobs:
           fi
 
           # Verify vault state was cleaned up by the action
-          if [ -d "$HOME/.vaultkey/repo" ]; then
-            echo "vault repo should have been cleaned up" >&2
+          if [ -d "$HOME/.vaultkey" ]; then
+            echo "vault state should have been cleaned up" >&2
             exit 1
           fi
