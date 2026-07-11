@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  nextFitStability,
+  resolvePostFitViewport,
   shouldDetachTerminalContainer,
   shouldLoadWebglAddon,
   shouldSendResize,
   shouldSuspendWebglAddon,
 } from "./terminal-runtime";
+import type { FitStabilityState } from "./terminal-runtime";
 
 describe("shouldDetachTerminalContainer", () => {
   it("allows unconditional detach when no owner container is provided", () => {
@@ -54,6 +57,64 @@ describe("shouldSendResize", () => {
     expect(
       shouldSendResize({ cols: 80, rows: 24 }, { cols: 80, rows: 24 }, { cols: 100, rows: 40 }),
     ).toBe(true);
+  });
+});
+
+describe("nextFitStability", () => {
+  it("holds a fresh proposal for a second confirming frame", () => {
+    const { state, shouldFit } = nextFitStability(null, { cols: 100, rows: 40 });
+
+    expect(shouldFit).toBe(false);
+    expect(state).toEqual({ cols: 100, rows: 40, matchedFrames: 1, totalFrames: 1 });
+  });
+
+  it("fits once the same proposal holds for two consecutive frames", () => {
+    const first = nextFitStability(null, { cols: 100, rows: 40 });
+    const second = nextFitStability(first.state, { cols: 100, rows: 40 });
+
+    expect(second.shouldFit).toBe(true);
+  });
+
+  it("restarts the match count when the proposal keeps moving", () => {
+    const first = nextFitStability(null, { cols: 100, rows: 40 });
+    const second = nextFitStability(first.state, { cols: 101, rows: 40 });
+
+    expect(second.shouldFit).toBe(false);
+    expect(second.state.matchedFrames).toBe(1);
+    expect(second.state.totalFrames).toBe(2);
+  });
+
+  it("force-fits after the frame cap so a continuous drag still tracks", () => {
+    // A drag that crosses a cell boundary every frame never yields two
+    // matching frames; the cap keeps the pane following the divider.
+    let state: FitStabilityState | null = null;
+    let fits = 0;
+    for (let frame = 0; frame < 8; frame++) {
+      const result = nextFitStability(state, { cols: 100 + frame, rows: 40 });
+      state = result.state;
+      if (result.shouldFit) {
+        fits += 1;
+      }
+    }
+
+    expect(fits).toBe(1);
+    expect(state?.totalFrames).toBe(8);
+  });
+});
+
+describe("resolvePostFitViewport", () => {
+  it("keeps a bottom-pinned terminal pinned to the bottom", () => {
+    expect(resolvePostFitViewport({ wasAtBottom: true, viewportY: 120 }, 90)).toBe("bottom");
+  });
+
+  it("keeps the scrollback reading position when not at the bottom", () => {
+    expect(resolvePostFitViewport({ wasAtBottom: false, viewportY: 40 }, 90)).toBe(40);
+  });
+
+  it("clamps the reading position to the post-reflow scroll range", () => {
+    // Widening the pane re-wraps lines and shrinks the scroll range; the old
+    // viewport line may no longer exist.
+    expect(resolvePostFitViewport({ wasAtBottom: false, viewportY: 120 }, 90)).toBe(90);
   });
 });
 

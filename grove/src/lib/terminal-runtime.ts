@@ -111,6 +111,56 @@ interface ResizeTarget {
   rows: number;
 }
 
+// Divider drags propose a new grid nearly every frame, and every applied fit
+// runs xterm's renderer clear + scrollback reflow — per-frame fits read as
+// visible blinking. Apply a proposal only once it has held for
+// FIT_STABLE_FRAMES consecutive frames; FIT_MAX_STABILITY_FRAMES bounds the
+// wait so a long continuous drag still tracks the pane instead of freezing.
+const FIT_STABLE_FRAMES = 2;
+const FIT_MAX_STABILITY_FRAMES = 8;
+
+export interface FitStabilityState {
+  cols: number;
+  rows: number;
+  matchedFrames: number;
+  totalFrames: number;
+}
+
+export function nextFitStability(
+  prev: FitStabilityState | null,
+  proposed: ResizeTarget,
+): { state: FitStabilityState; shouldFit: boolean } {
+  const matchedFrames =
+    prev && prev.cols === proposed.cols && prev.rows === proposed.rows ? prev.matchedFrames + 1 : 1;
+  const totalFrames = (prev?.totalFrames ?? 0) + 1;
+  const state = { cols: proposed.cols, rows: proposed.rows, matchedFrames, totalFrames };
+  return {
+    state,
+    shouldFit: matchedFrames >= FIT_STABLE_FRAMES || totalFrames >= FIT_MAX_STABILITY_FRAMES,
+  };
+}
+
+export interface PreFitViewport {
+  wasAtBottom: boolean;
+  viewportY: number;
+}
+
+/**
+ * Where the viewport should land after a fit-driven reflow. A bottom-pinned
+ * terminal must stay pinned — xterm's reflow can otherwise strand it mid-
+ * scrollback — while a user reading scrollback keeps their viewport line,
+ * clamped to the new scroll range.
+ */
+export function resolvePostFitViewport(
+  before: PreFitViewport,
+  baseYAfter: number,
+): number | "bottom" {
+  if (before.wasAtBottom) {
+    return "bottom";
+  }
+  return Math.min(before.viewportY, baseYAfter);
+}
+
 /**
  * Decide whether a resize should be sent to the PTY. Rapid identical fit
  * triggers collapse to a single resizePty call.
@@ -267,6 +317,7 @@ class TerminalPaneRuntime {
   private pendingRevealRefresh = false;
   private appliedSize: ResizeTarget = { cols: 0, rows: 0 };
   private inFlightSize: ResizeTarget | null = null;
+  private fitStability: FitStabilityState | null = null;
   private layoutSyncSuppressed = false;
   private initialScrollback = "";
   private initialScrollbackSource: TerminalInitialContentSource | undefined;
@@ -614,6 +665,7 @@ class TerminalPaneRuntime {
       cancelAnimationFrame(this.frameId);
       this.frameId = null;
     }
+    this.fitStability = null;
 
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
@@ -707,7 +759,9 @@ class TerminalPaneRuntime {
       }
 
       this.ensureTerminalHost();
-      if (!this.canFitTerminal()) {
+      const proposed = this.proposeFit();
+      if (!proposed) {
+        this.fitStability = null;
         const until = deadline ?? performance.now() + LAYOUT_SYNC_RECONCILE_DEADLINE_MS;
         if (performance.now() < until) {
           this.scheduleLayoutSync(until);
@@ -715,6 +769,29 @@ class TerminalPaneRuntime {
         return;
       }
 
+      if (proposed.cols === this.term.cols && proposed.rows === this.term.rows) {
+        // Already at the proposed grid: skip fit() (renderer clear + reflow)
+        // and only finish reveal/PTY reconciliation. A newly loaded WebGL
+        // renderer can change cell metrics, so re-evaluate once after loading.
+        this.fitStability = null;
+        const loadedWebgl = this.loadWebglAddon();
+        this.syncPtySize();
+        this.refreshAfterReveal();
+        if (loadedWebgl) {
+          this.scheduleLayoutSync(deadline);
+        }
+        return;
+      }
+
+      const { state, shouldFit } = nextFitStability(this.fitStability, proposed);
+      if (!shouldFit) {
+        // Mid-drag: hold the reflow until the proposal stops moving.
+        this.fitStability = state;
+        this.scheduleLayoutSync(deadline);
+        return;
+      }
+
+      this.fitStability = null;
       this.loadWebglAddon();
       this.fitTerminal();
       this.refreshAfterReveal();
@@ -750,14 +827,14 @@ class TerminalPaneRuntime {
     }
   }
 
-  private canFitTerminal() {
+  private proposeFit(): ResizeTarget | null {
     if (!this.container) {
-      return false;
+      return null;
     }
 
     const { width, height } = this.container.getBoundingClientRect();
     if (width < MIN_FIT_WIDTH_PX || height < MIN_FIT_HEIGHT_PX) {
-      return false;
+      return null;
     }
 
     try {
@@ -769,19 +846,18 @@ class TerminalPaneRuntime {
         dims.cols < MIN_FIT_COLS ||
         dims.rows < MIN_FIT_ROWS
       ) {
-        return false;
+        return null;
       }
+      return { cols: dims.cols, rows: dims.rows };
     } catch {
       // proposeDimensions throws until the renderer is attached — defer.
-      return false;
+      return null;
     }
-
-    return true;
   }
 
-  private loadWebglAddon() {
+  private loadWebglAddon(): boolean {
     if (!shouldLoadWebglAddon(this.hasLoadedWebgl, this.visible)) {
-      return;
+      return false;
     }
 
     try {
@@ -800,14 +876,33 @@ class TerminalPaneRuntime {
       this.term.loadAddon(webglAddon);
       this.webglAddon = webglAddon;
       this.hasLoadedWebgl = true;
+      return true;
     } catch {
       // Canvas renderer fallback
+      return false;
     }
   }
 
   private fitTerminal() {
     try {
+      const buffer = this.term.buffer.active;
+      const isAlternate = buffer.type === "alternate";
+      const before: PreFitViewport = {
+        wasAtBottom: buffer.viewportY >= buffer.baseY,
+        viewportY: buffer.viewportY,
+      };
       this.fitAddon.fit();
+      // Reflow moves buffer lines, so the pre-fit viewport now points at
+      // different content; re-pin explicitly instead of trusting xterm's
+      // implicit post-resize position. Alternate screens have no scrollback.
+      if (!isAlternate) {
+        const target = resolvePostFitViewport(before, this.term.buffer.active.baseY);
+        if (target === "bottom") {
+          this.term.scrollToBottom();
+        } else {
+          this.term.scrollToLine(target);
+        }
+      }
       this.syncPtySize();
     } catch {
       // ignore fit errors if the host is not ready yet
