@@ -4,6 +4,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import type { ITheme } from "@xterm/xterm";
 import type { TerminalTheme } from "../types";
 import { subscribeTerminalLayoutSync } from "./terminal-layout-sync";
 import { clearPtyScrollback, platform, ptyOutputTransport, resizePty, writePty } from "./platform";
@@ -33,6 +34,10 @@ import {
   installTerminalImeCompositionTracker,
   type TerminalImeCompositionTracker,
 } from "./terminal-ime-composition";
+import { installBracketedPasteSanitizer } from "./terminal-bracketed-paste";
+import { parseOsc7Cwd } from "./terminal-osc7";
+import { handleOsc52ClipboardRequest } from "./terminal-osc52-clipboard";
+import { log } from "./logger";
 
 export type TerminalInitialContentSource = "snapshotFallback" | "tmuxCapture";
 
@@ -54,7 +59,7 @@ export interface TerminalPaneActivity {
   source: ActivitySource;
 }
 
-function toXtermTheme(theme: TerminalTheme | null) {
+function toXtermTheme(theme: TerminalTheme | null): ITheme | undefined {
   if (!theme) {
     return undefined;
   }
@@ -80,6 +85,42 @@ function toXtermTheme(theme: TerminalTheme | null) {
     brightCyan: theme.brightCyan,
     brightWhite: theme.brightWhite,
   };
+}
+
+/**
+ * Value equality over two composed xterm themes (grove's flat string color
+ * slots). Used to gate the per-runtime `options.theme` write: xterm's
+ * ThemeService rebuilds its palette on every `options.theme` assignment by
+ * object identity, discarding OSC 4/10/11/12 colors a TUI set at runtime. A
+ * fresh-but-identical theme (re-applied on every acquireTerminalRuntime) must
+ * therefore skip the write so the live TUI palette — and xterm's own OSC
+ * color-query replies that read it — stay intact.
+ */
+export function composedXtermThemesEqual(a: ITheme | undefined, b: ITheme | undefined): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (a[key as keyof ITheme] !== b[key as keyof ITheme]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Why a rejected promise on missing API: keeps the OSC 52 handler's error path
+// (devtools log) uniform whether the clipboard is absent (insecure context) or
+// the write is gesture-gated (WKWebView).
+function writeHostClipboardText(text: string): Promise<void> {
+  const writeText = navigator.clipboard?.writeText;
+  if (!writeText) {
+    return Promise.reject(new Error("clipboard unavailable"));
+  }
+  return writeText.call(navigator.clipboard, text);
 }
 
 const paneSeeds = new Map<string, TerminalPaneSeed>();
@@ -204,6 +245,44 @@ export function shouldSendResize(
     return !(target.cols === inFlight.cols && target.rows === inFlight.rows);
   }
   return !(target.cols === applied.cols && target.rows === applied.rows);
+}
+
+// xterm's observable mouse-tracking state (Terminal.modes.mouseTrackingMode).
+export type XtermMouseTrackingMode = "none" | "x10" | "vt200" | "drag" | "any";
+
+// Disable every mouse-reporting tracking mode a prior pty may have left set:
+// X10 (?9), VT200 (?1000), cell-motion/drag (?1002), any-motion (?1003). With
+// tracking off no reports are emitted regardless of the (unobservable) SGR
+// encoding modes (1006/1016), so those need no explicit reset. Alt-screen
+// (1049) is deliberately excluded — the incoming pty's replay re-enters it.
+const MOUSE_REPORTING_RESET = "\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l";
+
+export interface PtySwapResetPlan {
+  // Bytes destined for the RENDERER (xterm.write) only. This plan has no PTY
+  // channel by construction, so a swap can never write to the shell's stdin.
+  termWrite: string | null;
+}
+
+/**
+ * Decide what stale renderer-side DECSET state to clear when a runtime's xterm
+ * is pointed at a different pty without a re-hydration (e.g. a restore that
+ * re-primes a grace-cached pane). Only mouse-reporting modes are reset, and
+ * only when xterm currently has a tracking mode set, so this is inert for the
+ * initial attach (no prior pty) and for every same-pty / mirror flow (which
+ * never reach a swap). Never returns anything sent to the pty.
+ */
+export function planPtySwapReset(input: {
+  previousPtyId: string;
+  mouseTrackingMode: XtermMouseTrackingMode;
+}): PtySwapResetPlan {
+  // No prior pty (initial attach) inherits nothing stale.
+  if (!input.previousPtyId) {
+    return { termWrite: null };
+  }
+  if (input.mouseTrackingMode === "none") {
+    return { termWrite: null };
+  }
+  return { termWrite: MOUSE_REPORTING_RESET };
 }
 
 /**
@@ -346,6 +425,24 @@ export function getTerminalPaneLaunchCwd(paneId: string): string | undefined {
   return runtimes.get(paneId)?.launchCwd ?? paneSeeds.get(paneId)?.launchCwd;
 }
 
+/**
+ * The live cwd a pane's shell last reported via OSC 7, looked up by its ptyId.
+ * A new split/pane inherits this so it opens in the source shell's current
+ * directory (standard terminal behavior); the caller falls back to the
+ * worktree path when no OSC 7 has been seen for that pty yet.
+ */
+export function getTerminalPaneOsc7Cwd(ptyId: string): string | undefined {
+  if (!ptyId) {
+    return undefined;
+  }
+  for (const runtime of runtimes.values()) {
+    if (runtime.getPtyId() === ptyId) {
+      return runtime.getLiveCwd() ?? undefined;
+    }
+  }
+  return undefined;
+}
+
 export function shouldDetachTerminalContainer(
   currentContainer: HTMLDivElement | null,
   ownerContainer?: HTMLDivElement | null,
@@ -409,11 +506,17 @@ class TerminalPaneRuntime {
   private pendingOutput: Uint8Array[] = [];
   private disposed = false;
   private lastError: string | null = null;
+  // Why: the shell's last OSC 7-reported cwd. Cleared on a PTY swap so a
+  // reused runtime never reports the previous shell's directory.
+  private lastOsc7Cwd: string | null = null;
+  // OSC 7/52 parser handlers (xterm has no built-in for either); disposed on teardown.
+  private readonly oscDisposables: { dispose(): void }[] = [];
 
   private onTrackpadMouseDown: (() => void) | null = null;
   private onTrackpadMouseUp: (() => void) | null = null;
   private onTrackpadMouseMoveCapture: ((event: MouseEvent) => void) | null = null;
   private onFocusIn: (() => void) | null = null;
+  private removePasteSanitizer: (() => void) | null = null;
   private searchHandler: (() => void) | null = null;
   private ownerDocument: Document | null = null;
   private imeCompositionTracker: TerminalImeCompositionTracker | null = null;
@@ -486,15 +589,36 @@ class TerminalPaneRuntime {
     this.term.loadAddon(unicode11);
     this.term.unicode.activeVersion = "11";
 
-    const webLinksAddon = new WebLinksAddon((_event, uri) => {
-      if (!isSafeExternalUrl(uri)) return;
-      // Claude Code fullscreen handles link clicks via the open wrapper,
-      // so skip the addon handler to avoid duplicate opens.
-      const session = useTerminalStore.getState().aiSessions[this.ptyId];
-      if (session?.tool === "claude") return;
-      openUrl(uri);
-    });
+    const webLinksAddon = new WebLinksAddon((_event, uri) => this.handleLinkActivate(uri));
     this.term.loadAddon(webLinksAddon);
+
+    // Why: xterm parses OSC 8 hyperlinks natively but only makes them clickable
+    // when a linkHandler is set. Route OSC 8 activation through the same gate as
+    // regex-detected WebLinks so click UX (modifier semantics handled by xterm
+    // core) and the isSafeExternalUrl / claude-skip policy are identical.
+    this.term.options.linkHandler = {
+      activate: (_event, text) => this.handleLinkActivate(text),
+    };
+
+    // OSC 7 (cwd tracking) + OSC 52 (clipboard write) — xterm implements neither.
+    this.oscDisposables.push(
+      this.term.parser.registerOscHandler(7, (data) => {
+        const cwd = parseOsc7Cwd(data);
+        if (cwd) {
+          this.lastOsc7Cwd = cwd;
+        }
+        return true;
+      }),
+      this.term.parser.registerOscHandler(52, (data) =>
+        handleOsc52ClipboardRequest(data, {
+          writeClipboardText: (text) => writeHostClipboardText(text),
+          // Why: OSC 52 arrives from PTY output, not a user gesture, so a
+          // WKWebView (Tauri) clipboard write may reject the gesture gate.
+          // Swallow to a devtools log rather than surfacing an error.
+          onWriteError: (error) => log("terminal", "OSC 52 clipboard write failed:", error),
+        }),
+      ),
+    );
 
     this.searchAddon = new SearchAddon();
     this.term.loadAddon(this.searchAddon);
@@ -594,8 +718,22 @@ class TerminalPaneRuntime {
     }
   }
 
+  // Audit — setPtyId swap paths (mouse/private-mode state on pty swap):
+  //   • Same ptyId → early-return below (mirror + global-terminal-tab reuse
+  //     always re-set the SAME source/tab pty, so those never swap live state).
+  //   • Empty→pty (initial attach via constructor seed / first applySeed) →
+  //     previousPtyId is "", so the reset planner is inert.
+  //   • pty A→pty B on an already-hydrated runtime → the only such caller is
+  //     primeTerminalPane→applySeed during layout restore that re-primes a
+  //     still-cached (RUNTIME_RELEASE_GRACE_MS) pane. That path does NOT
+  //     re-hydrate (hydrationStarted stays true, so startHydration no-ops), so
+  //     the incoming pty's tmux capture is NOT replayed here and pty A's DECSET
+  //     mouse-reporting modes stay live. Reset them in the renderer only.
+  // The reset goes through this.term.write, NEVER writeInput/writePty — escape
+  // bytes on the shell's stdin corrupt the prompt. Regression-pinned by the
+  // planPtySwapReset tests (plan has no pty channel by construction).
   setPtyId(ptyId: string) {
-    if (this.ptyId === ptyId) {
+    if (this.disposed || this.ptyId === ptyId) {
       return;
     }
 
@@ -606,6 +744,18 @@ class TerminalPaneRuntime {
     // size would skip the new PTY's initial resize and leave it mis-sized.
     this.appliedSize = { cols: 0, rows: 0 };
     this.inFlightSize = null;
+    // A different shell has its own cwd; drop the previous OSC 7 report.
+    this.lastOsc7Cwd = null;
+    // Clear stale mouse-reporting DECSET state, gated on xterm actually having a
+    // tracking mode set, so a swapped-in shell never gets stray SGR mouse
+    // reports before its own replay re-establishes the modes it wants.
+    const resetPlan = planPtySwapReset({
+      previousPtyId,
+      mouseTrackingMode: this.term.modes.mouseTrackingMode,
+    });
+    if (resetPlan.termWrite) {
+      this.term.write(resetPlan.termWrite);
+    }
     this.syncPtyOutputRoute(previousPtyId, ptyId);
   }
 
@@ -617,6 +767,23 @@ class TerminalPaneRuntime {
   // for IME-sensitive paths that run outside a keydown. Observation only.
   isComposing(): boolean {
     return this.imeCompositionTracker?.isActive() ?? false;
+  }
+
+  // Why: the shell's last OSC 7-reported cwd, consumed by getTerminalPaneOsc7Cwd
+  // so a new split inherits the source shell's current directory.
+  getLiveCwd(): string | null {
+    return this.lastOsc7Cwd;
+  }
+
+  // Shared activation gate for OSC 8 hyperlinks and regex-detected WebLinks so
+  // both honor the same safe-URL check and Claude fullscreen skip.
+  private handleLinkActivate(uri: string) {
+    if (!isSafeExternalUrl(uri)) return;
+    // Claude Code fullscreen handles link clicks via the open wrapper, so skip
+    // to avoid duplicate opens.
+    const session = useTerminalStore.getState().aiSessions[this.ptyId];
+    if (session?.tool === "claude") return;
+    openUrl(uri);
   }
 
   handlePtyOutput(data: Uint8Array) {
@@ -636,7 +803,14 @@ class TerminalPaneRuntime {
   }
 
   setTheme(theme: TerminalTheme | null) {
-    this.term.options.theme = toXtermTheme(theme);
+    // Why value-gated: acquireTerminalRuntime re-applies the same theme on every
+    // retain, and each assignment makes xterm's ThemeService rebuild its palette
+    // by identity, discarding OSC 4/10/11/12 colors a TUI set at runtime. Assign
+    // only on a real value change so live TUI color mutations survive.
+    const next = toXtermTheme(theme);
+    if (!composedXtermThemesEqual(this.term.options.theme, next)) {
+      this.term.options.theme = next;
+    }
     if (theme) {
       this.term.options.fontFamily = theme.fontFamily;
       this.term.options.fontSize = theme.fontSize;
@@ -770,6 +944,11 @@ class TerminalPaneRuntime {
       this.onFocusIn = null;
     }
 
+    if (this.removePasteSanitizer) {
+      this.removePasteSanitizer();
+      this.removePasteSanitizer = null;
+    }
+
     if (this.onTrackpadMouseDown) {
       this.container.removeEventListener("mousedown", this.onTrackpadMouseDown, true);
       this.onTrackpadMouseDown = null;
@@ -831,6 +1010,30 @@ class TerminalPaneRuntime {
     this.ownerDocument.addEventListener("mouseup", this.onTrackpadMouseUp, true);
     this.ownerDocument.addEventListener("mousemove", this.onTrackpadMouseMoveCapture, true);
     container.addEventListener("focusin", this.onFocusIn);
+
+    // Why: capture-phase paste on the container (a strict ancestor of xterm's
+    // textarea/screen paste targets) preempts xterm 6.0.0's own unsanitized
+    // paste, which would let an embedded ESC[201~ in clipboard text close the
+    // bracketed-paste frame early and execute the tail. All output flows through
+    // the runtime's PtyInputQueue. An active IME composition defers to xterm —
+    // a known residual window where xterm's unsanitized paste runs; accepted
+    // because it requires the user to trigger paste mid-composition with a
+    // malicious clipboard, and interleaving our injection with a pending jamo
+    // commit would corrupt the composition.
+    this.removePasteSanitizer = installBracketedPasteSanitizer({
+      container,
+      isBracketedPasteMode: () => this.term.modes.bracketedPasteMode,
+      isComposing: () => this.isComposing(),
+      sendInput: (text) => {
+        this.writeInput(new TextEncoder().encode(text));
+        // Why: xterm's own paste scrolls to the prompt via its user-input
+        // trigger; the intercepted path must keep that viewport behavior.
+        // The alternate buffer has no scrollback to jump.
+        if (!this.term.buffer.active || this.term.buffer.active.type !== "alternate") {
+          this.term.scrollToBottom();
+        }
+      },
+    });
 
     this.resizeObserver = new ResizeObserver(() => {
       this.scheduleLayoutSync();
@@ -1263,6 +1466,9 @@ class TerminalPaneRuntime {
     this.hasLoadedWebgl = false;
     this.dataDisposable.dispose();
     this.bellDisposable.dispose();
+    for (const disposable of this.oscDisposables) {
+      disposable.dispose();
+    }
     this.unlistenLayoutSync();
     this.syncPtyOutputRoute(this.ptyId, "");
     this.term.dispose();

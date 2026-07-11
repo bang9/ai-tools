@@ -4,7 +4,7 @@ import { useTerminalStore } from "../store/terminal";
 import { useBroadcastStore } from "../store/broadcast";
 import { useProjectStore } from "../store/project";
 import { usePanelLayoutStore } from "../store/panel-layout";
-import { getRuntimeSize, captureRuntimeSnapshot } from "./terminal-runtime";
+import { getRuntimeSize, captureRuntimeSnapshot, getTerminalPaneOsc7Cwd } from "./terminal-runtime";
 import { getGlobalTerminalMirrorTitle } from "./global-terminal-title";
 
 export async function splitTerminalPane(
@@ -14,13 +14,16 @@ export async function splitTerminalPane(
 ): Promise<void> {
   const newPaneId = crypto.randomUUID();
   const newPtyId = crypto.randomUUID();
+  // Why: a split inherits the source shell's live OSC 7 cwd (standard terminal
+  // behavior) and falls back to the worktree path when none has been reported.
+  const cwd = getTerminalPaneOsc7Cwd(ptyId) ?? worktreePath;
   const created = await runCommandSafely(
     async () => {
       await createPty({
         ptyId: newPtyId,
         paneId: newPaneId,
         worktreePath,
-        cwd: worktreePath,
+        cwd,
         cols: 80,
         rows: 24,
       });

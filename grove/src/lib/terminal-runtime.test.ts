@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  composedXtermThemesEqual,
   isViewportAtBottom,
   nextFitStability,
+  planPtySwapReset,
   resolvePostFitViewport,
   shouldDetachTerminalContainer,
   shouldLoadWebglAddon,
@@ -9,6 +11,37 @@ import {
   shouldSuspendWebglAddon,
 } from "./terminal-runtime";
 import type { FitStabilityState } from "./terminal-runtime";
+import type { ITheme } from "@xterm/xterm";
+import { Terminal } from "@xterm/headless";
+
+describe("composedXtermThemesEqual (setTheme value-gate)", () => {
+  const base: ITheme = { background: "#101010", foreground: "#fafafa", cursor: "#fafafa" };
+
+  it("treats two identical-valued but distinct-identity themes as equal (skip assignment)", () => {
+    expect(composedXtermThemesEqual({ ...base }, { ...base })).toBe(true);
+  });
+
+  it("treats the same object reference as equal", () => {
+    expect(composedXtermThemesEqual(base, base)).toBe(true);
+  });
+
+  it("detects a changed color value (assign once)", () => {
+    expect(composedXtermThemesEqual(base, { ...base, background: "#000000" })).toBe(false);
+  });
+
+  it("detects an added slot", () => {
+    expect(composedXtermThemesEqual(base, { ...base, red: "#ff0000" })).toBe(false);
+  });
+
+  it("treats both-undefined (null theme) as equal", () => {
+    expect(composedXtermThemesEqual(undefined, undefined)).toBe(true);
+  });
+
+  it("treats one-undefined as changed", () => {
+    expect(composedXtermThemesEqual(undefined, base)).toBe(false);
+    expect(composedXtermThemesEqual(base, undefined)).toBe(false);
+  });
+});
 
 describe("shouldDetachTerminalContainer", () => {
   it("allows unconditional detach when no owner container is provided", () => {
@@ -162,5 +195,86 @@ describe("shouldSuspendWebglAddon", () => {
 
   it("does nothing when no context is loaded", () => {
     expect(shouldSuspendWebglAddon(false, false)).toBe(false);
+  });
+});
+
+describe("planPtySwapReset (mouse-mode state on pty swap)", () => {
+  // The plan interface has exactly one output channel, `termWrite` — a renderer
+  // (xterm.write) string. There is no pty field, so a swap can never, by
+  // construction, emit bytes onto the shell's stdin. This is the structural
+  // "zero bytes to the PTY during a swap" guarantee; setPtyId routes the plan
+  // exclusively through this.term.write.
+  it("emits no reset on the initial attach (no previous pty)", () => {
+    expect(planPtySwapReset({ previousPtyId: "", mouseTrackingMode: "any" })).toEqual({
+      termWrite: null,
+    });
+  });
+
+  it("emits no reset when the previous pty had no mouse tracking set", () => {
+    expect(planPtySwapReset({ previousPtyId: "pty-a", mouseTrackingMode: "none" })).toEqual({
+      termWrite: null,
+    });
+  });
+
+  it("plan output only ever targets the renderer, never the pty", () => {
+    const plan = planPtySwapReset({ previousPtyId: "pty-a", mouseTrackingMode: "vt200" });
+    // Exactly one key, and it is the renderer channel.
+    expect(Object.keys(plan)).toEqual(["termWrite"]);
+  });
+
+  for (const mode of ["x10", "vt200", "drag", "any"] as const) {
+    it(`disables mouse reporting on a real swap out of ${mode} tracking`, () => {
+      const plan = planPtySwapReset({ previousPtyId: "pty-a", mouseTrackingMode: mode });
+      expect(plan.termWrite).toBe("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
+    });
+  }
+});
+
+describe("planPtySwapReset round-trip against a real xterm parser", () => {
+  const write = (term: Terminal, data: string) =>
+    new Promise<void>((resolve) => term.write(data, resolve));
+
+  // Each enable sequence a TUI would emit, paired with xterm's reported mode.
+  const trackingCases: Array<{ enable: string; mode: "x10" | "vt200" | "drag" | "any" }> = [
+    { enable: "\x1b[?9h", mode: "x10" },
+    { enable: "\x1b[?1000h", mode: "vt200" },
+    { enable: "\x1b[?1002h", mode: "drag" },
+    { enable: "\x1b[?1003h", mode: "any" },
+  ];
+
+  for (const { enable, mode } of trackingCases) {
+    it(`the ${mode} reset the plan chooses actually clears mouseTrackingMode`, async () => {
+      const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+      await write(term, enable);
+      expect(term.modes.mouseTrackingMode).toBe(mode);
+
+      // Feed xterm's own reported state into the planner, then apply the plan.
+      const plan = planPtySwapReset({
+        previousPtyId: "pty-a",
+        mouseTrackingMode: term.modes.mouseTrackingMode,
+      });
+      expect(plan.termWrite).not.toBeNull();
+      await write(term, plan.termWrite as string);
+
+      expect(term.modes.mouseTrackingMode).toBe("none");
+      term.dispose();
+    });
+  }
+
+  it("leaves alt-screen (1049) to the incoming pty's replay — reset never exits it", async () => {
+    const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+    await write(term, "\x1b[?1049h\x1b[?1000h");
+    expect(term.buffer.active.type).toBe("alternate");
+
+    const plan = planPtySwapReset({
+      previousPtyId: "pty-a",
+      mouseTrackingMode: term.modes.mouseTrackingMode,
+    });
+    await write(term, plan.termWrite as string);
+
+    // Mouse reporting cleared, but the session stays in the alt buffer.
+    expect(term.modes.mouseTrackingMode).toBe("none");
+    expect(term.buffer.active.type).toBe("alternate");
+    term.dispose();
   });
 });
