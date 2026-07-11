@@ -358,6 +358,7 @@ class TerminalPaneRuntime {
   private inFlightSize: ResizeTarget | null = null;
   private fitStability: FitStabilityState | null = null;
   private resizeHoldDepth = 0;
+  private pendingHeldFit = false;
   private layoutSyncSuppressed = false;
   private initialScrollback = "";
   private initialScrollbackSource: TerminalInitialContentSource | undefined;
@@ -823,6 +824,15 @@ class TerminalPaneRuntime {
         return;
       }
 
+      if (this.resizeHoldDepth > 0 && proposed.cols !== this.term.cols) {
+        // A cols change re-wraps the entire buffer, which reads as left-right
+        // trembling when applied mid-drag. Defer it to the hold release;
+        // rows-only changes stay live because they never reflow text.
+        this.fitStability = null;
+        this.pendingHeldFit = true;
+        return;
+      }
+
       const { state, shouldFit } = nextFitStability(this.fitStability, proposed);
       if (!shouldFit) {
         // Mid-drag: hold the reflow until the proposal stops moving.
@@ -959,11 +969,21 @@ class TerminalPaneRuntime {
     }
 
     this.resizeHoldDepth -= 1;
-    if (this.resizeHoldDepth === 0 && !this.disposed) {
-      // Flush from the terminal's current grid: only the final size of the
-      // drag matters, and shouldSendResize dedupes if it never changed.
-      this.syncPtySize();
+    if (this.resizeHoldDepth > 0 || this.disposed) {
+      return;
     }
+
+    if (this.pendingHeldFit) {
+      // A cols change was deferred during the drag: run the full layout sync,
+      // which fits once and forwards the final size to the PTY.
+      this.pendingHeldFit = false;
+      this.scheduleLayoutSync();
+      return;
+    }
+
+    // Flush from the terminal's current grid: only the final size of the
+    // drag matters, and shouldSendResize dedupes if it never changed.
+    this.syncPtySize();
   }
 
   private syncPtySize() {

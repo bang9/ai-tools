@@ -62,12 +62,19 @@ to re-converge after a `setPtyId` swap resets the tracked sizes.
 
 During a sash drag, PTY resizes are held entirely (`holdPanePtyResizes` +
 `usePtyResizeHold`, wired through `ResizablePanelGroup.onDragStateChange` in
-`SplitContainer`, `Layout`, and `AppTabContent`): xterm keeps refitting
-locally so the canvas tracks the divider, but the shell/TUI receives exactly
-one resize when the drag ends. Without the hold, mid-drag stability-cap fits
-stream SIGWINCH into TUIs (Claude Code, Codex), which redraw-thrash and
-visibly tremble. Window-edge resizes are not held — they flow through the
-stability loop like orca's, which is the accepted behavior.
+`SplitContainer`, `Layout`, and `AppTabContent`): the shell/TUI receives
+exactly one resize when the drag ends. Without the hold, mid-drag
+stability-cap fits stream SIGWINCH into TUIs (Claude Code, Codex), which
+redraw-thrash and visibly tremble vertically.
+
+The hold also defers **cols-changing fits** to the release (`pendingHeldFit`):
+a cols change re-wraps the entire scrollback, which reads as left-right
+trembling when applied mid-drag. Rows-only fits stay live during the drag
+because they never reflow text horizontally. So mid-drag the canvas tracks
+height changes, holds its width (letterbox/clip masked by the theme-colored
+pane), and snaps once — fit + single SIGWINCH — on release. Window-edge
+resizes are not held — they flow through the stability loop like orca's,
+which is the accepted behavior.
 
 ## CSS flicker masks
 
@@ -91,9 +98,10 @@ Manual sweep after changing anything in the pipeline (use a worktree with a
 split layout, one pane running `claude` or another TUI, one plain shell with
 long scrollback):
 
-1. Drag the split sash continuously — content must not blink or tremble; a
-   TUI pane redraws exactly once when the sash is released (no mid-drag
-   SIGWINCH), and the grid snaps right after the sash settles.
+1. Drag the split sash continuously — content must not blink or tremble in
+   either axis; text never re-wraps mid-drag (cols deferred), a TUI pane
+   redraws exactly once when the sash is released (no mid-drag SIGWINCH),
+   and the grid snaps right after the sash settles.
 2. Resize the window edge quickly — same expectation.
 3. Scroll a shell pane to the bottom, resize — it stays pinned to the bottom.
 4. Scroll up into scrollback, resize — the reading position holds (clamped
