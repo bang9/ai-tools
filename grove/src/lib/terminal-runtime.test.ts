@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isViewportAtBottom,
   nextFitStability,
   resolvePostFitViewport,
   shouldDetachTerminalContainer,
@@ -99,6 +100,22 @@ describe("nextFitStability", () => {
 
     expect(fits).toBe(1);
     expect(state?.totalFrames).toBe(8);
+  });
+});
+
+describe("isViewportAtBottom", () => {
+  it("treats the exact bottom as bottom", () => {
+    expect(isViewportAtBottom(90, 90)).toBe(true);
+  });
+
+  it("tolerates being one row shy of the bottom", () => {
+    // Fast output/reflow can leave viewportY a hair behind baseY on the frame
+    // a fit samples it; that must not read as "user scrolled up".
+    expect(isViewportAtBottom(89, 90)).toBe(true);
+  });
+
+  it("treats deeper scrollback positions as reading", () => {
+    expect(isViewportAtBottom(88, 90)).toBe(false);
   });
 });
 

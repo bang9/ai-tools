@@ -5,6 +5,7 @@ import { useTerminalStore } from "../../store/terminal";
 import { cn } from "../../lib/cn";
 import { collectLeafPaneIds } from "../../lib/split-tree";
 import { requestTerminalLayoutSync } from "../../lib/terminal-layout-sync";
+import { usePtyResizeHold } from "../../hooks/usePtyResizeHold";
 import ResizablePanelGroup from "../ui/resizable-panel-group";
 
 interface Props {
@@ -41,6 +42,7 @@ function SplitContainer({ node, worktreePath, path = [] }: Props) {
   // Scope panelResize layout-sync to the leaf panes under this split so a sash
   // drag only wakes the runtimes that actually rescale, not every pane app-wide.
   const paneIds = useMemo(() => collectLeafPaneIds(node), [node]);
+  const handleDragStateChange = usePtyResizeHold(paneIds);
 
   if (node.type === "leaf") {
     return node.ptyId ? (
@@ -65,6 +67,7 @@ function SplitContainer({ node, worktreePath, path = [] }: Props) {
         requestTerminalLayoutSync({ source: "panelResize", paneIds });
       }}
       onCommit={handleCommit}
+      onDragStateChange={handleDragStateChange}
     >
       {node.children?.map((child, i) => (
         <ResizablePanelGroup.Pane

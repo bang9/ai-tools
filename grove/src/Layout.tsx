@@ -9,6 +9,7 @@ import ResizablePanelGroup from "./components/ui/resizable-panel-group";
 import { windowDragRegionProps } from "./lib/platform";
 import { usePanelLayoutStore } from "./store/panel-layout";
 import { useFullscreen } from "./hooks/useFullscreen";
+import { usePtyResizeHold } from "./hooks/usePtyResizeHold";
 
 const TITLE_BAR_HEIGHT = 38;
 
@@ -45,6 +46,9 @@ function Layout() {
   const loaded = usePanelLayoutStore((s) => s.loaded);
   const init = usePanelLayoutStore((s) => s.init);
   const updateMain = usePanelLayoutStore((s) => s.updateMain);
+  // The center pane hosts the terminal area, so this sash indirectly resizes
+  // every visible terminal — hold all PTY resizes for the drag.
+  const handleDragStateChange = usePtyResizeHold();
 
   useEffect(() => {
     void init();
@@ -55,7 +59,12 @@ function Layout() {
   return (
     <div className={cn("flex flex-col h-full w-full bg-background")}>
       <TitleBar />
-      <ResizablePanelGroup className={cn("flex-1 min-h-0")} ratios={main} onCommit={updateMain}>
+      <ResizablePanelGroup
+        className={cn("flex-1 min-h-0")}
+        ratios={main}
+        onCommit={updateMain}
+        onDragStateChange={handleDragStateChange}
+      >
         <ResizablePanelGroup.Pane minSize={180}>
           <Sidebar />
         </ResizablePanelGroup.Pane>

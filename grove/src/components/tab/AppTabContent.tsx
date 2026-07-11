@@ -4,6 +4,7 @@ import { useTerminalStore } from "../../store/terminal";
 import { usePanelLayoutStore } from "../../store/panel-layout";
 import { useBroadcastStore } from "../../store/broadcast";
 import { useGlobalTerminal } from "../../hooks/useGlobalTerminal";
+import { usePtyResizeHold } from "../../hooks/usePtyResizeHold";
 import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelection";
 import {
   acquireTerminalRuntime,
@@ -37,6 +38,9 @@ function findPaneIdForPty(ptyId: string): string | null {
 
 function AppTabContent() {
   const { worktreePath } = useResolvedSidebarSelection();
+  // This sash resizes the worktree terminal area and the global terminal at
+  // once — hold all PTY resizes for the drag.
+  const handleDragStateChange = usePtyResizeHold();
   const setActiveWorktree = useTabStore((s) => s.setActiveWorktree);
 
   useEffect(() => {
@@ -355,6 +359,7 @@ function AppTabContent() {
         requestTerminalLayoutSync({ source: "panelResize" });
       }}
       onCommit={handleRatioCommit}
+      onDragStateChange={handleDragStateChange}
     >
       <ResizablePanelGroup.Pane>
         <div ref={pipBoundsRef} className={cn("relative h-full overflow-hidden")}>

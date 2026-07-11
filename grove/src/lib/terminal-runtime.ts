@@ -145,6 +145,16 @@ export interface PreFitViewport {
   viewportY: number;
 }
 
+// A viewport within one row of the bottom counts as bottom-pinned: fast output
+// and reflow can leave viewportY a hair behind baseY on the very frame a fit
+// samples it, and treating that as "reading scrollback" freezes the terminal
+// one row short of following output.
+export const BOTTOM_TOLERANCE_ROWS = 1;
+
+export function isViewportAtBottom(viewportY: number, baseY: number): boolean {
+  return viewportY >= baseY - BOTTOM_TOLERANCE_ROWS;
+}
+
 /**
  * Where the viewport should land after a fit-driven reflow. A bottom-pinned
  * terminal must stay pinned — xterm's reflow can otherwise strand it mid-
@@ -182,6 +192,35 @@ export function shouldSendResize(
     return !(target.cols === inFlight.cols && target.rows === inFlight.rows);
   }
   return !(target.cols === applied.cols && target.rows === applied.rows);
+}
+
+/**
+ * Hold PTY resize propagation for the given panes (every pane when omitted)
+ * while a sash drag is in progress. xterm keeps refitting locally so the
+ * canvas tracks the divider, but the PTY receives a single resize when the
+ * hold is released — a mid-drag SIGWINCH stream makes TUIs redraw-thrash and
+ * visibly tremble. Returns an idempotent release function that flushes the
+ * final size.
+ */
+export function holdPanePtyResizes(paneIds?: string[]): () => void {
+  const held: TerminalPaneRuntime[] = [];
+  for (const runtime of runtimes.values()) {
+    if (!paneIds || paneIds.includes(runtime.paneId)) {
+      runtime.holdPtyResize();
+      held.push(runtime);
+    }
+  }
+
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    for (const runtime of held) {
+      runtime.releasePtyResize();
+    }
+  };
 }
 
 function emitTerminalPaneActivity(activity: TerminalPaneActivity) {
@@ -318,6 +357,7 @@ class TerminalPaneRuntime {
   private appliedSize: ResizeTarget = { cols: 0, rows: 0 };
   private inFlightSize: ResizeTarget | null = null;
   private fitStability: FitStabilityState | null = null;
+  private resizeHoldDepth = 0;
   private layoutSyncSuppressed = false;
   private initialScrollback = "";
   private initialScrollbackSource: TerminalInitialContentSource | undefined;
@@ -888,7 +928,7 @@ class TerminalPaneRuntime {
       const buffer = this.term.buffer.active;
       const isAlternate = buffer.type === "alternate";
       const before: PreFitViewport = {
-        wasAtBottom: buffer.viewportY >= buffer.baseY,
+        wasAtBottom: isViewportAtBottom(buffer.viewportY, buffer.baseY),
         viewportY: buffer.viewportY,
       };
       this.fitAddon.fit();
@@ -909,7 +949,28 @@ class TerminalPaneRuntime {
     }
   }
 
+  holdPtyResize() {
+    this.resizeHoldDepth += 1;
+  }
+
+  releasePtyResize() {
+    if (this.resizeHoldDepth === 0) {
+      return;
+    }
+
+    this.resizeHoldDepth -= 1;
+    if (this.resizeHoldDepth === 0 && !this.disposed) {
+      // Flush from the terminal's current grid: only the final size of the
+      // drag matters, and shouldSendResize dedupes if it never changed.
+      this.syncPtySize();
+    }
+  }
+
   private syncPtySize() {
+    if (this.resizeHoldDepth > 0) {
+      return;
+    }
+
     const { cols, rows } = this.term;
     if (!cols || !rows || !this.ptyId) {
       return;

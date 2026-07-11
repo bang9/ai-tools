@@ -48,17 +48,26 @@ Reflow moves buffer lines, so the pre-fit viewport points at different content
 afterwards. `fitTerminal` snapshots the viewport before `fit()` and re-pins
 explicitly after (`resolvePostFitViewport`):
 
-- pinned to bottom (`viewportY >= baseY`) → `scrollToBottom()` — a resize never
-  strands a following terminal mid-scrollback
+- pinned to bottom (`isViewportAtBottom`, 1-row tolerance) → `scrollToBottom()`
+  — a resize never strands a following terminal mid-scrollback
 - reading scrollback → keep `viewportY`, clamped to the post-reflow `baseY`
 - alternate screen (TUIs) → no scroll enforcement; the app owns its viewport
 
-## PTY resize dedupe
+## PTY resize dedupe + drag hold
 
 `syncPtySize` only reaches the backend when the target differs from the
 in-flight/applied size (`shouldSendResize`), so no-op fits never emit
 SIGWINCH. The no-change branch of the layout sync still calls `syncPtySize`
 to re-converge after a `setPtyId` swap resets the tracked sizes.
+
+During a sash drag, PTY resizes are held entirely (`holdPanePtyResizes` +
+`usePtyResizeHold`, wired through `ResizablePanelGroup.onDragStateChange` in
+`SplitContainer`, `Layout`, and `AppTabContent`): xterm keeps refitting
+locally so the canvas tracks the divider, but the shell/TUI receives exactly
+one resize when the drag ends. Without the hold, mid-drag stability-cap fits
+stream SIGWINCH into TUIs (Claude Code, Codex), which redraw-thrash and
+visibly tremble. Window-edge resizes are not held — they flow through the
+stability loop like orca's, which is the accepted behavior.
 
 ## CSS flicker masks
 
@@ -82,8 +91,9 @@ Manual sweep after changing anything in the pipeline (use a worktree with a
 split layout, one pane running `claude` or another TUI, one plain shell with
 long scrollback):
 
-1. Drag the split sash continuously — content must not blink; grid snaps to
-   the new size right after the sash settles, and mid-drag every ~8 frames.
+1. Drag the split sash continuously — content must not blink or tremble; a
+   TUI pane redraws exactly once when the sash is released (no mid-drag
+   SIGWINCH), and the grid snaps right after the sash settles.
 2. Resize the window edge quickly — same expectation.
 3. Scroll a shell pane to the bottom, resize — it stays pinned to the bottom.
 4. Scroll up into scrollback, resize — the reading position holds (clamped

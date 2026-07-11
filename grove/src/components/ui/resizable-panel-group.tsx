@@ -28,6 +28,8 @@ type ResizablePanelGroupProps = Omit<
   ratios?: number[];
   onLayout?: (ratios: number[]) => void;
   onCommit?: (ratios: number[]) => void;
+  /** Fires with `true` when a sash drag begins and `false` when it ends. */
+  onDragStateChange?: (dragging: boolean) => void;
 };
 
 function toRatios(sizes: number[]): number[] {
@@ -45,7 +47,16 @@ function toAllotmentSizes(ratios: number[] | undefined): number[] | undefined {
 
 const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupProps>(
   function ResizablePanelGroup(
-    { children, className, allotmentClassName, ratios, onLayout, onCommit, ...props },
+    {
+      children,
+      className,
+      allotmentClassName,
+      ratios,
+      onLayout,
+      onCommit,
+      onDragStateChange,
+      ...props
+    },
     ref,
   ) {
     const allotmentRef = useRef<AllotmentHandle | null>(null);
@@ -101,7 +112,8 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
       isDraggingRef.current = true;
       pendingRatiosRef.current = null;
       clearResetPending();
-    }, [clearResetPending]);
+      onDragStateChange?.(true);
+    }, [clearResetPending, onDragStateChange]);
 
     const handleSashDoubleClickCapture = useCallback(
       (event: MouseEvent<HTMLDivElement>) => {
@@ -159,8 +171,9 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
           commitRatios(finalRatios);
         }
         clearResetPending();
+        onDragStateChange?.(false);
       },
-      [clearResetPending, commitRatios],
+      [clearResetPending, commitRatios, onDragStateChange],
     );
 
     return (
