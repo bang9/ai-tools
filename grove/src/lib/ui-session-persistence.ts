@@ -12,7 +12,7 @@ const RIGHT_PANEL_MODE_KEY = "grove.rightPanelMode.v1";
 
 interface PersistedTab {
   id: string;
-  type: "browser" | "file" | "changes";
+  type: "browser" | "file" | "changes" | "terminal";
   title: string;
 }
 
@@ -37,7 +37,10 @@ function isPersistedTab(value: unknown): value is PersistedTab {
   const tab = value as Record<string, unknown>;
   return (
     typeof tab.id === "string" &&
-    (tab.type === "browser" || tab.type === "file" || tab.type === "changes") &&
+    (tab.type === "browser" ||
+      tab.type === "file" ||
+      tab.type === "changes" ||
+      tab.type === "terminal") &&
     typeof tab.title === "string"
   );
 }
@@ -124,12 +127,10 @@ function rehydrateBrowserNavs(validIds: Set<string>): Record<string, BrowserNavS
 function persistedSessionsSnapshot(sessions: Record<string, TabSession>) {
   const snapshot: Record<string, PersistedSession> = {};
   for (const [worktreePath, session] of Object.entries(sessions)) {
-    // Full closable tab list in display order (browser, file, changes).
+    // Full closable tab list in display order (terminal entries included so
+    // their position survives restarts; terminal content restores separately).
     const closable = session.tabs
-      .filter(
-        (tab) =>
-          tab.closable && (tab.type === "browser" || tab.type === "file" || tab.type === "changes"),
-      )
+      .filter((tab) => tab.closable)
       .map((tab) => ({
         id: tab.id,
         type: tab.type as PersistedTab["type"],

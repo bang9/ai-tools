@@ -184,6 +184,87 @@ describe("useTabStore", () => {
     });
   });
 
+  describe("terminal tab entries", () => {
+    it("syncTerminalTabs appends new terminal entries at the end in creation order", () => {
+      initWorktree();
+      useTabStore.getState().addTab("changes", "Changes");
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1", "t-2"]);
+
+      const tabs = selectCurrentTabs(useTabStore.getState());
+      expect(tabs.map((t) => t.id)).toEqual(["changes", "t-1", "t-2"]);
+      expect(tabs[1]).toMatchObject({ type: "terminal", closable: true });
+    });
+
+    it("syncTerminalTabs keeps positions of existing entries and drops stale ones", () => {
+      initWorktree();
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1"]);
+      useTabStore.getState().addTab("changes", "Changes");
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1", "t-2"]);
+      expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual([
+        "t-1",
+        "changes",
+        "t-2",
+      ]);
+
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-2"]);
+      expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual([
+        "changes",
+        "t-2",
+      ]);
+    });
+
+    it("syncTerminalTabs(null) removes entries and moves active off the terminal sentinel", () => {
+      initWorktree();
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1"]);
+      useTabStore.getState().addTab("changes", "Changes");
+      useTabStore.getState().setActiveTab("terminal");
+
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", null);
+
+      const state = useTabStore.getState();
+      expect(selectCurrentTabs(state).map((t) => t.id)).toEqual(["changes"]);
+      expect(selectCurrentActiveTabId(state)).toBe("changes");
+    });
+
+    it("closeTab ignores terminal entries — they close via closeTerminalTab", () => {
+      initWorktree();
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1"]);
+      useTabStore.getState().closeTab("t-1");
+      expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual(["t-1"]);
+    });
+  });
+
+  describe("moveTab", () => {
+    it("reorders a tab to the target index", () => {
+      initWorktree();
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1"]);
+      useTabStore.getState().addTab("changes", "Changes");
+      vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(
+        "b-1" as `${string}-${string}-${string}-${string}-${string}`,
+      );
+      useTabStore.getState().addTab("browser", "Browser");
+      expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual([
+        "t-1",
+        "changes",
+        "b-1",
+      ]);
+
+      useTabStore.getState().moveTab("b-1", 0);
+      expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual([
+        "b-1",
+        "t-1",
+        "changes",
+      ]);
+
+      useTabStore.getState().moveTab("b-1", 99);
+      expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual([
+        "t-1",
+        "changes",
+        "b-1",
+      ]);
+    });
+  });
+
   describe("browser nav cleanup", () => {
     it("closeTab removes the tab's browser nav state", () => {
       initWorktree();

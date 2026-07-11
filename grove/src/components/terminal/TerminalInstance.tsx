@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChevronDown, ChevronUp, Columns2, Plus, Radio, Rows2, ScreenShare, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Columns2, Radio, Rows2, ScreenShare, Tag, X } from "lucide-react";
 import { useTerminalStore } from "../../store/terminal";
 import { useBroadcastStore } from "../../store/broadcast";
 import { usePanelLayoutStore } from "../../store/panel-layout";
@@ -33,13 +33,27 @@ interface Props {
   label?: string;
 }
 
-function TerminalPaneLabel({
+/**
+ * Pane header chip (top-right): label/memo plus the pane actions. The label
+ * (when set) stays visible; the action buttons occupy no space until the pane
+ * is hovered, then animate their width in. Without a label the whole chip is
+ * hover-revealed.
+ */
+function TerminalPaneHeader({
+  worktreePath,
+  paneId,
+  ptyId,
+  paneCount,
   label,
-  onChange,
+  onLabelChange,
   onFocusTerminal,
 }: {
+  worktreePath: string;
+  paneId: string;
+  ptyId: string;
+  paneCount: number;
   label?: string;
-  onChange: (label: string | undefined) => void;
+  onLabelChange: (label: string | undefined) => void;
   onFocusTerminal: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -64,11 +78,11 @@ function TerminalPaneLabel({
 
   const saveDraft = useCallback(() => {
     const next = draft.trim().slice(0, TERMINAL_PANE_LABEL_MAX_LENGTH);
-    onChange(next || undefined);
+    onLabelChange(next || undefined);
     setDraft(next);
     setEditing(false);
     onFocusTerminal();
-  }, [draft, onChange, onFocusTerminal]);
+  }, [draft, onLabelChange, onFocusTerminal]);
 
   const cancelEdit = useCallback(() => {
     skipBlurSaveRef.current = true;
@@ -81,15 +95,22 @@ function TerminalPaneLabel({
     event.stopPropagation();
   };
 
-  if (editing) {
-    return (
-      <div
-        className={cn(
-          "absolute left-2 top-2 z-20 flex h-6 items-center rounded-md border border-white/15 bg-white/10 px-1.5 backdrop-blur-sm",
-        )}
-        onClick={stopTerminalFocus}
-        onMouseDown={stopTerminalFocus}
-      >
+  const actionButtonClass =
+    "inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-white/45 hover:bg-white/10 hover:text-white/80";
+
+  return (
+    <div
+      className={cn(
+        "absolute right-2 top-2 z-20 flex h-6 max-w-[calc(100%-1rem)] items-center rounded-md border border-white/15 bg-white/10 px-0.5 text-white/75 backdrop-blur-sm transition-opacity duration-150",
+        {
+          "opacity-0 focus-within:opacity-100 group-hover/terminal-pane:opacity-100":
+            !label && !editing,
+        },
+      )}
+      onClick={stopTerminalFocus}
+      onMouseDown={stopTerminalFocus}
+    >
+      {editing ? (
         <input
           ref={inputRef}
           type="text"
@@ -113,136 +134,85 @@ function TerminalPaneLabel({
             }
           }}
           aria-label="Terminal pane label"
+          placeholder="Label"
           className={cn(
-            "h-5 w-32 bg-transparent text-xs font-medium text-white/80 outline-none placeholder:text-white/35",
+            "h-5 w-28 bg-transparent px-1.5 text-xs font-medium text-white/80 outline-none placeholder:text-white/35",
           )}
         />
-      </div>
-    );
-  }
-
-  if (label) {
-    return (
+      ) : (
+        label && (
+          <button
+            type="button"
+            className={cn(
+              "min-w-0 cursor-pointer truncate px-1.5 text-left text-xs font-medium leading-5",
+            )}
+            onClick={() => setEditing(true)}
+            title={label}
+          >
+            {label}
+          </button>
+        )
+      )}
       <div
-        className={cn(
-          "absolute left-2 top-2 z-20 flex h-6 max-w-[min(11rem,calc(100%-1rem))] items-center rounded-md border border-white/15 bg-white/10 text-white/75 backdrop-blur-sm",
+        className={cn("flex items-center gap-0.5 overflow-hidden transition-all duration-150", {
+          "max-w-0 opacity-0 focus-within:max-w-44 focus-within:opacity-100 group-hover/terminal-pane:max-w-44 group-hover/terminal-pane:opacity-100":
+            Boolean(label) && !editing,
+          "max-w-44 opacity-100": !label || editing,
+        })}
+      >
+        {!label && !editing && (
+          <button
+            type="button"
+            className={cn(actionButtonClass)}
+            onClick={() => setEditing(true)}
+            title="Add label"
+          >
+            <Tag className={cn("h-3 w-3")} />
+          </button>
         )}
-        onClick={stopTerminalFocus}
-        onMouseDown={stopTerminalFocus}
-      >
-        <button
-          type="button"
-          className={cn(
-            "min-w-0 cursor-pointer truncate px-2 text-left text-xs font-medium leading-5",
-          )}
-          onClick={() => setEditing(true)}
-          title={label}
-        >
-          {label}
-        </button>
-        <button
-          type="button"
-          className={cn(
-            "mr-0.5 inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-white/45 hover:bg-white/10 hover:text-white/80",
-          )}
-          onClick={() => {
-            onChange(undefined);
-            onFocusTerminal();
-          }}
-          title="Clear label"
-        >
-          <X className={cn("h-3 w-3")} />
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className={cn(
-        "absolute left-2 top-2 z-20 inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/35 backdrop-blur-sm hover:border-white/20 hover:bg-white/10 hover:text-white/65",
-      )}
-      onClick={(event) => {
-        event.stopPropagation();
-        setEditing(true);
-      }}
-      onMouseDown={stopTerminalFocus}
-      title="Add label"
-    >
-      <Plus className={cn("h-3.5 w-3.5")} />
-    </button>
-  );
-}
-
-function TerminalPaneActions({
-  worktreePath,
-  paneId,
-  ptyId,
-  paneCount,
-}: {
-  worktreePath: string;
-  paneId: string;
-  ptyId: string;
-  paneCount: number;
-}) {
-  const stopTerminalFocus = (event: SyntheticEvent) => {
-    event.stopPropagation();
-  };
-
-  const actionButtonClass =
-    "inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-white/45 hover:bg-white/10 hover:text-white/80";
-
-  return (
-    <div
-      className={cn(
-        "absolute right-2 top-2 z-20 flex h-6 items-center gap-0.5 rounded-md border border-white/15 bg-white/10 px-0.5 opacity-0 backdrop-blur-sm transition-opacity duration-150 focus-within:opacity-100 group-hover/terminal-pane:opacity-100",
-      )}
-      onClick={stopTerminalFocus}
-      onMouseDown={stopTerminalFocus}
-    >
-      <button
-        type="button"
-        className={cn(actionButtonClass)}
-        onClick={() => {
-          mirrorTerminalPane(paneId, ptyId);
-        }}
-        title="Mirror to Global Terminal"
-      >
-        <ScreenShare className={cn("h-3 w-3")} />
-      </button>
-      <button
-        type="button"
-        className={cn(actionButtonClass)}
-        onClick={() => {
-          splitTerminalPane(worktreePath, ptyId, "vertical").catch(() => {});
-        }}
-        title="Split Vertical"
-      >
-        <Rows2 className={cn("h-3 w-3")} />
-      </button>
-      <button
-        type="button"
-        className={cn(actionButtonClass)}
-        onClick={() => {
-          splitTerminalPane(worktreePath, ptyId, "horizontal").catch(() => {});
-        }}
-        title="Split Horizontal"
-      >
-        <Columns2 className={cn("h-3 w-3")} />
-      </button>
-      {paneCount > 1 && (
         <button
           type="button"
           className={cn(actionButtonClass)}
           onClick={() => {
-            closeTerminalPane(worktreePath, ptyId).catch(() => {});
+            mirrorTerminalPane(paneId, ptyId);
           }}
-          title="Close Terminal"
+          title="Mirror to Global Terminal"
         >
-          <X className={cn("h-3 w-3")} />
+          <ScreenShare className={cn("h-3 w-3")} />
         </button>
-      )}
+        <button
+          type="button"
+          className={cn(actionButtonClass)}
+          onClick={() => {
+            splitTerminalPane(worktreePath, ptyId, "vertical").catch(() => {});
+          }}
+          title="Split Vertical"
+        >
+          <Rows2 className={cn("h-3 w-3")} />
+        </button>
+        <button
+          type="button"
+          className={cn(actionButtonClass)}
+          onClick={() => {
+            splitTerminalPane(worktreePath, ptyId, "horizontal").catch(() => {});
+          }}
+          title="Split Horizontal"
+        >
+          <Columns2 className={cn("h-3 w-3")} />
+        </button>
+        {paneCount > 1 && (
+          <button
+            type="button"
+            className={cn(actionButtonClass)}
+            onClick={() => {
+              closeTerminalPane(worktreePath, ptyId).catch(() => {});
+            }}
+            title="Close Terminal"
+          >
+            <X className={cn("h-3 w-3")} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -365,22 +335,20 @@ function TerminalInstance({ paneId, ptyId, worktreePath, tabId, label }: Props) 
       onClick={handleClick}
     >
       <div ref={termRef} className={cn("terminal-instance h-full w-full")} />
-      <TerminalPaneLabel
-        label={label}
-        onChange={handlePaneLabelChange}
-        onFocusTerminal={() => {
-          setFocusedPtyId(ptyId);
-          runtimeRef.current?.focus();
-        }}
-      />
       {/* The search box and the broadcast overlay both claim the same top-right
-          corner, so the action cluster yields to them. */}
+          corner, so the pane header yields to them. */}
       {!searchOpen && !isBroadcasting && (
-        <TerminalPaneActions
+        <TerminalPaneHeader
           worktreePath={worktreePath}
           paneId={paneId}
           ptyId={ptyId}
           paneCount={paneCount}
+          label={label}
+          onLabelChange={handlePaneLabelChange}
+          onFocusTerminal={() => {
+            setFocusedPtyId(ptyId);
+            runtimeRef.current?.focus();
+          }}
         />
       )}
       {searchOpen && (

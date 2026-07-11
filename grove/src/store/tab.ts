@@ -15,19 +15,27 @@ interface TabState {
   addTab: (type: AppTabType, title: string) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
+  moveTab: (tabId: string, targetIndex: number) => void;
   updateTabTitle: (tabId: string, title: string) => void;
+  syncTerminalTabs: (worktreePath: string, terminalTabIds: string[] | null) => void;
   removeSession: (worktreePath: string) => void;
 }
 
 /**
- * Terminal content is not an AppTab entry: terminal tabs live in the terminal
- * store and the bar renders them directly. "terminal" stays valid as an
- * activeTabId sentinel meaning "the terminal content is shown".
+ * Terminal tabs appear in the list as `type: "terminal"` entries whose ids are
+ * the terminal store's tab ids — the tab store owns only their position; their
+ * content lives in the terminal store and is reconciled via syncTerminalTabs.
+ * "terminal" stays valid as an activeTabId sentinel meaning "the terminal
+ * content is shown"; which terminal tab that is comes from the terminal store.
  */
 const DEFAULT_SESSION: TabSession = {
   tabs: [],
   activeTabId: "terminal",
 };
+
+function makeTerminalTabEntry(tabId: string): AppTab {
+  return { id: tabId, type: "terminal", title: "Terminal", closable: true };
+}
 
 /** Rebuild a session from persisted closable tabs. */
 export function createSessionWithClosableTabs(
@@ -108,6 +116,9 @@ export const useTabStore = create<TabState>((set, get) => ({
     const session = getSession(state);
     const tab = session.tabs.find((t) => t.id === tabId);
     if (!tab || !tab.closable) return;
+    // Terminal tabs close through closeTerminalTab (ptys must die with them);
+    // their entries leave this list via syncTerminalTabs.
+    if (tab.type === "terminal") return;
     const tabIndex = session.tabs.findIndex((t) => t.id === tabId);
     const newTabs = session.tabs.filter((t) => t.id !== tabId);
     const wasActive = session.activeTabId === tabId;
@@ -143,6 +154,46 @@ export const useTabStore = create<TabState>((set, get) => ({
         ...session,
         activeTabId: tabId,
       }));
+    }),
+
+  moveTab: (tabId, targetIndex) =>
+    set((state) => {
+      const session = getSession(state);
+      const fromIndex = session.tabs.findIndex((t) => t.id === tabId);
+      if (fromIndex < 0) return {};
+      const clamped = Math.max(0, Math.min(targetIndex, session.tabs.length - 1));
+      if (clamped === fromIndex) return {};
+      const tabs = [...session.tabs];
+      const [moved] = tabs.splice(fromIndex, 1);
+      tabs.splice(clamped, 0, moved);
+      return updateSession(state, () => ({ ...session, tabs }));
+    }),
+
+  syncTerminalTabs: (worktreePath, terminalTabIds) =>
+    set((state) => {
+      const session = state.sessions[worktreePath] ?? DEFAULT_SESSION;
+      const desired = terminalTabIds ?? [];
+      const desiredSet = new Set(desired);
+
+      const kept = session.tabs.filter((tab) => tab.type !== "terminal" || desiredSet.has(tab.id));
+      const existingIds = new Set(kept.filter((t) => t.type === "terminal").map((t) => t.id));
+      const appended = desired.filter((id) => !existingIds.has(id)).map(makeTerminalTabEntry);
+      const tabs = appended.length > 0 ? [...kept, ...appended] : kept;
+
+      const unchanged =
+        tabs.length === session.tabs.length && tabs.every((tab, i) => tab === session.tabs[i]);
+      if (unchanged) return {};
+
+      // The terminal went away entirely while its content was showing — move
+      // to the first remaining tab so the user doesn't land on an empty pane.
+      let activeTabId = session.activeTabId;
+      if (terminalTabIds === null && activeTabId === "terminal" && tabs.length > 0) {
+        activeTabId = tabs[0].id;
+      }
+
+      return {
+        sessions: { ...state.sessions, [worktreePath]: { tabs, activeTabId } },
+      };
     }),
 
   updateTabTitle: (tabId, title) =>

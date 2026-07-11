@@ -271,6 +271,10 @@ function TerminalPanel() {
     return () => unregisterSyncJob(PTY_BELL_STATUS_JOB_KEY);
   }, [updateAiStatus]);
 
+  const isTerminalDismissed = useTerminalStore((s) =>
+    s.activeWorktree ? s.dismissedTerminalWorktrees.has(s.activeWorktree) : false,
+  );
+
   // Create session for new worktree
   useEffect(() => {
     if (!activeWorktree || !theme) {
@@ -281,12 +285,17 @@ function TerminalPanel() {
       log("terminal", "session exists", activeWorktree);
       return;
     }
+    // User closed the last terminal tab — don't respawn until reopened via +.
+    if (isTerminalDismissed) {
+      log("terminal", "session dismissed", activeWorktree);
+      return;
+    }
     log("terminal", "creating session", activeWorktree);
     createTerminal(activeWorktree).catch((e) => {
       logError("terminal", "session create failed", e);
       setError(getCommandErrorMessage(e));
     });
-  }, [activeWorktree, createTerminal, hasActiveSession, theme]);
+  }, [activeWorktree, createTerminal, hasActiveSession, isTerminalDismissed, theme]);
 
   if (error) {
     return (
@@ -315,7 +324,19 @@ function TerminalPanel() {
             </span>
           </div>
         ) : (
-          worktreePaths.map((path) => <TerminalSessionView key={path} worktreePath={path} />)
+          <>
+            {isTerminalDismissed && !hasActiveSession && (
+              <div className={cn("flex flex-col items-center justify-center h-full gap-3")}>
+                <TerminalSquare className={cn("size-10 text-muted-foreground/50")} />
+                <span className={cn("text-sm text-muted-foreground")}>
+                  Terminal closed — reopen it from the + menu
+                </span>
+              </div>
+            )}
+            {worktreePaths.map((path) => (
+              <TerminalSessionView key={path} worktreePath={path} />
+            ))}
+          </>
         )}
       </div>
     </div>

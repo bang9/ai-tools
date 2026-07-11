@@ -40,7 +40,7 @@ const ADD_TAB_OPTIONS: {
 ];
 
 const APP_TAB_CHIP_CLASS = cn(
-  "group flex items-center gap-1.5 h-6 px-2 rounded-md shrink-0 text-xs font-medium",
+  "group flex items-center h-6 max-w-36 px-2 rounded-md shrink-0 text-xs font-medium cursor-pointer",
   "backdrop-blur-sm border border-white/10 shadow-sm transition-all duration-200 ease-out",
 );
 
@@ -63,83 +63,114 @@ function terminalTabNeedsAttention(
   );
 }
 
+interface TabChipDragHandlers {
+  draggable: true;
+  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragOver: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDrop: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+}
+
 /**
- * The pinned Terminal slot in the app tab bar expands into one chip per
- * terminal tab of the current worktree's terminal session.
+ * Shared chip: fixed max width with ellipsis; the close affordance takes no
+ * space until the chip is hovered, then animates its width in.
  */
-function TerminalTabGroup({
+function TabChip({
+  title,
+  isActive,
+  needsAttention,
+  onSelect,
+  onClose,
+  closeTitle,
+  dragHandlers,
+}: {
+  title: string;
+  isActive: boolean;
+  needsAttention?: boolean;
+  onSelect: () => void;
+  onClose?: () => void;
+  closeTitle?: string;
+  dragHandlers: TabChipDragHandlers;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
+      {...dragHandlers}
+    >
+      <span className={cn("min-w-0 truncate")}>{title}</span>
+      {needsAttention && (
+        <span className={cn("ml-1.5 size-1.5 shrink-0 rounded-full bg-red-500")} />
+      )}
+      {onClose && (
+        <span
+          role="button"
+          tabIndex={-1}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          title={closeTitle}
+          className={cn(
+            "flex h-4 w-0 shrink-0 items-center justify-center overflow-hidden rounded-sm",
+            "ml-0 opacity-0 transition-all duration-150 ease-out",
+            "group-hover:ml-1 group-hover:w-4 group-hover:opacity-100 hover:bg-muted",
+          )}
+        >
+          <X className={cn("size-2.5")} />
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** A terminal tab entry: position from the tab store, content from the terminal store. */
+function TerminalTabChip({
   terminalPath,
+  tabEntryId,
+  terminalIndex,
   isTerminalContentActive,
   onActivateTerminal,
+  dragHandlers,
 }: {
   terminalPath: string | null;
+  tabEntryId: string;
+  terminalIndex: number;
   isTerminalContentActive: boolean;
   onActivateTerminal: () => void;
+  dragHandlers: TabChipDragHandlers;
 }) {
-  const session = useTerminalStore((s) =>
-    terminalPath ? (s.sessions[terminalPath] ?? null) : null,
-  );
-  const bellPtyIds = useTerminalStore((s) => s.bellPtyIds);
-  const aiSessions = useTerminalStore((s) => s.aiSessions);
   const setActiveTerminalTab = useTerminalStore((s) => s.setActiveTab);
-
-  if (!session || session.tabs.length === 0) {
-    return (
-      <button
-        type="button"
-        onClick={onActivateTerminal}
-        className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isTerminalContentActive))}
-      >
-        <span className={cn("max-w-40 truncate")}>Terminal</span>
-      </button>
-    );
-  }
+  const isActiveTerminalTab = useTerminalStore((s) =>
+    terminalPath ? s.sessions[terminalPath]?.activeTabId === tabEntryId : false,
+  );
+  const needsAttention = useTerminalStore((s) => {
+    if (!terminalPath) return false;
+    const tab = s.sessions[terminalPath]?.tabs.find((entry) => entry.id === tabEntryId);
+    return !!tab && terminalTabNeedsAttention(tab, s.bellPtyIds, s.aiSessions);
+  });
+  const isActive = isTerminalContentActive && isActiveTerminalTab;
 
   return (
-    <>
-      {session.tabs.map((tab, index) => {
-        const isActiveTerminalTab = tab.id === session.activeTabId;
-        const isActive = isTerminalContentActive && isActiveTerminalTab;
-        const needsAttention = !isActive && terminalTabNeedsAttention(tab, bellPtyIds, aiSessions);
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => {
-              if (terminalPath) {
-                setActiveTerminalTab(terminalPath, tab.id);
-              }
-              onActivateTerminal();
-            }}
-            className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
-          >
-            <span className={cn("max-w-40 truncate")}>
-              {index === 0 ? "Terminal" : `Terminal ${index + 1}`}
-            </span>
-            {needsAttention && <span className={cn("size-1.5 shrink-0 rounded-full bg-red-500")} />}
-            {session.tabs.length > 1 && (
-              <span
-                role="button"
-                tabIndex={-1}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (terminalPath) {
-                    closeTerminalTab(terminalPath, tab.id).catch(() => {});
-                  }
-                }}
-                title="Close terminal tab"
-                className={cn(
-                  "shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-muted",
-                  { "opacity-100": isActive },
-                )}
-              >
-                <X className={cn("size-2.5")} />
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </>
+    <TabChip
+      title={terminalIndex === 0 ? "Terminal" : `Terminal ${terminalIndex + 1}`}
+      isActive={isActive}
+      needsAttention={!isActive && needsAttention}
+      onSelect={() => {
+        if (terminalPath) {
+          setActiveTerminalTab(terminalPath, tabEntryId);
+        }
+        onActivateTerminal();
+      }}
+      onClose={() => {
+        if (terminalPath) {
+          closeTerminalTab(terminalPath, tabEntryId).catch(() => {});
+        }
+      }}
+      closeTitle="Close terminal tab"
+      dragHandlers={dragHandlers}
+    />
   );
 }
 
@@ -285,6 +316,7 @@ function AppTabBar() {
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const closeTab = useTabStore((s) => s.closeTab);
   const addTab = useTabStore((s) => s.addTab);
+  const moveTab = useTabStore((s) => s.moveTab);
   const capabilities = useSelectionCapabilities();
   // Changes is a singleton per worktree — once open it leaves the + menu.
   const hasChangesTab = tabs.some((tab) => tab.id === "changes");
@@ -292,6 +324,35 @@ function AppTabBar() {
     ({ type, capability }) => capabilities[capability] && !(type === "changes" && hasChangesTab),
   );
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
+
+  const makeDragHandlers = useCallback(
+    (tabId: string): TabChipDragHandlers => ({
+      draggable: true,
+      onDragStart: (event) => {
+        setDragTabId(tabId);
+        event.dataTransfer.effectAllowed = "move";
+      },
+      onDragOver: (event) => {
+        if (dragTabId && dragTabId !== tabId) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }
+      },
+      onDrop: (event) => {
+        event.preventDefault();
+        if (dragTabId && dragTabId !== tabId) {
+          const targetIndex = tabs.findIndex((tab) => tab.id === tabId);
+          if (targetIndex >= 0) {
+            moveTab(dragTabId, targetIndex);
+          }
+        }
+        setDragTabId(null);
+      },
+      onDragEnd: () => setDragTabId(null),
+    }),
+    [dragTabId, moveTab, tabs],
+  );
   const preferencesOpen = usePreferencesUiStore((state) => state.open);
   const preferencesTab = usePreferencesUiStore((state) => state.activeTab);
   const openPreferences = usePreferencesUiStore((state) => state.openPreferences);
@@ -320,42 +381,37 @@ function AppTabBar() {
           "flex items-center gap-1.5 px-2 h-9 shrink-0 min-w-0 border-b border-border bg-sidebar",
         )}
       >
-        {capabilities.terminal && (
-          <TerminalTabGroup
-            terminalPath={terminalPath}
-            isTerminalContentActive={activeTabId === "terminal"}
-            onActivateTerminal={() => setActiveTab("terminal")}
-          />
-        )}
-        {tabs.map((tab) => {
-          const isActive = tab.id === activeTabId;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
-            >
-              <span className={cn("max-w-40 truncate")}>{tab.title}</span>
-              {tab.closable && (
-                <span
-                  role="button"
-                  tabIndex={-1}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(tab.id);
-                  }}
-                  className={cn(
-                    "shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-muted",
-                    { "opacity-100": isActive },
-                  )}
-                >
-                  <X className={cn("size-2.5")} />
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {/* Tab strip scrolls on its own when tabs overflow the bar */}
+        <div className={cn("flex h-full min-w-0 items-center gap-1.5 overflow-x-auto")}>
+          {tabs.map((tab) => {
+            if (tab.type === "terminal") {
+              return (
+                <TerminalTabChip
+                  key={tab.id}
+                  terminalPath={terminalPath}
+                  tabEntryId={tab.id}
+                  terminalIndex={tabs
+                    .filter((entry) => entry.type === "terminal")
+                    .findIndex((entry) => entry.id === tab.id)}
+                  isTerminalContentActive={activeTabId === "terminal"}
+                  onActivateTerminal={() => setActiveTab("terminal")}
+                  dragHandlers={makeDragHandlers(tab.id)}
+                />
+              );
+            }
+            return (
+              <TabChip
+                key={tab.id}
+                title={tab.title}
+                isActive={tab.id === activeTabId}
+                onSelect={() => setActiveTab(tab.id)}
+                onClose={tab.closable ? () => closeTab(tab.id) : undefined}
+                closeTitle="Close tab"
+                dragHandlers={makeDragHandlers(tab.id)}
+              />
+            );
+          })}
+        </div>
 
         {/* Add tab dropdown — needs a directory selection (tabs are per-scope) */}
         {capabilities.hasDirectory && (

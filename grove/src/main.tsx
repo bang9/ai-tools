@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { initUiStateStorage } from "./lib/ui-state-storage";
 import { initUiSessionPersistence } from "./lib/ui-session-persistence";
+import { initTerminalTabSync } from "./lib/terminal-tab-sync";
 import "./App.css";
 
 async function bootstrap() {
@@ -10,6 +11,7 @@ async function bootstrap() {
   // the UI mounts so components render the restored state directly.
   await initUiStateStorage();
   initUiSessionPersistence();
+  initTerminalTabSync();
 
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>

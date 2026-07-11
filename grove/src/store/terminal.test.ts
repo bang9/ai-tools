@@ -329,17 +329,23 @@ describe("useTerminalStore bell state", () => {
     expect(useTerminalStore.getState().aiSessions["pty-1"]).toBeUndefined();
   });
 
-  it("closeTab on the last tab removes the whole session", () => {
+  it("closeTab on the last tab removes the whole session and dismisses the worktree", () => {
     useTerminalStore.setState({
       sessions: {
         "/tmp/a": makeSession(makeLeaf("pane-1", "pty-1"), "tab-1"),
       },
       activeWorktree: "/tmp/a",
+      dismissedTerminalWorktrees: new Set<string>(),
     });
 
     useTerminalStore.getState().closeTab("/tmp/a", "tab-1");
 
     expect(useTerminalStore.getState().sessions["/tmp/a"]).toBeUndefined();
+    expect(useTerminalStore.getState().dismissedTerminalWorktrees.has("/tmp/a")).toBe(true);
+
+    // Reopening a terminal clears the dismissal.
+    useTerminalStore.getState().createSession("/tmp/a", "pane-9", "pty-9");
+    expect(useTerminalStore.getState().dismissedTerminalWorktrees.has("/tmp/a")).toBe(false);
   });
 
   it("closeTerminal of a tab's last pane removes that tab and activates a remaining tab", () => {

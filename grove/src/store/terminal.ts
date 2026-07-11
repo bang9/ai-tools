@@ -106,6 +106,11 @@ interface TerminalState {
   focusedPtyId: string | null;
   /** Remembered focused pane per terminal tab (tab ids are globally unique). */
   focusedPaneIdByTab: Record<string, string | null>;
+  /**
+   * Worktrees whose terminal the user explicitly closed (last tab closed).
+   * Blocks the auto-create-on-activation loop until a terminal is reopened.
+   */
+  dismissedTerminalWorktrees: Set<string>;
   bellPtyIds: Set<string>;
   aiSessions: Record<string, AiSession>;
   theme: TerminalTheme | null;
@@ -263,11 +268,19 @@ function shouldSyncActiveFocus(activeWorktree: string | null, targetWorktree: st
   return activeWorktree === null || activeWorktree === targetWorktree;
 }
 
+function clearTerminalDismissal(dismissed: Set<string>, worktreePath: string): Set<string> {
+  if (!dismissed.has(worktreePath)) return dismissed;
+  const next = new Set(dismissed);
+  next.delete(worktreePath);
+  return next;
+}
+
 export const useTerminalStore = create<TerminalState>((set) => ({
   sessions: {},
   activeWorktree: null,
   focusedPtyId: null,
   focusedPaneIdByTab: {},
+  dismissedTerminalWorktrees: new Set<string>(),
   bellPtyIds: new Set<string>(),
   aiSessions: {},
   theme: null,
@@ -290,6 +303,10 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       saveLayouts(newSessions);
       return {
         sessions: newSessions,
+        dismissedTerminalWorktrees: clearTerminalDismissal(
+          state.dismissedTerminalWorktrees,
+          worktreePath,
+        ),
         focusedPaneIdByTab: setFocusedPaneForTab(state.focusedPaneIdByTab, tabId, paneId),
         focusedPtyId: shouldSyncActiveFocus(state.activeWorktree, worktreePath)
           ? ptyId
@@ -312,6 +329,10 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       const activeTab = findActiveTab(restored);
       return {
         sessions: newSessions,
+        dismissedTerminalWorktrees: clearTerminalDismissal(
+          state.dismissedTerminalWorktrees,
+          worktreePath,
+        ),
         focusedPaneIdByTab: activeTab
           ? setFocusedPaneForTab(state.focusedPaneIdByTab, activeTab.id, focus.paneId)
           : state.focusedPaneIdByTab,
@@ -361,6 +382,10 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       saveLayouts(newSessions);
       return {
         sessions: newSessions,
+        dismissedTerminalWorktrees: clearTerminalDismissal(
+          state.dismissedTerminalWorktrees,
+          worktreePath,
+        ),
         focusedPaneIdByTab: setFocusedPaneForTab(state.focusedPaneIdByTab, tabId, paneId),
         focusedPtyId: shouldSyncActiveFocus(state.activeWorktree, worktreePath)
           ? ptyId
@@ -420,6 +445,7 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
       const remainingTabs = session.tabs.filter((tab) => tab.id !== tabId);
       const newSessions = { ...state.sessions };
+      let dismissedTerminalWorktrees = state.dismissedTerminalWorktrees;
       let focus: TabFocus = { paneId: null, ptyId: null };
       let focusedPaneIdByTab = dropTabFocusEntries(state.focusedPaneIdByTab, [tabId]);
 
@@ -438,11 +464,13 @@ export const useTerminalStore = create<TerminalState>((set) => ({
       } else {
         delete newSessions[worktreePath];
         delete layoutCache[worktreePath];
+        dismissedTerminalWorktrees = new Set(dismissedTerminalWorktrees).add(worktreePath);
       }
       saveLayouts(newSessions);
 
       return {
         sessions: newSessions,
+        dismissedTerminalWorktrees,
         focusedPaneIdByTab,
         focusedPtyId: state.activeWorktree === worktreePath ? focus.ptyId : state.focusedPtyId,
         bellPtyIds: nextBellPtyIds,
@@ -506,6 +534,10 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
       return {
         sessions: newSessions,
+        dismissedTerminalWorktrees: clearTerminalDismissal(
+          state.dismissedTerminalWorktrees,
+          worktreePath,
+        ),
         bellPtyIds: nextBellPtyIds,
         aiSessions: nextAiSessions,
         focusedPaneIdByTab,
@@ -528,6 +560,7 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
       const newSessions = { ...state.sessions };
       let focusedPaneIdByTab = state.focusedPaneIdByTab;
+      let dismissedTerminalWorktrees = state.dismissedTerminalWorktrees;
       let focus: TabFocus = { paneId: null, ptyId: null };
 
       if (updatedNode) {
@@ -555,12 +588,14 @@ export const useTerminalStore = create<TerminalState>((set) => ({
         } else {
           delete newSessions[worktreePath];
           delete layoutCache[worktreePath];
+          dismissedTerminalWorktrees = new Set(dismissedTerminalWorktrees).add(worktreePath);
         }
       }
       saveLayouts(newSessions);
 
       return {
         sessions: newSessions,
+        dismissedTerminalWorktrees,
         focusedPaneIdByTab,
         focusedPtyId: state.activeWorktree === worktreePath ? focus.ptyId : state.focusedPtyId,
         bellPtyIds: nextBellPtyIds,
