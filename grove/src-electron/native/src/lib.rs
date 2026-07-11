@@ -327,6 +327,11 @@ pub async fn create_pty(
 }
 
 #[napi]
+pub fn install_panic_hook() {
+    grove_core::pty::install_panic_hook();
+}
+
+#[napi]
 pub async fn write_pty(id: String, data: Buffer) -> Result<()> {
     let data = data.to_vec();
     blocking_core(move || grove_core::pty::write(&id, &data)).await

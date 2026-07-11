@@ -29,6 +29,14 @@ const MAX_SCROLLBACK_BYTES: usize = 256 * 1024;
 /// buffer collapses that into ~120Hz emits while adding ≤8ms latency.
 const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 const OUTPUT_FLUSH_SIZE: usize = 64 * 1024;
+/// Hard ceiling on the coalescer's pending buffer. The flusher normally drains
+/// every 8ms or 64KB, so `pending` only grows without bound when the sink
+/// stalls (IPC backpressure) while a process floods output. Cap at 64× the
+/// flush size (4 MiB) — orders of magnitude above any single 8ms window's worth
+/// of reads, so normal use NEVER truncates; past it we drop oldest bytes
+/// (keep-tail) so a runaway producer can't OOM the process. Sized off
+/// OUTPUT_FLUSH_SIZE so it tracks the flush window if that constant changes.
+const MAX_PENDING_BYTES: usize = OUTPUT_FLUSH_SIZE * 64;
 const TMUX_NOT_FOUND_ERROR: &str = "tmux is required but was not found in PATH";
 const TMUX_GROVE_MANAGED_OPTION: &str = "@grove_managed";
 const TMUX_GROVE_WORKTREE_OPTION: &str = "@grove_worktree";
@@ -181,6 +189,10 @@ struct CoalescerInner {
     pending: Vec<u8>,
     first_byte_at: Option<Instant>,
     closed: bool,
+    /// Set when the pending cap forced a keep-tail drop. Internal only — never
+    /// surfaced to the sink; a visible marker would corrupt the xterm stream.
+    #[cfg_attr(not(test), allow(dead_code))]
+    truncated: bool,
 }
 
 struct CoalescerShared {
@@ -205,6 +217,7 @@ impl OutputCoalescer {
                 pending: Vec::new(),
                 first_byte_at: None,
                 closed: false,
+                truncated: false,
             }),
             cvar: Condvar::new(),
             sink,
@@ -219,14 +232,29 @@ impl OutputCoalescer {
         if data.is_empty() {
             return;
         }
-        let mut state = match self.shared.state.lock() {
-            Ok(state) => state,
-            Err(_) => return,
-        };
+        let mut state = lock_recover(&self.shared.state);
         if state.closed {
             return;
         }
         state.pending.extend_from_slice(data);
+        if state.pending.len() > MAX_PENDING_BYTES {
+            // Why: a stalled sink can't drain; keep the newest tail so xterm
+            // still gets the latest screen rather than letting pending grow
+            // unbounded and OOM the process.
+            let mut overflow = state.pending.len() - MAX_PENDING_BYTES;
+            // Why: dropping mid-codepoint would hand xterm a stray UTF-8
+            // continuation byte; extend the drop to the next lead byte.
+            // Mid-escape cuts remain an accepted above-cap tradeoff.
+            while state
+                .pending
+                .get(overflow)
+                .is_some_and(|b| (b & 0xC0) == 0x80)
+            {
+                overflow += 1;
+            }
+            state.pending.drain(..overflow);
+            state.truncated = true;
+        }
         if state.first_byte_at.is_none() {
             state.first_byte_at = Some(Instant::now());
         }
@@ -234,10 +262,9 @@ impl OutputCoalescer {
     }
 
     fn close(&self) {
-        if let Ok(mut state) = self.shared.state.lock() {
-            state.closed = true;
-            self.shared.cvar.notify_all();
-        }
+        let mut state = lock_recover(&self.shared.state);
+        state.closed = true;
+        self.shared.cvar.notify_all();
     }
 }
 
@@ -254,16 +281,13 @@ impl Drop for OutputCoalescer {
 /// OUTSIDE the lock so IPC never blocks the reader thread's appends. Exits once
 /// `closed` is set and any final tail has been flushed.
 fn run_output_flusher(shared: Arc<CoalescerShared>) {
-    let mut guard = match shared.state.lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
+    let mut guard = lock_recover(&shared.state);
     loop {
         while !guard.closed && guard.pending.is_empty() {
-            guard = match shared.cvar.wait(guard) {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            guard = shared
+                .cvar
+                .wait(guard)
+                .unwrap_or_else(|error| error.into_inner());
         }
 
         if guard.closed {
@@ -284,16 +308,14 @@ fn run_output_flusher(shared: Arc<CoalescerShared>) {
             guard.first_byte_at = None;
             drop(guard);
             shared.sink.on_output(&shared.id, &drained);
-            guard = match shared.state.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            guard = lock_recover(&shared.state);
         } else {
             let remaining = OUTPUT_FLUSH_INTERVAL - elapsed;
-            guard = match shared.cvar.wait_timeout(guard, remaining) {
-                Ok((guard, _)) => guard,
-                Err(_) => return,
-            };
+            guard = shared
+                .cvar
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|error| error.into_inner())
+                .0;
         }
     }
 }
@@ -301,6 +323,42 @@ fn run_output_flusher(shared: Arc<CoalescerShared>) {
 fn registry() -> &'static Mutex<HashMap<String, PtyInstance>> {
     static PTY_REGISTRY: OnceLock<Mutex<HashMap<String, PtyInstance>>> = OnceLock::new();
     PTY_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Recover a poisoned lock instead of propagating the panic. A panic while a
+/// thread held one of the hot PTY locks (registry, per-instance writer/tracked,
+/// coalescer state) leaves the guarded data structurally valid, so bricking
+/// every future PTY op on the poison flag is strictly worse than continuing.
+/// Mirrors the idiom in test_support::env_lock.
+fn lock_recover<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// Install a process-wide panic hook that routes thread panics through
+/// grove-core's logger. Idempotent; each shell may call it at init. Without it
+/// a panic on a detached PTY reader/flusher thread unwinds and vanishes (the
+/// default hook only touches stderr), leaving no trace on the app's log surface.
+pub fn install_panic_hook() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.set(()).is_err() {
+        return;
+    }
+
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}", loc.file(), loc.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        crate::logger::emit_log("error", "panic", &format!("thread panic at {location}: {message}"));
+        previous(info);
+    }));
 }
 
 fn is_utf8_locale(locale: &str) -> bool {
@@ -351,7 +409,7 @@ pub fn create(
     let cwd = required_arg("cwd", &cwd)?;
 
     {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         if reg.contains_key(pty_id.as_str()) {
             return Err(format!("PTY already exists: {pty_id}"));
         }
@@ -421,10 +479,7 @@ pub fn create(
         tracked,
     };
 
-    registry()
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(pty_id, instance);
+    lock_recover(registry()).insert(pty_id, instance);
 
     Ok(CreatePtyResult {
         session_state,
@@ -437,25 +492,52 @@ fn read_pty_output(
     coalescer: OutputCoalescer,
     tracked: Arc<Mutex<PtyRuntimeState>>,
 ) {
+    enum ReadStep {
+        Continue,
+        Stop,
+    }
+
     let mut buf = [0u8; 4096];
     loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                // Raw-path bookkeeping stays per-read: append_scrollback and
-                // last_output_at must reflect every read (the hookless idle
-                // state machine in poll_bell_events depends on per-read
-                // freshness), independent of when output is coalesced/emitted.
-                if let Ok(mut state) = tracked.lock() {
-                    state.append_scrollback(&buf[..n]);
-                    state.last_output_at = Some(Instant::now());
+        // Why: a panic anywhere in the read path (e.g. scrollback bookkeeping)
+        // must never escape this detached thread. catch_unwind contains it so
+        // the flusher is still torn down cleanly below; the diagnostic goes to
+        // the logger ONLY — emitting through the sink would render the panic
+        // text as visible garbage in xterm.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match reader.read(&mut buf) {
+                Ok(0) => ReadStep::Stop,
+                Ok(n) => {
+                    // Raw-path bookkeeping stays per-read: append_scrollback and
+                    // last_output_at must reflect every read (the hookless idle
+                    // state machine in poll_bell_events depends on per-read
+                    // freshness), independent of when output is coalesced/emitted.
+                    {
+                        let mut state = lock_recover(&tracked);
+                        state.append_scrollback(&buf[..n]);
+                        state.last_output_at = Some(Instant::now());
+                    }
+                    coalescer.push(&buf[..n]);
+                    ReadStep::Continue
                 }
-                coalescer.push(&buf[..n]);
+                Err(_) => ReadStep::Stop,
             }
-            Err(_) => break,
+        }));
+
+        match outcome {
+            Ok(ReadStep::Continue) => continue,
+            Ok(ReadStep::Stop) => break,
+            Err(_) => {
+                crate::logger::emit_log(
+                    "error",
+                    "pty",
+                    "read loop panicked; terminating reader thread",
+                );
+                break;
+            }
         }
     }
-    // Flush any pending tail and terminate the flusher thread on EOF/Err.
+    // Flush any pending tail and terminate the flusher thread on EOF/Err/panic.
     coalescer.close();
 }
 
@@ -464,14 +546,12 @@ pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
     // it before write_all so a stalled write only blocks this pty, not every
     // unrelated write/create/close serializing on the global registry lock.
     let (writer, tracked) = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         let instance = reg.get(id).ok_or_else(|| format!("PTY not found: {}", id))?;
         (Arc::clone(&instance.writer), Arc::clone(&instance.tracked))
     };
 
-    writer
-        .lock()
-        .map_err(|e| e.to_string())?
+    lock_recover(&writer)
         .write_all(data)
         .map_err(|e| e.to_string())?;
 
@@ -479,19 +559,18 @@ pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
     // Also reset last_output_at so the idle timeout starts from Enter,
     // not from the previous output (which could be minutes ago).
     let transition_session = if data.contains(&b'\r') {
-        tracked.lock().ok().and_then(|mut state| {
-            let status = state.last_ai_status.clone();
-            let s = status.as_deref();
-            if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
-                state.last_output_at = Some(Instant::now());
-                Some((
-                    state.session_name.clone(),
-                    tool_hooks::to_running(s.unwrap()),
-                ))
-            } else {
-                None
-            }
-        })
+        let mut state = lock_recover(&tracked);
+        let status = state.last_ai_status.clone();
+        let s = status.as_deref();
+        if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
+            state.last_output_at = Some(Instant::now());
+            Some((
+                state.session_name.clone(),
+                tool_hooks::to_running(s.unwrap()),
+            ))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -505,7 +584,7 @@ pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
 }
 
 pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
-    let reg = registry().lock().map_err(|e| e.to_string())?;
+    let reg = lock_recover(registry());
     let instance = reg
         .get(id)
         .ok_or_else(|| format!("PTY not found: {}", id))?;
@@ -522,7 +601,7 @@ pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
 
 pub fn clear_scrollback(id: &str) -> Result<(), String> {
     let (session_name, tracked) = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         let instance = reg
             .get(id)
             .ok_or_else(|| format!("PTY not found: {}", id))?;
@@ -531,7 +610,7 @@ pub fn clear_scrollback(id: &str) -> Result<(), String> {
 
     clear_tmux_history(&session_name)?;
 
-    let mut state = tracked.lock().map_err(|e| e.to_string())?;
+    let mut state = lock_recover(&tracked);
     state.scrollback.clear();
     state.scrollback_truncated = false;
 
@@ -561,7 +640,7 @@ fn reap_child_after_close(mut child: Box<dyn portable_pty::Child + Send + Sync>)
 
 pub fn close(id: &str) -> Result<(), String> {
     let session_name = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         reg.get(id)
             .map(|instance| instance.session_name.clone())
             .ok_or_else(|| format!("PTY not found: {}", id))?
@@ -569,7 +648,7 @@ pub fn close(id: &str) -> Result<(), String> {
 
     kill_tmux_session_if_exists(&session_name)?;
 
-    let mut reg = registry().lock().map_err(|e| e.to_string())?;
+    let mut reg = lock_recover(registry());
     if let Some(instance) = reg.remove(id) {
         std::thread::spawn(move || {
             reap_child_after_close(instance.child);
@@ -581,7 +660,7 @@ pub fn close(id: &str) -> Result<(), String> {
 
 pub fn close_ptys_for_worktree(worktree_path: &str) -> Result<(), String> {
     let matching_ids: Vec<String> = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         reg.iter()
             .filter(|(_, instance)| instance.worktree_path == worktree_path)
             .map(|(id, _)| id.clone())
@@ -652,7 +731,7 @@ where
     I: IntoIterator<Item = String>,
 {
     let live_sessions: HashSet<String> = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         reg.values()
             .map(|instance| instance.session_name.clone())
             .collect()
@@ -840,7 +919,7 @@ fn close_grove_session_by_name(session_name: &str) -> Result<(), String> {
 
     let mut removed_instances = Vec::new();
     {
-        let mut reg = registry().lock().map_err(|e| e.to_string())?;
+        let mut reg = lock_recover(registry());
         let matching_ids: Vec<String> = reg
             .iter()
             .filter(|(_, instance)| instance.session_name == session_name)
@@ -1296,7 +1375,7 @@ fn parse_active_pane_pids(output: &str) -> HashMap<String, u32> {
 
 pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
     let tracked_sessions = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         reg.iter()
             .map(|(pty_id, instance)| {
                 (
@@ -1347,11 +1426,10 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
             let live_tool = cached_process_snapshots.as_deref().and_then(|processes| {
                 detect_live_hookless_tool_in_session_from_processes(pane_pid, processes)
             });
-            let (last_ai_status, last_output_at) = tracked
-                .lock()
-                .ok()
-                .map(|state| (state.last_ai_status.clone(), state.last_output_at))
-                .unwrap_or((None, None));
+            let (last_ai_status, last_output_at) = {
+                let state = lock_recover(&tracked);
+                (state.last_ai_status.clone(), state.last_output_at)
+            };
 
             let reconciled = reconcile_hookless_ai_status(
                 ai_status.as_deref(),
@@ -1379,13 +1457,10 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
         let is_hookless = tool_hooks::needs_idle_detection(ai_ref);
 
         let ai_status = if is_hookless && tool_hooks::is_running(ai_ref) {
-            let should_idle = tracked
-                .lock()
-                .ok()
-                .is_some_and(|state| match state.last_output_at {
-                    Some(t) => t.elapsed() >= CODEX_OUTPUT_IDLE_TIMEOUT,
-                    None => true, // no output tracked (e.g. after app restart)
-                });
+            let should_idle = match lock_recover(&tracked).last_output_at {
+                Some(t) => t.elapsed() >= CODEX_OUTPUT_IDLE_TIMEOUT,
+                None => true, // no output tracked (e.g. after app restart)
+            };
             if should_idle {
                 let idle_status = tool_hooks::to_idle(ai_ref.unwrap());
                 let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, &idle_status);
@@ -1394,11 +1469,9 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
                 ai_status
             }
         } else if is_hookless && tool_hooks::is_idle(ai_ref) {
-            let should_attention = tracked.lock().ok().is_some_and(|state| {
-                state
-                    .idle_since
-                    .is_some_and(|t| t.elapsed() >= HOOKLESS_ATTENTION_TIMEOUT)
-            });
+            let should_attention = lock_recover(&tracked)
+                .idle_since
+                .is_some_and(|t| t.elapsed() >= HOOKLESS_ATTENTION_TIMEOUT);
             if should_attention {
                 let attn_status =
                     format!("{}:attention", ai_ref.unwrap().split(':').next().unwrap());
@@ -1411,7 +1484,7 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
             ai_status
         };
 
-        let mut state = tracked.lock().map_err(|e| e.to_string())?;
+        let mut state = lock_recover(&tracked);
         let bell = consume_bell_edge(&mut state.last_bell_flag, bell_flag);
         let ai_changed = ai_status != state.last_ai_status;
         if ai_changed {
@@ -1570,7 +1643,7 @@ fn build_pane_snapshot(input: &TerminalPaneSnapshotInput) -> Result<TerminalPane
 
 fn runtime_snapshot_for_pty(pty_id: &str) -> Result<Option<PtyRuntimeSnapshot>, String> {
     let tracked = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         reg.get(pty_id)
             .map(|instance| Arc::clone(&instance.tracked))
     };
@@ -1579,7 +1652,7 @@ fn runtime_snapshot_for_pty(pty_id: &str) -> Result<Option<PtyRuntimeSnapshot>, 
         return Ok(None);
     };
 
-    let state = tracked.lock().map_err(|e| e.to_string())?;
+    let state = lock_recover(&tracked);
     Ok(Some(PtyRuntimeSnapshot {
         launch_cwd: state.launch_cwd.clone(),
         process_id: state.process_id,
@@ -1592,7 +1665,7 @@ fn runtime_snapshot_for_pty(pty_id: &str) -> Result<Option<PtyRuntimeSnapshot>, 
 
 fn cache_last_known_cwd(pty_id: &str, cwd: &str) -> Result<(), String> {
     let tracked = {
-        let reg = registry().lock().map_err(|e| e.to_string())?;
+        let reg = lock_recover(registry());
         reg.get(pty_id)
             .map(|instance| Arc::clone(&instance.tracked))
     };
@@ -1601,7 +1674,7 @@ fn cache_last_known_cwd(pty_id: &str, cwd: &str) -> Result<(), String> {
         return Ok(());
     };
 
-    let mut state = tracked.lock().map_err(|e| e.to_string())?;
+    let mut state = lock_recover(&tracked);
     state.last_known_cwd = Some(cwd.to_string());
     Ok(())
 }
@@ -2972,6 +3045,49 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_ring_boundaries_never_panic_and_stay_capped() {
+        // Property fuzz over the ring: random-sized chunks of random bytes and
+        // deliberately split multibyte UTF-8 must never panic and must keep the
+        // ring within `limit`. Why documented-not-fixed: the ring is a raw-byte
+        // tail drained oldest-first with no boundary alignment, so truncation
+        // can land mid-UTF-8/mid-escape — restore relies on from_utf8_lossy
+        // downstream (roadmap: snapshot/preamble rehydrate on restore). This
+        // asserts the invariants AS THEY ARE, not UTF-8 boundary preservation.
+        let limit = 64usize;
+        // xorshift32 for deterministic, dependency-free pseudo-random input.
+        let mut rng = 0x1234_5678u32;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng
+        };
+        let multibyte = "你好🟢é".as_bytes().to_vec();
+        let mut scrollback: VecDeque<u8> = VecDeque::new();
+        let mut truncated = false;
+        let mut total_appended: usize = 0;
+        for _ in 0..5000 {
+            let chunk: Vec<u8> = if next() % 3 == 0 {
+                // Tail slice of a multibyte string starting at a random byte
+                // offset — feeds a lone continuation byte at the chunk head.
+                let cut = (next() as usize) % (multibyte.len() + 1);
+                multibyte[cut..].to_vec()
+            } else {
+                let len = (next() as usize) % 40;
+                (0..len).map(|_| (next() & 0xff) as u8).collect()
+            };
+            total_appended += chunk.len();
+            append_scrollback_capped(&mut scrollback, &mut truncated, &chunk, limit);
+            assert!(scrollback.len() <= limit, "ring exceeded cap");
+            if truncated {
+                // Once truncation begins the ring stays exactly full.
+                assert_eq!(scrollback.len(), limit);
+            }
+        }
+        assert_eq!(truncated, total_appended > limit);
+    }
+
+    #[test]
     fn pane_snapshot_falls_back_to_launch_cwd_without_live_pty() {
         let snapshot = build_pane_snapshot(&TerminalPaneSnapshotInput {
             pane_id: "pane-1".into(),
@@ -3690,5 +3806,253 @@ grove-c 1 notapid
         assert_eq!(state.try_wait_calls.load(Ordering::SeqCst), 1);
         assert_eq!(state.kill_calls.load(Ordering::SeqCst), 0);
         assert_eq!(state.wait_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Run `f` with panic output suppressed so intentional test panics don't
+    /// spam stderr; restores the previous hook once `f` (and any panic it drives
+    /// to completion via join/catch_unwind) has returned.
+    fn with_silenced_panics<F: FnOnce()>(f: F) {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        f();
+        std::panic::set_hook(previous);
+    }
+
+    fn poison_mutex<T: Send + 'static>(lock: Arc<Mutex<T>>) {
+        with_silenced_panics(|| {
+            let _ = std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                panic!("intentional poison for test");
+            })
+            .join();
+        });
+    }
+
+    #[derive(Default)]
+    struct CountingLogSink {
+        errors: AtomicUsize,
+    }
+
+    impl crate::logger::LogEventSink for CountingLogSink {
+        fn on_log(&self, level: &str, _tag: &str, _message: &str) {
+            if level == "error" {
+                self.errors.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Read impl that reports a byte count larger than the caller's buffer,
+    /// forcing the `&buf[..n]` slice in read_pty_output to panic WHILE the
+    /// tracked lock is held — the same failure vector as a panic in
+    /// append_scrollback.
+    struct OverReadingReader;
+
+    impl io::Read for OverReadingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(usize::MAX)
+        }
+    }
+
+    struct BlockingSink {
+        entered: Arc<(Mutex<bool>, Condvar)>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl PtyEventSink for BlockingSink {
+        fn on_output(&self, _pty_id: &str, _data: &[u8]) {
+            {
+                let (lock, cvar) = &*self.entered;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
+            let (lock, cvar) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cvar.wait(released).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn poisoned_registry_lock_recovers_for_subsequent_ops() {
+        let _env = env_lock();
+
+        // Poison the global registry: a thread panics while holding its lock.
+        with_silenced_panics(|| {
+            let _ = std::thread::spawn(|| {
+                let _guard = registry().lock().unwrap();
+                panic!("intentional poison for test");
+            })
+            .join();
+        });
+
+        // Sanity: the registry really is poisoned now.
+        assert!(registry().lock().is_err());
+
+        // The recovery path used by every production op still yields a guard.
+        {
+            let guard = lock_recover(registry());
+            assert!(!guard.contains_key("definitely-missing"));
+        }
+
+        // write/close/resize acquire the registry through lock_recover, so they
+        // reach their own not-found logic instead of erroring on the poison.
+        let missing = format!("pty-missing-{}", Uuid::new_v4().simple());
+        assert_eq!(
+            write(&missing, b"x"),
+            Err(format!("PTY not found: {missing}"))
+        );
+        assert_eq!(close(&missing), Err(format!("PTY not found: {missing}")));
+        assert_eq!(
+            resize(&missing, 80, 24),
+            Err(format!("PTY not found: {missing}"))
+        );
+        assert!(poll_bell_events().is_ok());
+
+        // Restore a clean flag so unrelated tests' .lock().unwrap() don't panic.
+        registry().clear_poison();
+        assert!(registry().lock().is_ok());
+    }
+
+    #[test]
+    fn poisoned_instance_locks_recover_for_write_and_snapshot() {
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-poison-inst-{}", Uuid::new_v4().simple()),
+            Box::new(io::sink()),
+            new_mock_master(),
+        );
+
+        let (writer, tracked) = {
+            let reg = registry().lock().unwrap();
+            let instance = reg.get(&id).unwrap();
+            (Arc::clone(&instance.writer), Arc::clone(&instance.tracked))
+        };
+
+        poison_mutex(Arc::clone(&writer));
+        poison_mutex(Arc::clone(&tracked));
+        assert!(writer.lock().is_err());
+        assert!(tracked.lock().is_err());
+
+        // write() recovers the poisoned per-instance writer lock and succeeds.
+        assert!(write(&id, b"hello").is_ok());
+
+        // A tracked-reading op recovers the poisoned tracked lock too.
+        assert!(runtime_snapshot_for_pty(&id).unwrap().is_some());
+        {
+            let _guard = lock_recover(&tracked);
+        }
+
+        registry().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn panic_in_read_path_is_contained_and_never_reaches_sink() {
+        let log = Arc::new(CountingLogSink::default());
+        crate::logger::set_log_sink(log.clone() as Arc<dyn crate::logger::LogEventSink>);
+
+        let id = register_mock_pty_with_writer(
+            MockChild {
+                mode: MockChildMode::Running,
+                state: Arc::new(MockChildState::default()),
+            },
+            format!("grove-test-read-panic-{}", Uuid::new_v4().simple()),
+            Box::new(io::sink()),
+            new_mock_master(),
+        );
+        let tracked = {
+            let reg = registry().lock().unwrap();
+            Arc::clone(&reg.get(&id).unwrap().tracked)
+        };
+
+        let sink = Arc::new(CollectingSink::default());
+        let coalescer =
+            OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, id.clone());
+        let before = log.errors.load(Ordering::SeqCst);
+
+        // The reader panics inside the tracked-locked block; the loop must
+        // contain it, exit cleanly, and never push the panic bytes to the sink.
+        with_silenced_panics(|| {
+            read_pty_output(Box::new(OverReadingReader), coalescer, Arc::clone(&tracked));
+        });
+
+        // Give the flusher a moment; it should have nothing to emit.
+        sleep(Duration::from_millis(20));
+        assert!(
+            sink.calls.lock().unwrap().is_empty(),
+            "panic bytes must never reach on_output"
+        );
+        assert!(
+            log.errors.load(Ordering::SeqCst) > before,
+            "a diagnostic must be logged for the contained panic"
+        );
+
+        // The panic poisoned tracked; the same instance's locks still recover.
+        {
+            let reg = registry().lock().unwrap();
+            let instance = reg.get(&id).unwrap();
+            let _tracked_guard = lock_recover(&instance.tracked);
+            let _writer_guard = lock_recover(&instance.writer);
+        }
+        assert!(write(&id, b"still works").is_ok());
+
+        registry().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn coalescer_pending_cap_keeps_newest_bytes_when_sink_stalls() {
+        let entered = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let sink = Arc::new(BlockingSink {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        });
+        let coalescer = OutputCoalescer::new(sink as Arc<dyn PtyEventSink>, "pty-cap".into());
+
+        // Prime the flusher so it enters (and wedges inside) on_output.
+        coalescer.push(b"x");
+        {
+            let (lock, cvar) = &*entered;
+            let mut is_entered = lock.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !*is_entered {
+                let now = Instant::now();
+                assert!(now < deadline, "flusher never entered on_output");
+                let (guard, _) = cvar.wait_timeout(is_entered, deadline - now).unwrap();
+                is_entered = guard;
+            }
+        }
+
+        // Flusher is wedged and cannot drain; push far past the cap.
+        let tail = b"NEWEST-TAIL-MARKER";
+        coalescer.push(&vec![b'A'; MAX_PENDING_BYTES + 4096]);
+        coalescer.push(tail);
+
+        {
+            let state = lock_recover(&coalescer.shared.state);
+            assert!(
+                state.pending.len() <= MAX_PENDING_BYTES,
+                "pending exceeded cap: {}",
+                state.pending.len()
+            );
+            assert!(
+                state.pending.ends_with(tail),
+                "keep-tail must preserve the newest bytes"
+            );
+            assert!(
+                state.truncated,
+                "overflow must set the internal truncated flag"
+            );
+        }
+
+        // Release the flusher so its thread can exit when the coalescer drops.
+        {
+            let (lock, cvar) = &*release;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
     }
 }

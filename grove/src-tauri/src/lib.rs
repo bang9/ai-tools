@@ -735,6 +735,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            grove_core::pty::install_panic_hook();
             grove_core::tool_hooks::ensure_installed();
             if let Err(error) = grove_core::pty::cleanup_stale_tmux_sessions_on_startup() {
                 eprintln!(
