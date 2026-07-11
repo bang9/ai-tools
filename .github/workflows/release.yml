@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Exact versions only — floating major tags (v2) must not trigger a release
+      - 'v*.*.*'
 
 permissions:
   contents: write
@@ -127,3 +128,28 @@ jobs:
     uses: ./.github/workflows/cc-marketplace-release.yml
     with:
       version: ${{ github.ref_name }}
+
+  # Keep the floating major tag (e.g. v2) on the latest release so
+  # `uses: bang9/ai-tools/vaultkey-action@v2` resolves. Gated on vaultkey so
+  # the tag never advances past a release whose binaries failed to build.
+  major-tag:
+    needs: [vaultkey]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Update floating major tag
+        env:
+          RAW_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          case "$RAW_TAG" in
+            *-*) echo "Prerelease tag $RAW_TAG — not moving major tag"; exit 0 ;;
+          esac
+          major="${RAW_TAG%%.*}"
+          if ! printf '%s\n' "$major" | grep -Eq '^v[0-9]+$'; then
+            echo "Unexpected tag format: $RAW_TAG" >&2
+            exit 1
+          fi
+          git tag -f "$major" "$RELEASE_SHA"
+          git push -f origin "refs/tags/$major"
