@@ -3,9 +3,7 @@ export type DevPermissionId =
   | "camera"
   | "screen"
   | "accessibility"
-  | "full-disk-access"
-  | "automation"
-  | "local-network";
+  | "full-disk-access";
 
 export type DevPermissionStatus =
   | "granted"

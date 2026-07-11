@@ -1,13 +1,4 @@
-import {
-  Accessibility,
-  Camera,
-  HardDrive,
-  Mic,
-  MonitorUp,
-  Network,
-  Workflow,
-  type LucideIcon,
-} from "lucide-react";
+import { Accessibility, Camera, HardDrive, Mic, MonitorUp, type LucideIcon } from "lucide-react";
 import type { DevPermissionId, DevPermissionStatus } from "../../types";
 
 export interface DevPermissionRow {
@@ -55,21 +46,6 @@ export const DEV_PERMISSION_ROWS: DevPermissionRow[] = [
       "Stops per-folder prompts when terminals or file views touch macOS-protected folders (Desktop, Documents, Downloads).",
     actionLabel: "Open Settings",
     icon: HardDrive,
-  },
-  {
-    id: "automation",
-    label: "Automation",
-    description:
-      "Apple Events for AppleScript and scripts that control other apps (Grove's Terminal.app theme detection uses this).",
-    actionLabel: "Trigger Prompt",
-    icon: Workflow,
-  },
-  {
-    id: "local-network",
-    label: "Local Network",
-    description: "Discovery and access for development servers on your network.",
-    actionLabel: "Trigger Prompt",
-    icon: Network,
   },
 ];
 

@@ -9,16 +9,15 @@
 
 use serde::Serialize;
 
-/// The 7 permissions grove surfaces, in the order the status command returns
-/// them (orca's set minus usb/bluetooth).
-const DEV_PERMISSION_IDS: [&str; 7] = [
+/// The 5 permissions grove surfaces, in the order the status command returns
+/// them (orca's set minus usb/bluetooth and the prompt-only automation /
+/// local-network rows, which macOS re-prompts for on real use anyway).
+const DEV_PERMISSION_IDS: [&str; 5] = [
     "microphone",
     "camera",
     "screen",
     "accessibility",
     "full-disk-access",
-    "automation",
-    "local-network",
 ];
 
 #[derive(Serialize)]
@@ -64,7 +63,6 @@ pub async fn dev_permissions_request(id: String) -> Result<DevPermissionRequestR
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
-    use std::time::Duration;
 
     use block2::RcBlock;
     use objc2::runtime::{AnyObject, Bool};
@@ -105,9 +103,6 @@ mod imp {
             }
             "full-disk-access" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-            }
-            "automation" => {
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
             }
             _ => "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
         }
@@ -237,7 +232,6 @@ mod imp {
             "screen" => screen_status(),
             "accessibility" => accessibility_status(),
             "full-disk-access" => full_disk_status(),
-            "automation" | "local-network" => "unknown".to_string(),
             _ => "unsupported".to_string(),
         }
     }
@@ -277,32 +271,6 @@ mod imp {
         }
     }
 
-    async fn trigger_apple_events_prompt() {
-        // This only nudges macOS to show the Automation prompt; a stuck
-        // osascript must not keep the command pending, so kill it after 3s.
-        let Ok(mut child) = tokio::process::Command::new("osascript")
-            .args(["-e", "tell application \"System Events\" to return 1"])
-            .spawn()
-        else {
-            return;
-        };
-        if tokio::time::timeout(Duration::from_secs(3), child.wait())
-            .await
-            .is_err()
-        {
-            let _ = child.kill().await;
-        }
-    }
-
-    fn trigger_local_network_prompt() {
-        // Sending an mDNS datagram nudges the Local Network prompt; every error
-        // (bind, send, timeout) is swallowed since this is only a nudge.
-        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-            let _ = socket.set_write_timeout(Some(Duration::from_secs(1)));
-            let _ = socket.send_to(&[0u8], "224.0.0.251:5353");
-        }
-    }
-
     pub async fn request_permission(id: String) -> DevPermissionRequestResult {
         match id.as_str() {
             "microphone" => request_media(&id, MEDIA_AUDIO).await,
@@ -323,22 +291,6 @@ mod imp {
                         status: "unknown".to_string(),
                         opened_system_settings: true,
                     }
-                }
-            }
-            "automation" => {
-                trigger_apple_events_prompt().await;
-                DevPermissionRequestResult {
-                    id,
-                    status: "unknown".to_string(),
-                    opened_system_settings: false,
-                }
-            }
-            "local-network" => {
-                trigger_local_network_prompt();
-                DevPermissionRequestResult {
-                    id,
-                    status: "unknown".to_string(),
-                    opened_system_settings: false,
                 }
             }
             // screen / full-disk-access: no request API, just open the pane.

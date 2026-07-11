@@ -39,15 +39,13 @@ describe("devPermissionStatusBadgeVariant", () => {
 });
 
 describe("DEV_PERMISSION_ROWS", () => {
-  it("lists the 7 permissions in spec order", () => {
+  it("lists the 5 permissions in spec order", () => {
     expect(DEV_PERMISSION_ROWS.map((row) => row.id)).toEqual([
       "microphone",
       "camera",
       "screen",
       "accessibility",
       "full-disk-access",
-      "automation",
-      "local-network",
     ]);
   });
 });

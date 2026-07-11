@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import dgram from "node:dgram";
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -12,9 +10,7 @@ export type DevPermissionId =
   | "camera"
   | "screen"
   | "accessibility"
-  | "full-disk-access"
-  | "automation"
-  | "local-network";
+  | "full-disk-access";
 
 export type DevPermissionStatus =
   | "granted"
@@ -44,8 +40,6 @@ const DEV_PERMISSION_IDS: DevPermissionId[] = [
   "screen",
   "accessibility",
   "full-disk-access",
-  "automation",
-  "local-network",
 ];
 
 const PRIVACY_PANE_URLS: Partial<Record<DevPermissionId, string>> = {
@@ -54,11 +48,7 @@ const PRIVACY_PANE_URLS: Partial<Record<DevPermissionId, string>> = {
   screen: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
   "full-disk-access": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-  automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
 };
-
-const APPLE_EVENTS_PROMPT_TIMEOUT_MS = 3_000;
-const LOCAL_NETWORK_PROMPT_TIMEOUT_MS = 1_000;
 
 function unsupportedOffMac(): DevPermissionStatus | null {
   return process.platform === "darwin" ? null : "unsupported";
@@ -115,79 +105,6 @@ async function openPrivacyPane(id: DevPermissionId): Promise<boolean> {
   return true;
 }
 
-function triggerAppleEventsPrompt(): Promise<void> {
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof execFile> | null = null;
-    let settled = false;
-
-    const finish = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      resolve();
-    };
-
-    // This request only nudges macOS to show the Automation prompt; a stuck
-    // osascript process must not keep the permission IPC pending.
-    const timeout = setTimeout(() => {
-      child?.kill();
-      finish();
-    }, APPLE_EVENTS_PROMPT_TIMEOUT_MS);
-    if (typeof timeout.unref === "function") {
-      timeout.unref();
-    }
-
-    try {
-      child = execFile(
-        "osascript",
-        ["-e", 'tell application "System Events" to return 1'],
-        { timeout: APPLE_EVENTS_PROMPT_TIMEOUT_MS },
-        finish,
-      );
-    } catch {
-      finish();
-    }
-  });
-}
-
-function triggerLocalNetworkPrompt(): Promise<void> {
-  return new Promise((resolve) => {
-    const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
-    let settled = false;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-
-    function finish(): void {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      socket.removeListener("error", finish);
-      if (timeout) {
-        clearTimeout(timeout);
-        timeout = null;
-      }
-      try {
-        socket.close();
-      } catch {
-        // Already closed or never fully bound.
-      }
-      resolve();
-    }
-
-    socket.on("error", finish);
-    socket.bind(() => {
-      const message = Buffer.from([0]);
-      socket.send(message, 0, message.length, 5353, "224.0.0.251", finish);
-    });
-    timeout = setTimeout(finish, LOCAL_NETWORK_PROMPT_TIMEOUT_MS);
-    if (typeof timeout.unref === "function") {
-      timeout.unref();
-    }
-  });
-}
-
 async function getPermissionState(id: DevPermissionId): Promise<DevPermissionState> {
   switch (id) {
     case "microphone":
@@ -198,9 +115,6 @@ async function getPermissionState(id: DevPermissionId): Promise<DevPermissionSta
       return { id, status: getAccessibilityStatus() };
     case "full-disk-access":
       return { id, status: await getFullDiskAccessStatus() };
-    case "automation":
-    case "local-network":
-      return { id, status: unsupportedOffMac() ?? "unknown" };
   }
 }
 
@@ -238,16 +152,6 @@ async function requestPermission(id: DevPermissionId): Promise<DevPermissionRequ
 
     await openPrivacyPane(id);
     return { id, status: getAccessibilityStatus(), openedSystemSettings: true };
-  }
-
-  if (id === "automation") {
-    await triggerAppleEventsPrompt();
-    return { id, status: "unknown", openedSystemSettings: false };
-  }
-
-  if (id === "local-network") {
-    await triggerLocalNetworkPrompt();
-    return { id, status: "unknown", openedSystemSettings: false };
   }
 
   await openPrivacyPane(id);
