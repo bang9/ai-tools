@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, WebContentsView } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, Menu, shell, WebContentsView } from "electron";
+import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -321,6 +322,105 @@ function wireBrowserViewEvents(win: BrowserWindow, tabId: string, view: WebConte
       event.preventDefault();
     }
   });
+
+  // Right-click menu on the browser guest. Built as a NATIVE menu (not a
+  // renderer React menu): the WebContentsView is a native layer painted over
+  // the DOM, so a DOM menu would render *under* the page and be invisible.
+  wc.on("context-menu", (_event, params) => {
+    if (win.isDestroyed() || wc.isDestroyed()) {
+      return;
+    }
+
+    const linkUrl = params.linkURL && isAllowedBrowserUrl(params.linkURL) ? params.linkURL : null;
+    const pageUrl = wc.getURL();
+    const template: MenuItemConstructorOptions[] = [];
+
+    if (linkUrl) {
+      template.push(
+        {
+          label: "Open Link in New Tab",
+          click: () => {
+            if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+              win.webContents.send("browser:new-window", { openerTabId: tabId, url: linkUrl });
+            }
+          },
+        },
+        {
+          label: "Copy Link Address",
+          click: () => clipboard.writeText(linkUrl),
+        },
+        { type: "separator" },
+      );
+    }
+
+    if (params.selectionText) {
+      template.push(
+        {
+          label: "Copy",
+          click: () => clipboard.writeText(params.selectionText),
+        },
+        { type: "separator" },
+      );
+    }
+
+    template.push(
+      {
+        label: "Back",
+        enabled: wc.navigationHistory.canGoBack(),
+        click: () => {
+          if (!wc.isDestroyed() && wc.navigationHistory.canGoBack()) {
+            wc.navigationHistory.goBack();
+          }
+        },
+      },
+      {
+        label: "Forward",
+        enabled: wc.navigationHistory.canGoForward(),
+        click: () => {
+          if (!wc.isDestroyed() && wc.navigationHistory.canGoForward()) {
+            wc.navigationHistory.goForward();
+          }
+        },
+      },
+      {
+        label: "Reload",
+        click: () => {
+          if (!wc.isDestroyed()) {
+            wc.reload();
+          }
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Copy Page URL",
+        enabled: !!pageUrl,
+        click: () => clipboard.writeText(pageUrl),
+      },
+      {
+        label: "Open Page in Default Browser",
+        enabled: isAllowedBrowserUrl(pageUrl),
+        click: () => {
+          void shell.openExternal(pageUrl);
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Inspect Page",
+        click: () => {
+          if (wc.isDestroyed()) {
+            return;
+          }
+          // Detached — a docked devtools would fight the manually-positioned
+          // WebContentsView and overlap the app UI. inspectElement focuses the
+          // element the user right-clicked.
+          wc.openDevTools({ mode: "detach" });
+          wc.inspectElement(params.x, params.y);
+        },
+      },
+    );
+
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
 }
 
 function closeBrowserViewsForWindow(win: BrowserWindow) {
@@ -573,7 +673,15 @@ function createMainWindow() {
     minWidth: 1024,
     minHeight: 720,
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 14, y: 20 },
+    // Tauri parity: tauri.conf.json uses trafficLightPosition {x:14, y:20},
+    // but tao treats y as a titlebar *inset* (container height = button height
+    // + y, button keeps its default 9px in-container offset), which lands the
+    // button frame 20 - 9 = 11px from the window top. Electron's y is that
+    // top offset directly, so y:11 renders the lights at the same position.
+    trafficLightPosition: { x: 14, y: 11 },
+    // Parity with tauri.conf.json acceptFirstMouse: deliver the
+    // app-activating click instead of swallowing it (macOS-only).
+    acceptFirstMouse: true,
     webPreferences: {
       preload: resolvePreloadPath(),
       nodeIntegration: false,

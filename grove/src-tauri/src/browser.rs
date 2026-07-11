@@ -70,6 +70,159 @@ fn scheme_allowed(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "about" | "data" | "blob")
 }
 
+/// Custom scheme the injected guest right-click menu navigates to in order to
+/// call back into main for actions a sandboxed guest cannot perform itself
+/// (Inspect Page, Open in Default Browser, Open Link in New Tab). The
+/// navigation is always denied — it is a one-way message channel, not a real
+/// load. Grove's guest webviews have zero IPC/preload access, so this denied
+/// navigation is the only bridge from guest → main.
+const GUEST_MENU_SCHEME: &str = "grovemenu";
+
+/// Injected into every browser guest before page scripts run. Suppresses
+/// WebKit's native right-click menu and renders Grove's own menu inside a
+/// closed shadow root (invisible to and un-restyleable by the page). Actions a
+/// guest can do itself run inline (back/forward/reload/clipboard); the rest
+/// post back over the `grovemenu://` channel. Kept as one self-contained IIFE
+/// so re-injection on every navigation is idempotent.
+const GUEST_CONTEXT_MENU_SCRIPT: &str = r#"
+(function () {
+  if (window.__groveCtxMenu) return;
+  window.__groveCtxMenu = true;
+  var SCHEME = 'grovemenu://a?';
+  function send(action, extra) {
+    var p = new URLSearchParams(extra || {});
+    p.set('action', action);
+    location.href = SCHEME + p.toString();
+  }
+  var host = null;
+  function close() {
+    if (host) { host.remove(); host = null; }
+    document.removeEventListener('mousedown', onDown, true);
+    document.removeEventListener('scroll', close, true);
+    window.removeEventListener('blur', close, true);
+    window.removeEventListener('resize', close, true);
+  }
+  function onDown(e) { if (!host || !host.contains(e.target)) close(); }
+  function copy(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () {});
+    }
+  }
+  document.addEventListener('contextmenu', function (e) {
+    e.preventDefault();
+    close();
+    var linkEl = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    var link = linkEl ? linkEl.href : '';
+    var sel = window.getSelection ? String(window.getSelection()) : '';
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    host = document.createElement('div');
+    host.style.cssText = 'all:initial;position:fixed;left:0;top:0;z-index:2147483647';
+    var root = host.attachShadow({ mode: 'closed' });
+    var menu = document.createElement('div');
+    var bg = dark ? '#1f2023' : '#ffffff';
+    var fg = dark ? '#e6e6e6' : '#1a1a1a';
+    var bd = dark ? '#3a3b3f' : '#d8d8d8';
+    var hv = dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.07)';
+    menu.style.cssText =
+      'position:fixed;min-width:200px;padding:4px;border-radius:8px;font:13px -apple-system,system-ui,sans-serif;' +
+      'background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';box-shadow:0 8px 28px rgba(0,0,0,0.28)';
+    function item(label, fn, disabled) {
+      var el = document.createElement('div');
+      el.textContent = label;
+      el.style.cssText =
+        'padding:5px 10px;border-radius:5px;cursor:default;white-space:nowrap;' +
+        (disabled ? 'opacity:0.4;pointer-events:none' : '');
+      if (!disabled) {
+        el.addEventListener('mouseenter', function () { el.style.background = hv; });
+        el.addEventListener('mouseleave', function () { el.style.background = 'transparent'; });
+        el.addEventListener('mouseup', function () { close(); fn(); });
+      }
+      menu.appendChild(el);
+    }
+    function sep() {
+      var s = document.createElement('div');
+      s.style.cssText = 'height:1px;margin:4px 6px;background:' + bd;
+      menu.appendChild(s);
+    }
+    if (link) {
+      item('Open Link in New Tab', function () { send('new-tab', { url: link }); });
+      item('Copy Link Address', function () { copy(link); });
+      sep();
+    }
+    if (sel) {
+      item('Copy', function () { copy(sel); });
+      sep();
+    }
+    item('Back', function () { history.back(); }, !(history.length > 1));
+    item('Forward', function () { history.forward(); });
+    item('Reload', function () { location.reload(); });
+    sep();
+    item('Copy Page URL', function () { copy(location.href); });
+    item('Open Page in Default Browser', function () { send('open-external', { url: location.href }); });
+    sep();
+    item('Inspect Page', function () { send('inspect', {}); });
+    root.appendChild(menu);
+    (document.documentElement || document.body).appendChild(host);
+    var mw = menu.offsetWidth, mh = menu.offsetHeight;
+    var x = Math.min(e.clientX, window.innerWidth - mw - 4);
+    var y = Math.min(e.clientY, window.innerHeight - mh - 4);
+    menu.style.left = Math.max(4, x) + 'px';
+    menu.style.top = Math.max(4, y) + 'px';
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('scroll', close, true);
+    window.addEventListener('blur', close, true);
+    window.addEventListener('resize', close, true);
+  }, true);
+})();
+"#;
+
+/// Handle a `grovemenu://` callback from the injected guest menu. Runs on the
+/// Tauri main thread (the wry navigation handler fires there). `raw_url` is the
+/// full denied navigation URL.
+fn handle_guest_menu_action(app: &AppHandle, tab_id: &str, raw_url: &str) {
+    let Ok(parsed) = Url::parse(raw_url) else {
+        return;
+    };
+    let mut action: Option<String> = None;
+    let mut target_url: Option<String> = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "action" => action = Some(value.into_owned()),
+            "url" => target_url = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    match action.as_deref() {
+        Some("inspect") => {
+            let label = format!("browser-{tab_id}");
+            if let Some(webview) = app.get_webview(&label) {
+                open_detached_devtools(&webview, tab_id.to_string());
+            }
+        }
+        Some("open-external") => {
+            if let Some(url) = target_url {
+                if matches!(Url::parse(&url).map(|u| u.scheme().to_string()).as_deref(), Ok("http") | Ok("https")) {
+                    let _ = webbrowser::open(&url);
+                }
+            }
+        }
+        Some("new-tab") => {
+            if let Some(url) = target_url {
+                if matches!(Url::parse(&url).map(|u| u.scheme().to_string()).as_deref(), Ok("http") | Ok("https")) {
+                    let _ = app.emit(
+                        "browser:new-window",
+                        BrowserNewWindowPayload {
+                            opener_tab_id: tab_id.to_string(),
+                            url,
+                        },
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn emit_nav(
     app: &AppHandle,
     tab_id: &str,
@@ -123,13 +276,27 @@ pub fn browser_create(
     let title_tab = tab_id.clone();
     let new_window_app = app.clone();
     let new_window_tab = tab_id.clone();
+    let nav_app = app.clone();
+    let nav_tab = tab_id.clone();
 
     let builder = WebviewBuilder::new(label, WebviewUrl::External(parsed))
+        // Injected before page scripts: renders Grove's right-click menu inside
+        // the guest (see GUEST_CONTEXT_MENU_SCRIPT). The only guest→main bridge
+        // available, since guests have no IPC/preload.
+        .initialization_script(GUEST_CONTEXT_MENU_SCRIPT)
         // NOTE: on_navigation fires for subframe (iframe) navigations too, so
         // it must only filter — never emit nav events, or embedded frames
         // would overwrite the address bar. URL tracking happens in
         // on_page_load, which is main-frame only.
-        .on_navigation(scheme_allowed)
+        .on_navigation(move |url| {
+            // Intercept the guest menu's callback channel: handle the action and
+            // always deny the navigation (it is a message, not a real load).
+            if url.scheme() == GUEST_MENU_SCHEME {
+                handle_guest_menu_action(&nav_app, &nav_tab, url.as_str());
+                return false;
+            }
+            scheme_allowed(url)
+        })
         .on_page_load(move |_webview, payload| {
             let loading = matches!(payload.event(), PageLoadEvent::Started);
             emit_nav(
@@ -290,8 +457,20 @@ pub fn browser_open_devtools(
     let Some(entry) = map.get(&tab_id) else {
         return Ok(());
     };
-    let webview = &entry.webview;
+    open_detached_devtools(&entry.webview, tab_id);
+    Ok(())
+}
 
+/// Open the Web Inspector for a browser webview as a SEPARATE (detached)
+/// window. Shared by the `browser_open_devtools` command and the guest
+/// right-click "Inspect Page" menu item.
+///
+/// A docked WKWebView inspector resizes the child webview to fill the window,
+/// painting over the app UI. There is no public API for the dock mode, so on
+/// macOS we go through WebKit's private `-[WKWebView _inspector]` →
+/// `_WKInspector` and call `show` + `detach` to force a standalone inspector
+/// window (WebKit remembers the detached state afterwards).
+fn open_detached_devtools(webview: &Webview, tab_id: String) {
     #[cfg(target_os = "macos")]
     {
         // Sequence: connect (headless) → wait until the frontend is connected
@@ -409,8 +588,6 @@ pub fn browser_open_devtools(
 
     #[cfg(not(target_os = "macos"))]
     webview.open_devtools();
-
-    Ok(())
 }
 
 /// Close every browser webview. A freshly reloaded renderer calls this once to
