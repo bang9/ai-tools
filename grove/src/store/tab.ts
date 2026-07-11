@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { AppTab, AppTabType } from "../types";
 import { useBrowserStore } from "./browser";
 import { useFileViewerStore } from "./file-viewer";
+import { useTerminalStore } from "./terminal";
 
 export interface TabSession {
   tabs: AppTab[];
@@ -122,22 +123,23 @@ export const useTabStore = create<TabState>((set, get) => ({
     const tabIndex = session.tabs.findIndex((t) => t.id === tabId);
     const newTabs = session.tabs.filter((t) => t.id !== tabId);
     const wasActive = session.activeTabId === tabId;
-    // Prefer the closable neighbor that slid into the closed slot (or the last
-    // closable before it); when none remain, land on Terminal — never on a
-    // pinned tab the user didn't pick.
-    const newActiveTabId = (() => {
-      if (!wasActive) return session.activeTabId;
-      const slotTab = newTabs[Math.min(tabIndex, newTabs.length - 1)];
-      if (slotTab?.closable) return slotTab.id;
-      const closable = newTabs.filter((t) => t.closable);
-      return closable.length > 0 ? closable[closable.length - 1].id : "terminal";
-    })();
+    // The neighbor that slid into the closed slot (or the last tab before it)
+    // becomes active. Terminal entries are addressed via the "terminal"
+    // sentinel — their uuid never appears as activeTabId.
+    const slotTab = wasActive ? newTabs[Math.min(tabIndex, newTabs.length - 1)] : undefined;
+    let newActiveTabId = session.activeTabId;
+    if (wasActive) {
+      newActiveTabId = slotTab && slotTab.type !== "terminal" ? slotTab.id : "terminal";
+    }
     set(
       updateSession(state, () => ({
         tabs: newTabs,
         activeTabId: newActiveTabId,
       })),
     );
+    if (slotTab?.type === "terminal" && state.activeWorktree) {
+      useTerminalStore.getState().setActiveTab(state.activeWorktree, slotTab.id);
+    }
     if (tab.type === "browser") {
       useBrowserStore.getState().removeTab(tabId);
     } else if (tab.type === "file") {

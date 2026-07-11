@@ -1,4 +1,23 @@
-import { useCallback, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
+import { CSS } from "@dnd-kit/utilities";
 import {
   FileDiff,
   GitPullRequest,
@@ -24,6 +43,7 @@ import { useWorktreePrUrl } from "../sidebar/worktree-pr";
 import { runCommand } from "../../lib/command";
 import { createWorktreePr, openExternal } from "../../lib/platform";
 import { collectTerminalPanes } from "../../lib/terminal-session";
+import { TERMINAL_PANE_LABEL_MAX_LENGTH } from "../../lib/split-tree";
 import { addTerminalTab, closeTerminalTab } from "../../lib/terminal-tab-commands";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import PreferencesModal from "../preferences/PreferencesModal";
@@ -63,17 +83,32 @@ function terminalTabNeedsAttention(
   );
 }
 
-interface TabChipDragHandlers {
-  draggable: true;
-  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
-  onDragOver: (event: React.DragEvent<HTMLButtonElement>) => void;
-  onDrop: (event: React.DragEvent<HTMLButtonElement>) => void;
-  onDragEnd: () => void;
+/**
+ * Sortable wrapper: dnd-kit animates the other chips sliding aside while a
+ * chip is dragged, previewing exactly where it will land.
+ */
+function SortableChip({ tabId, children }: { tabId: string; children: ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: tabId,
+  });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    touchAction: "none",
+  };
+  return (
+    <div ref={setNodeRef} style={style} className={cn("shrink-0")} {...attributes} {...listeners}>
+      {children}
+    </div>
+  );
 }
 
 /**
  * Shared chip: fixed max width with ellipsis; the close affordance takes no
- * space until the chip is hovered, then animates its width in.
+ * space until the chip is hovered, then animates its width in. With onRename,
+ * double-click swaps the title for an inline input (Enter/blur commit, Esc
+ * cancels; an empty commit resets to the default name).
  */
 function TabChip({
   title,
@@ -82,7 +117,7 @@ function TabChip({
   onSelect,
   onClose,
   closeTitle,
-  dragHandlers,
+  onRename,
 }: {
   title: string;
   isActive: boolean;
@@ -90,14 +125,80 @@ function TabChip({
   onSelect: () => void;
   onClose?: () => void;
   closeTitle?: string;
-  dragHandlers: TabChipDragHandlers;
+  onRename?: (title: string) => void;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const skipBlurSaveRef = useRef(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  useEffect(() => {
+    if (!editing) return;
+    skipBlurSaveRef.current = false;
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  }, [editing]);
+
+  if (editing && onRename) {
+    const commit = () => {
+      onRename(draft.trim());
+      setEditing(false);
+    };
+    return (
+      <div className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive), "cursor-text")}>
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          maxLength={TERMINAL_PANE_LABEL_MAX_LENGTH}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => {
+            if (skipBlurSaveRef.current) {
+              skipBlurSaveRef.current = false;
+              return;
+            }
+            commit();
+          }}
+          onKeyDown={(event) => {
+            // An Enter that only confirms an IME candidate must not commit.
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              skipBlurSaveRef.current = true;
+              setEditing(false);
+            }
+          }}
+          // Keep clicks in the input from activating the tab or arming a drag.
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          aria-label="Rename tab"
+          className={cn("w-20 min-w-0 bg-transparent text-xs font-medium outline-none")}
+        />
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
       onClick={onSelect}
+      onDoubleClick={
+        onRename
+          ? () => {
+              setDraft(title);
+              setEditing(true);
+            }
+          : undefined
+      }
+      title={title}
       className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
-      {...dragHandlers}
     >
       <span className={cn("min-w-0 truncate")}>{title}</span>
       {needsAttention && (
@@ -129,19 +230,20 @@ function TabChip({
 function TerminalTabChip({
   terminalPath,
   tabEntryId,
+  entryTitle,
   terminalIndex,
   isTerminalContentActive,
   onActivateTerminal,
-  dragHandlers,
 }: {
   terminalPath: string | null;
   tabEntryId: string;
+  entryTitle: string;
   terminalIndex: number;
   isTerminalContentActive: boolean;
   onActivateTerminal: () => void;
-  dragHandlers: TabChipDragHandlers;
 }) {
   const setActiveTerminalTab = useTerminalStore((s) => s.setActiveTab);
+  const updateTabTitle = useTabStore((s) => s.updateTabTitle);
   const isActiveTerminalTab = useTerminalStore((s) =>
     terminalPath ? s.sessions[terminalPath]?.activeTabId === tabEntryId : false,
   );
@@ -151,10 +253,14 @@ function TerminalTabChip({
     return !!tab && terminalTabNeedsAttention(tab, s.bellPtyIds, s.aiSessions);
   });
   const isActive = isTerminalContentActive && isActiveTerminalTab;
+  // "Terminal" (the sync default) and "" both mean "no custom name" — show
+  // the position-derived name until the user renames the tab.
+  const customTitle = entryTitle && entryTitle !== "Terminal" ? entryTitle : undefined;
+  const defaultTitle = terminalIndex === 0 ? "Terminal" : `Terminal ${terminalIndex + 1}`;
 
   return (
     <TabChip
-      title={terminalIndex === 0 ? "Terminal" : `Terminal ${terminalIndex + 1}`}
+      title={customTitle ?? defaultTitle}
       isActive={isActive}
       needsAttention={!isActive && needsAttention}
       onSelect={() => {
@@ -169,7 +275,7 @@ function TerminalTabChip({
         }
       }}
       closeTitle="Close terminal tab"
-      dragHandlers={dragHandlers}
+      onRename={(next) => updateTabTitle(tabEntryId, next || "Terminal")}
     />
   );
 }
@@ -324,34 +430,22 @@ function AppTabBar() {
     ({ type, capability }) => capabilities[capability] && !(type === "changes" && hasChangesTab),
   );
   const [menuOpen, setMenuOpen] = useState(false);
-  const [dragTabId, setDragTabId] = useState<string | null>(null);
 
-  const makeDragHandlers = useCallback(
-    (tabId: string): TabChipDragHandlers => ({
-      draggable: true,
-      onDragStart: (event) => {
-        setDragTabId(tabId);
-        event.dataTransfer.effectAllowed = "move";
-      },
-      onDragOver: (event) => {
-        if (dragTabId && dragTabId !== tabId) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-        }
-      },
-      onDrop: (event) => {
-        event.preventDefault();
-        if (dragTabId && dragTabId !== tabId) {
-          const targetIndex = tabs.findIndex((tab) => tab.id === tabId);
-          if (targetIndex >= 0) {
-            moveTab(dragTabId, targetIndex);
-          }
-        }
-        setDragTabId(null);
-      },
-      onDragEnd: () => setDragTabId(null),
-    }),
-    [dragTabId, moveTab, tabs],
+  // distance 5 keeps plain clicks selecting the tab; a real drag kicks in
+  // only after the pointer moves.
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const targetIndex = tabs.findIndex((tab) => tab.id === over.id);
+      if (targetIndex >= 0) {
+        moveTab(active.id as string, targetIndex);
+      }
+    },
+    [moveTab, tabs],
   );
   const preferencesOpen = usePreferencesUiStore((state) => state.open);
   const preferencesTab = usePreferencesUiStore((state) => state.activeTab);
@@ -363,8 +457,11 @@ function AppTabBar() {
     (type: Exclude<AppTabType, "file">, label: string) => {
       if (type === "terminal") {
         if (terminalPath) {
-          addTerminalTab(terminalPath).catch(() => {});
-          setActiveTab("terminal");
+          // Switch only after the tab exists — switching immediately would
+          // flash the previously active terminal while the pty spawns.
+          addTerminalTab(terminalPath)
+            .then(() => setActiveTab("terminal"))
+            .catch(() => {});
         }
       } else {
         addTab(type, label);
@@ -389,34 +486,42 @@ function AppTabBar() {
             "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
           )}
         >
-          {tabs.map((tab) => {
-            if (tab.type === "terminal") {
-              return (
-                <TerminalTabChip
-                  key={tab.id}
-                  terminalPath={terminalPath}
-                  tabEntryId={tab.id}
-                  terminalIndex={tabs
-                    .filter((entry) => entry.type === "terminal")
-                    .findIndex((entry) => entry.id === tab.id)}
-                  isTerminalContentActive={activeTabId === "terminal"}
-                  onActivateTerminal={() => setActiveTab("terminal")}
-                  dragHandlers={makeDragHandlers(tab.id)}
-                />
-              );
-            }
-            return (
-              <TabChip
-                key={tab.id}
-                title={tab.title}
-                isActive={tab.id === activeTabId}
-                onSelect={() => setActiveTab(tab.id)}
-                onClose={tab.closable ? () => closeTab(tab.id) : undefined}
-                closeTitle="Close tab"
-                dragHandlers={makeDragHandlers(tab.id)}
-              />
-            );
-          })}
+          <DndContext
+            sensors={dragSensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToHorizontalAxis]}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={tabs.map((tab) => tab.id)}
+              strategy={horizontalListSortingStrategy}
+            >
+              {tabs.map((tab) => (
+                <SortableChip key={tab.id} tabId={tab.id}>
+                  {tab.type === "terminal" ? (
+                    <TerminalTabChip
+                      terminalPath={terminalPath}
+                      tabEntryId={tab.id}
+                      entryTitle={tab.title}
+                      terminalIndex={tabs
+                        .filter((entry) => entry.type === "terminal")
+                        .findIndex((entry) => entry.id === tab.id)}
+                      isTerminalContentActive={activeTabId === "terminal"}
+                      onActivateTerminal={() => setActiveTab("terminal")}
+                    />
+                  ) : (
+                    <TabChip
+                      title={tab.title}
+                      isActive={tab.id === activeTabId}
+                      onSelect={() => setActiveTab(tab.id)}
+                      onClose={tab.closable ? () => closeTab(tab.id) : undefined}
+                      closeTitle="Close tab"
+                    />
+                  )}
+                </SortableChip>
+              ))}
+            </SortableContext>
+          </DndContext>
 
           {/* Add tab dropdown — needs a directory selection (tabs are per-scope) */}
           {capabilities.hasDirectory && (

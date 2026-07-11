@@ -125,6 +125,8 @@ function TerminalPaneHeader({
             saveDraft();
           }}
           onKeyDown={(event) => {
+            // An Enter that only confirms an IME candidate must not commit.
+            if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter") {
               event.preventDefault();
               saveDraft();

@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../lib/platform", () => ({
+  loadTerminalLayouts: vi.fn(),
+  saveTerminalLayouts: vi.fn(),
+}));
+
 import {
   useTabStore,
   selectActiveTabIdForWorktree,
@@ -7,6 +13,7 @@ import {
   selectTabsForWorktree,
 } from "./tab";
 import { useBrowserStore } from "./browser";
+import { useTerminalStore } from "./terminal";
 
 function initWorktree(path = "/tmp/wt") {
   useTabStore.getState().setActiveWorktree(path);
@@ -231,6 +238,30 @@ describe("useTabStore", () => {
       useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1"]);
       useTabStore.getState().closeTab("t-1");
       expect(selectCurrentTabs(useTabStore.getState()).map((t) => t.id)).toEqual(["t-1"]);
+    });
+
+    it("closing an active tab whose neighbor is a terminal entry activates that terminal tab", () => {
+      initWorktree();
+      useTerminalStore.setState({
+        sessions: {
+          "/tmp/wt": {
+            tabs: [
+              { id: "t-1", node: { id: "p-1", type: "leaf", ptyId: "pty-1" } },
+              { id: "t-2", node: { id: "p-2", type: "leaf", ptyId: "pty-2" } },
+            ],
+            activeTabId: "t-2",
+          },
+        },
+      });
+      useTabStore.getState().syncTerminalTabs("/tmp/wt", ["t-1", "t-2"]);
+      const browserId = useTabStore.getState().addTab("browser", "Browser");
+      useTabStore.getState().moveTab(browserId, 0);
+
+      useTabStore.getState().closeTab(browserId);
+
+      // The slot neighbor t-1 takes over via the sentinel, not its raw id.
+      expect(selectCurrentActiveTabId(useTabStore.getState())).toBe("terminal");
+      expect(useTerminalStore.getState().sessions["/tmp/wt"]?.activeTabId).toBe("t-1");
     });
   });
 
