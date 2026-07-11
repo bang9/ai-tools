@@ -22,6 +22,13 @@ import {
   isMacClearTerminalShortcut,
   isTerminalCompositionEvent,
 } from "./terminal-input";
+import {
+  captureTerminalTextSnapshot,
+  recordWebglBreadcrumb,
+  releaseXtermWebglContext,
+  WebglRenderLatch,
+} from "./terminal-webgl-lifecycle";
+import { recoverTerminalForWake } from "./terminal-display-wake";
 
 export type TerminalInitialContentSource = "snapshotFallback" | "tmuxCapture";
 
@@ -274,11 +281,40 @@ export function getRuntime(paneId: string) {
   return runtimes.get(paneId) ?? null;
 }
 
+/**
+ * Display-wake recovery boundary: clear every runtime's DOM-latch so panes
+ * parked on the DOM renderer after persistent WebGL context loss retry the GPU
+ * renderer. The Wake unit invokes this when the display wakes.
+ */
+export function resetWebglLatchForWake() {
+  for (const runtime of runtimes.values()) {
+    runtime.resetWebglLatchForWake();
+  }
+}
+
+/**
+ * Display-wake GPU recovery: after real display sleep/wake the WebGL glyph atlas
+ * can be stale/corrupt and a DOM-latched pane may be recoverable. For every
+ * runtime clear the DOM-latch (so hidden panes retry WebGL on reveal); for each
+ * visible pane also rebuild the atlas and repaint now. The shell's display-wake
+ * subscription invokes this (debounced) so it runs once per wake.
+ */
+export function recoverTerminalsForDisplayWake() {
+  for (const runtime of runtimes.values()) {
+    runtime.recoverFromDisplayWake();
+  }
+}
+
 export function captureRuntimeSnapshot(paneId: string): string | null {
   const runtime = runtimes.get(paneId);
   if (!runtime?.term.element) return null;
   const canvases = runtime.term.element.querySelectorAll("canvas");
-  if (canvases.length === 0) return null;
+  if (canvases.length === 0) {
+    // DOM renderer (WebGL latched or never loaded): no canvas layers to
+    // composite, so rasterize the visible buffer text into a frozen-frame PNG
+    // so the snapshot contract still yields a usable <img src> value.
+    return captureTerminalTextSnapshot(runtime.term);
+  }
   try {
     const first = canvases[0] as HTMLCanvasElement;
     const composite = document.createElement("canvas");
@@ -350,6 +386,7 @@ class TerminalPaneRuntime {
   private refCount = 0;
   private hasLoadedWebgl = false;
   private webglAddon: WebglAddon | null = null;
+  private readonly webglLatch = new WebglRenderLatch();
   // Off-screen panes suspend their WebGL context; term.write keeps flowing into
   // xterm's DOM renderer fallback so scrollback stays current while hidden.
   private visible = true;
@@ -661,6 +698,9 @@ class TerminalPaneRuntime {
       return;
     }
 
+    // Release the GPU context explicitly so parking a hidden pane frees the
+    // context deterministically instead of waiting on GC of the disposed addon.
+    releaseXtermWebglContext(this.webglAddon);
     this.webglAddon?.dispose();
     this.webglAddon = null;
     this.hasLoadedWebgl = false;
@@ -911,27 +951,114 @@ class TerminalPaneRuntime {
       return false;
     }
 
+    // Skip construction while DOM-latched (persistent context loss) or during
+    // the cool-down after a failed construction, so a broken GPU cannot
+    // reconstruct a canvas + failed getContext on every reveal/resize tick.
+    if (!this.webglLatch.canConstruct(performance.now())) {
+      return false;
+    }
+
     try {
       const webglAddon = new WebglAddon(true);
       webglAddon.onContextLoss(() => {
-        // Recover instead of dropping to the DOM renderer forever: dispose the
-        // lost context and reschedule a load, which is gated behind layout
-        // dimensions (and visibility), so it only re-adds once the pane is shown.
-        webglAddon.dispose();
-        if (this.webglAddon === webglAddon) {
-          this.webglAddon = null;
-        }
-        this.hasLoadedWebgl = false;
-        this.scheduleLayoutSync();
+        this.handleWebglContextLoss(webglAddon);
       });
       this.term.loadAddon(webglAddon);
       this.webglAddon = webglAddon;
       this.hasLoadedWebgl = true;
+      this.webglLatch.recordConstructionSuccess();
       return true;
     } catch {
-      // Canvas renderer fallback
+      // Canvas renderer fallback; start the cool-down before the next attempt.
+      this.webglLatch.recordConstructionFailure(performance.now());
+      recordWebglBreadcrumb("construct-failed", { paneId: this.paneId });
       return false;
     }
+  }
+
+  private handleWebglContextLoss(addon: WebglAddon) {
+    // A stale addon's late loss event (fired after a newer addon replaced it)
+    // must not mutate renderer state or feed the latch: dispose it and return.
+    if (this.webglAddon !== addon) {
+      try {
+        addon.dispose();
+      } catch {
+        // A lost context can throw on dispose; nothing else to clean up.
+      }
+      return;
+    }
+
+    // Free the GPU context deterministically before dropping the lost addon.
+    releaseXtermWebglContext(addon);
+    try {
+      addon.dispose();
+    } catch {
+      // A lost context can throw on dispose; the DOM renderer takes over regardless.
+    }
+    this.webglAddon = null;
+    this.hasLoadedWebgl = false;
+
+    const { latched } = this.webglLatch.recordContextLoss(performance.now());
+    if (latched) {
+      // A second loss within the window signals a persistent GPU failure: stay
+      // on the DOM renderer for the session (no reschedule) and repaint so the
+      // DOM-rendered buffer is current. A display-wake clears the latch.
+      recordWebglBreadcrumb("latch-dom", { paneId: this.paneId });
+      if (!this.disposed) {
+        try {
+          this.term.refresh(0, Math.max(0, this.term.rows - 1));
+        } catch {
+          // Ignore — the pane may have been disposed in the meantime.
+        }
+      }
+      return;
+    }
+
+    // First transient loss: recover by rescheduling a load, which is gated
+    // behind layout dimensions (and visibility), so it only re-adds once shown.
+    recordWebglBreadcrumb("context-loss-recover", { paneId: this.paneId });
+    this.scheduleLayoutSync();
+  }
+
+  /**
+   * Display-wake boundary hook: clear the DOM latch and construction cool-down
+   * so a pane parked on the DOM renderer after persistent context loss can
+   * retry WebGL once the GPU context pool recovers. The Wake unit calls this.
+   */
+  resetWebglLatchForWake() {
+    if (this.disposed) {
+      return;
+    }
+    this.webglLatch.resetForWake();
+    recordWebglBreadcrumb("wake-reset", { paneId: this.paneId });
+    if (this.visible) {
+      this.scheduleLayoutSync();
+    }
+  }
+
+  /**
+   * Display-wake recovery for this pane. Delegates the visible/hidden decision
+   * to the pure {@link recoverTerminalForWake}: the latch reset (which also
+   * reschedules a WebGL reload when visible) runs for every pane, and a visible
+   * pane additionally drops its glyph atlas and repaints so the first post-wake
+   * frame is clean instead of garbled/stale.
+   */
+  recoverFromDisplayWake() {
+    if (this.disposed) {
+      return;
+    }
+    recoverTerminalForWake({
+      isVisible: () => this.visible,
+      resetWebglLatch: () => this.resetWebglLatchForWake(),
+      clearGlyphAtlas: () => this.webglAddon?.clearTextureAtlas(),
+      refreshViewport: () => {
+        try {
+          this.term.refresh(0, Math.max(0, this.term.rows - 1));
+        } catch {
+          // Pane may be mid-teardown after wake; ignore.
+        }
+      },
+    });
   }
 
   private fitTerminal() {
@@ -1109,6 +1236,12 @@ class TerminalPaneRuntime {
       this.suspendTimer = null;
     }
     this.detach();
+    // Free the GPU context deterministically before term.dispose() tears the
+    // addon down, so a suspend/park/close path releases WebGL immediately.
+    releaseXtermWebglContext(this.webglAddon);
+    this.webglAddon?.dispose();
+    this.webglAddon = null;
+    this.hasLoadedWebgl = false;
     this.dataDisposable.dispose();
     this.bellDisposable.dispose();
     this.unlistenLayoutSync();

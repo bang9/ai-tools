@@ -4,6 +4,8 @@ import { ToastContainer } from "./components/ui/toast";
 import { OverlayContainer } from "./lib/overlay";
 import { initBackendLogPipe } from "./lib/logger";
 import { initUrlOpenPipe } from "./lib/url-open";
+import { initDisplayWakeRecovery } from "./lib/terminal-display-wake";
+import { recoverTerminalsForDisplayWake } from "./lib/terminal-runtime";
 import { usePreventNativeBehaviors } from "./hooks/usePreventNativeBehaviors";
 import { checkForUpdates } from "./lib/updater";
 import { usePreferencesStore } from "./store/preferences";
@@ -33,6 +35,22 @@ function App() {
     let cancelled = false;
     let cleanup: (() => void) | undefined;
     initUrlOpenPipe().then((fn) => {
+      if (cancelled) {
+        fn?.();
+      } else {
+        cleanup = fn;
+      }
+    });
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    initDisplayWakeRecovery(recoverTerminalsForDisplayWake).then((fn) => {
       if (cancelled) {
         fn?.();
       } else {
