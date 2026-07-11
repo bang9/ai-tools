@@ -65,6 +65,7 @@ interface GroveLogPayload {
 type NativeMethod = (...args: unknown[]) => Promise<unknown>;
 
 type NativeAddon = Record<string, NativeMethod> & {
+  installPanicHook(): void;
   createPty(
     ptyId: string,
     paneId: string,
@@ -238,7 +239,10 @@ function isAllowedBrowserUrl(url: string): boolean {
 
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    // file: backs local HTML previews opened from the file viewer.
+    return (
+      parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "file:"
+    );
   } catch {
     return false;
   }
@@ -750,6 +754,9 @@ function registerIpcHandlers() {
 }
 
 app.whenReady().then(() => {
+  // Route grove-core thread panics (PTY reader/flusher) into the app log
+  // surface; without this they die silently on stderr.
+  native.installPanicHook();
   registerIpcHandlers();
   registerOptionalLogForwarding();
   createMainWindow();

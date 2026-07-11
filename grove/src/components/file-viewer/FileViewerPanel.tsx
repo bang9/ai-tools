@@ -6,6 +6,8 @@ import { Spinner } from "../ui/spinner";
 import { openExternal, revealInFinder } from "../../lib/platform";
 import { runCommandSafely } from "../../lib/command";
 import { formatFileSize } from "../../lib/format-size";
+import { useBrowserStore } from "../../store/browser";
+import { useTabStore } from "../../store/tab";
 import { useFileViewerStore, selectFileViewerTab } from "../../store/file-viewer";
 import CodeView from "./CodeView";
 import ImageViewer from "./ImageViewer";
@@ -50,9 +52,17 @@ function FileViewerPanel({ tabId }: FileViewerPanelProps) {
 
   const handleOpenInBrowser = useCallback(() => {
     if (!entry) return;
-    void runCommandSafely(() => openExternal(toFileUrl(joinPath(entry.rootPath, entry.path))), {
-      errorToast: "Failed to open in browser",
-    });
+    const fileUrl = toFileUrl(joinPath(entry.rootPath, entry.path));
+    const tabState = useTabStore.getState();
+    // No tab session to host an internal browser tab — use the default browser.
+    if (tabState.activeWorktree == null) {
+      void runCommandSafely(() => openExternal(fileUrl), {
+        errorToast: "Failed to open in browser",
+      });
+      return;
+    }
+    const browserTabId = tabState.addTab("browser", entry.name);
+    useBrowserStore.getState().navigate(browserTabId, fileUrl);
   }, [entry]);
 
   if (!entry) return null;

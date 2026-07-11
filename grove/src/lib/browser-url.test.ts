@@ -22,8 +22,12 @@ describe("normalizeBrowserUrl", () => {
     expect(normalizeBrowserUrl("http://")).toBeNull();
   });
 
-  it("rejects non-http(s) schemes", () => {
-    expect(normalizeBrowserUrl("file:///etc/passwd")).toBeNull();
+  it("accepts file URLs with a path", () => {
+    expect(normalizeBrowserUrl("file:///Users/me/index.html")).toBe("file:///Users/me/index.html");
+    expect(normalizeBrowserUrl("file://")).toBeNull();
+  });
+
+  it("rejects other non-http(s) schemes", () => {
     expect(normalizeBrowserUrl("javascript://alert(1)")).toBeNull();
   });
 });
@@ -32,6 +36,11 @@ describe("browserTabTitle", () => {
   it("returns host with port", () => {
     expect(browserTabTitle("http://localhost:3000/")).toBe("localhost:3000");
     expect(browserTabTitle("https://example.com/deep/path")).toBe("example.com");
+  });
+
+  it("returns the file name for file URLs", () => {
+    expect(browserTabTitle("file:///Users/me/pages/index.html")).toBe("index.html");
+    expect(browserTabTitle("file:///Users/me/my%20page.html")).toBe("my page.html");
   });
 
   it("falls back to Browser for unparseable input", () => {

@@ -64,10 +64,11 @@ struct BrowserNewWindowPayload {
 }
 
 /// Schemes a page (or its subframes) may navigate to. `data`/`blob` are common
-/// in embedded content; everything else — notably custom app schemes like
-/// `tauri:` — is blocked so untrusted pages can never reach app internals.
+/// in embedded content; `file` backs local HTML previews opened from the file
+/// viewer; everything else — notably custom app schemes like `tauri:` — is
+/// blocked so untrusted pages can never reach app internals.
 fn scheme_allowed(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https" | "about" | "data" | "blob")
+    matches!(url.scheme(), "http" | "https" | "about" | "data" | "blob" | "file")
 }
 
 /// Custom scheme the injected guest right-click menu navigates to in order to
@@ -252,8 +253,8 @@ pub fn browser_create(
     bounds: Bounds,
 ) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|e| format!("Invalid URL: {e}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!("Refusing to load non-http(s) URL: {}", parsed));
+    if !matches!(parsed.scheme(), "http" | "https" | "file") {
+        return Err(format!("Refusing to load non-http(s)/file URL: {}", parsed));
     }
 
     let mut map = state.0.lock().map_err(|e| e.to_string())?;
@@ -351,8 +352,8 @@ pub fn browser_navigate(
     url: String,
 ) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|e| format!("Invalid URL: {e}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!("Refusing to load non-http(s) URL: {}", parsed));
+    if !matches!(parsed.scheme(), "http" | "https" | "file") {
+        return Err(format!("Refusing to load non-http(s)/file URL: {}", parsed));
     }
 
     let map = state.0.lock().map_err(|e| e.to_string())?;
