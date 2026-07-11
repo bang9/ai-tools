@@ -66,6 +66,7 @@ interface BrowserWebviewElement extends HTMLElement {
   canGoForward(): boolean;
   goBack(): void;
   goForward(): void;
+  goToOffset(offset: number): void;
   reload(): void;
   openDevTools(): void;
   findInPage(text: string, options?: { forward?: boolean; findNext?: boolean }): number;
@@ -252,7 +253,17 @@ function isReady(webview: BrowserWebviewElement): boolean {
   return typeof webview.getURL === "function";
 }
 
-function emitNav(tabId: string, webview: BrowserWebviewElement, loadingOverride?: boolean): void {
+function emitNav(
+  tabId: string,
+  webview: BrowserWebviewElement,
+  loadingOverride?: boolean,
+  // Set for `page-title-updated`: pure title metadata. The store must not run
+  // this through its push/replace history classification (see the `titleOnly`
+  // branch in applyNavEvent). Electron's Back already works via native
+  // canGoBack, but this keeps the FE history stack — which renders the new
+  // back/forward dropdown — correct here too.
+  titleOnly?: boolean,
+): void {
   // Guest methods do not exist before `dom-ready`; skip until they do (the
   // dom-ready handler emits the first reliable nav event).
   if (!isReady(webview)) return;
@@ -263,6 +274,7 @@ function emitNav(tabId: string, webview: BrowserWebviewElement, loadingOverride?
     loading: loadingOverride ?? webview.isLoading(),
     canGoBack: webview.canGoBack(),
     canGoForward: webview.canGoForward(),
+    titleOnly,
   };
   for (const sub of registry.navSubs) sub(event);
 }
@@ -300,7 +312,9 @@ function wireWebviewEvents(tabId: string, webview: BrowserWebviewElement): void 
     if (e.isMainFrame === false) return;
     emitNav(tabId, webview);
   });
-  webview.addEventListener("page-title-updated", onNav);
+  // Title-only: never let a title change drive the store's history push/replace
+  // classification (see emitNav's titleOnly param and applyNavEvent).
+  webview.addEventListener("page-title-updated", () => emitNav(tabId, webview, undefined, true));
   webview.addEventListener("did-fail-load", () => emitNav(tabId, webview, false));
 
   webview.addEventListener("page-favicon-updated", (e: WebviewDomEvent) => {
@@ -444,6 +458,13 @@ export function domBrowserGoBack(tabId: string): void {
 export function domBrowserGoForward(tabId: string): void {
   const wv = readyWebview(tabId);
   if (wv && wv.canGoForward()) wv.goForward();
+}
+
+/** Jump `offset` steps within the guest's session history (a multi-step
+ * back/forward from the history dropdown). The resulting `did-navigate` updates
+ * the store URL, same as goBack/goForward. */
+export function domBrowserGoToOffset(tabId: string, offset: number): void {
+  readyWebview(tabId)?.goToOffset(offset);
 }
 
 export function domBrowserReload(tabId: string): void {

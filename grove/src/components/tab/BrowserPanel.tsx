@@ -33,6 +33,7 @@ import {
 import {
   buildSuggestions,
   findInlineCompletion,
+  normalizeHistoryUrl,
   type BrowserHistoryEntry,
 } from "../../lib/browser-history";
 import {
@@ -62,6 +63,7 @@ import {
 import {
   browserBack,
   browserForward,
+  browserJumpHistory,
   browserOpenDevtoolsTab,
   browserReloadTab,
   createBrowserWebview,
@@ -74,6 +76,9 @@ import {
 import { useOverlayPresence } from "../../hooks/useOverlayPresence";
 
 const QUICK_URLS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"];
+
+/** Hold the Back/Forward button this long to open its history dropdown. */
+const HISTORY_LONG_PRESS_MS = 400;
 
 interface BrowserPanelProps {
   tabId: string;
@@ -179,6 +184,15 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const findInputRef = useRef<HTMLInputElement>(null);
   const findDebounceRef = useRef<number | null>(null);
 
+  // Back/Forward history dropdown: long-press or right-click a nav button to
+  // list its back-stack / forward-stack and jump directly to an entry.
+  const [historyMenu, setHistoryMenu] = useState<"back" | "forward" | null>(null);
+  const historyMenuRef = useRef<HTMLDivElement>(null);
+  // Long-press timer, and a flag that swallows the click a long-press triggers
+  // so opening the dropdown never also fires a normal back/forward.
+  const pressTimerRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+
   // `input` is what the <input> DISPLAYS (may include an inline completion or a
   // dropdown preview). `typed` is what the user actually typed — it drives the
   // dropdown filter and the completion base, and is what we restore to.
@@ -232,6 +246,14 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     () => buildSuggestions(history, "", Date.now(), 3).map((entry) => entry.url),
     [history],
   );
+
+  // Frecency-history lookup keyed by normalized URL, so a history-dropdown row
+  // can show the page's favicon + title when we've visited it before.
+  const historyByNormalized = useMemo(() => {
+    const map = new Map<string, BrowserHistoryEntry>();
+    for (const entry of history) map.set(entry.normalizedUrl, entry);
+    return map;
+  }, [history]);
 
   // Address-bar dropdown rows: a leading "search the web" action (when the typed
   // text reads as a query) followed by frecency-ranked history. `url` is what
@@ -415,6 +437,72 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   const handleForward = useCallback(() => {
     browserForward(tabId);
   }, [tabId]);
+
+  const clearPressTimer = useCallback(() => {
+    if (pressTimerRef.current !== null) {
+      window.clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+  }, []);
+
+  // Open a nav button's history dropdown, but only when that direction actually
+  // has entries to show.
+  const openHistoryMenu = useCallback(
+    (dir: "back" | "forward") => {
+      if (!nav) return;
+      if (dir === "back" && nav.index <= 0) return;
+      if (dir === "forward" && nav.index >= nav.history.length - 1) return;
+      setHistoryMenu(dir);
+    },
+    [nav],
+  );
+
+  // Start the long-press timer on pointerdown (left button only). If it fires,
+  // open the dropdown and mark the following click to be swallowed.
+  const startHistoryLongPress = useCallback(
+    (dir: "back" | "forward") => (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      clearPressTimer();
+      pressTimerRef.current = window.setTimeout(() => {
+        pressTimerRef.current = null;
+        suppressClickRef.current = true;
+        openHistoryMenu(dir);
+      }, HISTORY_LONG_PRESS_MS);
+    },
+    [clearPressTimer, openHistoryMenu],
+  );
+
+  // A short press (pointerup before the timer fires) is a normal back/forward;
+  // a long press that already opened the dropdown swallows this click.
+  const handleNavClick = useCallback(
+    (dir: "back" | "forward") => () => {
+      clearPressTimer();
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+      if (dir === "back") handleBack();
+      else handleForward();
+    },
+    [clearPressTimer, handleBack, handleForward],
+  );
+
+  const handleNavContextMenu = useCallback(
+    (dir: "back" | "forward") => (e: React.MouseEvent) => {
+      e.preventDefault();
+      suppressClickRef.current = false;
+      openHistoryMenu(dir);
+    },
+    [openHistoryMenu],
+  );
+
+  const jumpTo = useCallback(
+    (targetIndex: number) => {
+      browserJumpHistory(tabId, targetIndex);
+      setHistoryMenu(null);
+    },
+    [tabId],
+  );
 
   const handleOpenDevtools = useCallback(() => {
     // Frame restoration after the detach sequence is handled natively — the
@@ -639,15 +727,19 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   }
 
   const suggestionsShowing = suggestOpen && rows.length > 0;
+  const historyMenuShowing = historyMenu !== null;
 
   // Tauri punchout: the browser webview sits in FRONT (clickable) by default and
   // is moved BEHIND the transparent main webview only while a DOM overlay (the
-  // address dropdown) is open — otherwise clicks would land on the React layer
-  // instead of the page. Electron uses push-down, so it opts out.
+  // address dropdown or a back/forward history dropdown) is open — otherwise
+  // clicks would land on the React layer instead of the page. Electron uses
+  // normal DOM stacking (toolbar z-index), so it opts out.
   useEffect(() => {
     if (!browserPunchoutOverlay) return;
-    void browserSetBehind(tabId, suggestionsShowing || overlayOpen).catch(() => {});
-  }, [tabId, suggestionsShowing, overlayOpen]);
+    void browserSetBehind(tabId, suggestionsShowing || historyMenuShowing || overlayOpen).catch(
+      () => {},
+    );
+  }, [tabId, suggestionsShowing, historyMenuShowing, overlayOpen]);
 
   // Keep the native webview positioned over the host area whenever it is the
   // active, visible tab. Also runs on remount (worktree switch) so a persisted
@@ -729,6 +821,88 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     };
   }, [tabId]);
 
+  // Dismiss the history dropdown on an outside pointerdown or Escape.
+  useEffect(() => {
+    if (!historyMenu) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (historyMenuRef.current?.contains(e.target as Node)) return;
+      setHistoryMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHistoryMenu(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [historyMenu]);
+
+  // Cancel a pending long-press timer if the panel unmounts mid-press.
+  useEffect(() => clearPressTimer, [clearPressTimer]);
+
+  // Mouse "back" (X1, button 3) / "forward" (X2, button 4) buttons. SCOPE: over
+  // the native/guest webview area the guest captures these and navigates itself
+  // (its did-navigate updates the store), so this handler mainly covers the
+  // app-chrome area. Native app-command interception is out of scope.
+  useEffect(() => {
+    if (!isActive) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 3) {
+        e.preventDefault();
+        browserBack(tabId);
+      } else if (e.button === 4) {
+        e.preventDefault();
+        browserForward(tabId);
+      }
+    };
+    window.addEventListener("mousedown", onMouseDown);
+    return () => window.removeEventListener("mousedown", onMouseDown);
+  }, [isActive, tabId]);
+
+  // History dropdown under a nav button: back-stack (index-1…0, most-recent
+  // first) or forward-stack (index+1…end). Each row shows the frecency
+  // favicon + title when known, else the pretty URL; clicking jumps there.
+  const renderHistoryMenu = (dir: "back" | "forward") => {
+    if (historyMenu !== dir || !nav) return null;
+    const indices: number[] = [];
+    if (dir === "back") {
+      for (let i = nav.index - 1; i >= 0; i--) indices.push(i);
+    } else {
+      for (let i = nav.index + 1; i <= nav.history.length - 1; i++) indices.push(i);
+    }
+    if (indices.length === 0) return null;
+    return (
+      <div
+        ref={historyMenuRef}
+        className={cn(
+          "absolute left-0 top-full z-50 mt-1 min-w-56 max-w-80 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-md",
+        )}
+      >
+        {indices.map((targetIndex) => {
+          const entryUrl = nav.history[targetIndex];
+          const entry = historyByNormalized.get(normalizeHistoryUrl(entryUrl));
+          return (
+            <button
+              key={targetIndex}
+              type="button"
+              onClick={() => jumpTo(targetIndex)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
+              )}
+            >
+              <Favicon src={entry?.faviconUrl} />
+              <span className={cn("min-w-0 flex-1 truncate")}>
+                {entry?.title || prettyUrl(entryUrl)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div className={cn("flex h-full flex-col")}>
       {/* Toolbar. `relative z-20` lifts it (and its address dropdown) above the
@@ -739,24 +913,38 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
           "relative z-20 flex h-9 shrink-0 items-center gap-1 border-b border-border bg-sidebar px-2",
         )}
       >
-        <IconButton
-          onClick={handleBack}
-          disabled={!canGoBack}
-          title="Back"
-          aria-label="Back"
-          className={cn("h-6 w-6")}
-        >
-          <ArrowLeft className={cn("size-3.5")} />
-        </IconButton>
-        <IconButton
-          onClick={handleForward}
-          disabled={!canGoForward}
-          title="Forward"
-          aria-label="Forward"
-          className={cn("h-6 w-6")}
-        >
-          <ArrowRight className={cn("size-3.5")} />
-        </IconButton>
+        <div className={cn("relative")}>
+          <IconButton
+            onClick={handleNavClick("back")}
+            onPointerDown={startHistoryLongPress("back")}
+            onPointerUp={clearPressTimer}
+            onPointerLeave={clearPressTimer}
+            onContextMenu={handleNavContextMenu("back")}
+            disabled={!canGoBack}
+            title="Back"
+            aria-label="Back"
+            className={cn("h-6 w-6")}
+          >
+            <ArrowLeft className={cn("size-3.5")} />
+          </IconButton>
+          {renderHistoryMenu("back")}
+        </div>
+        <div className={cn("relative")}>
+          <IconButton
+            onClick={handleNavClick("forward")}
+            onPointerDown={startHistoryLongPress("forward")}
+            onPointerUp={clearPressTimer}
+            onPointerLeave={clearPressTimer}
+            onContextMenu={handleNavContextMenu("forward")}
+            disabled={!canGoForward}
+            title="Forward"
+            aria-label="Forward"
+            className={cn("h-6 w-6")}
+          >
+            <ArrowRight className={cn("size-3.5")} />
+          </IconButton>
+          {renderHistoryMenu("forward")}
+        </div>
         <IconButton
           onClick={handleReload}
           disabled={!url}

@@ -9,6 +9,7 @@ import {
   browserCreate,
   browserGoBack,
   browserGoForward,
+  browserGoToOffset,
   browserHasNativeHistory,
   browserNavigate,
   browserOpenDevtools,
@@ -113,6 +114,27 @@ export function browserForward(tabId: string): void {
     browserGoForward(tabId).catch(warn);
   } else {
     navigateStack(tabId, 1);
+  }
+}
+
+/**
+ * Jump directly to `targetIndex` in the tab's history stack (a multi-step
+ * back/forward chosen from the history dropdown). Pre-sets the store index
+ * optimistically, then drives the native view: a real session-history offset on
+ * Electron, or an explicit navigation on Tauri (no native offset API there).
+ */
+export function browserJumpHistory(tabId: string, targetIndex: number): void {
+  if (!created.has(tabId)) return;
+  const nav = useBrowserStore.getState().navs[tabId];
+  if (!nav) return;
+  if (targetIndex < 0 || targetIndex > nav.history.length - 1) return;
+  const offset = targetIndex - nav.index;
+  if (offset === 0) return;
+  useBrowserStore.getState().jumpHistory(tabId, targetIndex);
+  if (browserHasNativeHistory) {
+    browserGoToOffset(tabId, offset).catch(warn);
+  } else {
+    browserNavigate(tabId, nav.history[targetIndex]).catch(warn);
   }
 }
 
@@ -226,7 +248,13 @@ export function initBrowserWebviewBridge(): void {
       }
       await onBrowserNav((ev) => {
         useBrowserStore.getState().applyNavEvent(ev);
-        useTabStore.getState().updateTabTitle(ev.tabId, ev.title ?? browserTabTitle(ev.url));
+        // Use the store's MERGED title, not ev.title directly: Tauri's
+        // page_load `Finished` event carries title=null, so reading ev.title
+        // here would reset the chip to the URL right after the page title
+        // arrived (URL → title → URL flicker). applyNavEvent keeps the best
+        // known title on the entry, so read it back.
+        const nav = useBrowserStore.getState().navs[ev.tabId];
+        useTabStore.getState().updateTabTitle(ev.tabId, nav?.title || browserTabTitle(ev.url));
       });
     } catch (err) {
       warn(err);

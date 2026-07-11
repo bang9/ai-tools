@@ -42,6 +42,7 @@ import {
   domBrowserFind,
   domBrowserGoBack,
   domBrowserGoForward,
+  domBrowserGoToOffset,
   domBrowserNavigate,
   domBrowserOpenDevtools,
   domBrowserReload,
@@ -440,6 +441,12 @@ export async function browserGoBack(tabId: string): Promise<void> {
 
 export async function browserGoForward(tabId: string): Promise<void> {
   domBrowserGoForward(tabId);
+}
+
+/** Jump `offset` steps within the guest's native session history (multi-step
+ * back/forward from the history dropdown). */
+export async function browserGoToOffset(tabId: string, offset: number): Promise<void> {
+  domBrowserGoToOffset(tabId, offset);
 }
 
 export async function browserReload(tabId: string): Promise<void> {

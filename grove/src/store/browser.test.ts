@@ -201,6 +201,150 @@ describe("useBrowserStore", () => {
       expect(nav.canGoBack).toBe(true);
       expect(nav.canGoForward).toBe(true);
     });
+
+    describe("titleOnly events are pure metadata (never touch history)", () => {
+      it("a title event arriving BEFORE the load-start does not collapse the back stack", () => {
+        // The exact Tauri race: WKWebView fires on_document_title_changed for the
+        // destination page (a settled loading=false event carrying the new URL)
+        // BEFORE the page-load Started event. Without titleOnly it was misread as
+        // a same-page redirect and REPLACED history[0], collapsing the stack so
+        // canGoBack (derived from the FE index on Tauri) stayed false forever.
+        const store = useBrowserStore.getState();
+        store.navigate("t1", "https://a.example/");
+        store.applyNavEvent(
+          navEvent({
+            tabId: "t1",
+            url: "https://b.example/",
+            title: "B",
+            loading: false,
+            titleOnly: true,
+          }),
+        );
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://b.example/", loading: true }));
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://b.example/", loading: false }));
+        const nav = useBrowserStore.getState().navs.t1;
+        expect(nav.history).toEqual(["https://a.example/", "https://b.example/"]);
+        expect(nav.index).toBe(1);
+        expect(nav.canGoBack).toBeTruthy();
+        expect(nav.title).toBe("B");
+      });
+
+      it("a title event arriving AFTER the commit applies the title without corrupting the stack", () => {
+        const store = useBrowserStore.getState();
+        store.navigate("t1", "https://a.example/");
+        // Link nav to B announces itself with a load-start push, then settles.
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://b.example/", loading: true }));
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://b.example/", loading: false }));
+        // Title resolves after the page committed.
+        store.applyNavEvent(
+          navEvent({ tabId: "t1", url: "https://b.example/", title: "B site", titleOnly: true }),
+        );
+        const nav = useBrowserStore.getState().navs.t1;
+        expect(nav.history).toEqual(["https://a.example/", "https://b.example/"]);
+        expect(nav.index).toBe(1);
+        expect(nav.url).toBe("https://b.example/");
+        expect(nav.title).toBe("B site");
+      });
+
+      it("a title event does not touch url/loading/index", () => {
+        const store = useBrowserStore.getState();
+        store.navigate("t1", "https://a.example/");
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://a.example/", loading: false }));
+        // Title event reports a stale/other URL — must not move the tab there.
+        store.applyNavEvent(
+          navEvent({
+            tabId: "t1",
+            url: "https://elsewhere.example/",
+            title: "Elsewhere",
+            titleOnly: true,
+          }),
+        );
+        const nav = useBrowserStore.getState().navs.t1;
+        expect(nav.url).toBe("https://a.example/");
+        expect(nav.loading).toBe(false);
+        expect(nav.index).toBe(0);
+        expect(nav.history).toEqual(["https://a.example/"]);
+        expect(nav.title).toBe("Elsewhere");
+      });
+
+      it("a GENUINE redirect (not titleOnly) still replaces the current entry", () => {
+        const store = useBrowserStore.getState();
+        store.navigate("t1", "https://redirect-src/");
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://redirect-src/", loading: true }));
+        store.applyNavEvent(navEvent({ tabId: "t1", url: "https://redirected/", loading: false }));
+        const nav = useBrowserStore.getState().navs.t1;
+        expect(nav.history).toEqual(["https://redirected/"]);
+        expect(nav.index).toBe(0);
+        expect(nav.url).toBe("https://redirected/");
+      });
+    });
+  });
+
+  describe("jumpHistory", () => {
+    function threeEntryTab() {
+      const store = useBrowserStore.getState();
+      store.navigate("t1", "http://a/");
+      store.navigate("t1", "http://b/");
+      store.navigate("t1", "http://c/");
+      return store;
+    }
+
+    it("jumps back multiple steps: index, url, and flags update, history intact", () => {
+      const store = threeEntryTab();
+      store.jumpHistory("t1", 0); // from index 2 back to 0
+      const nav = useBrowserStore.getState().navs.t1;
+      expect(nav.index).toBe(0);
+      expect(nav.url).toBe("http://a/");
+      expect(nav.loading).toBe(true);
+      expect(nav.canGoBack).toBe(false);
+      expect(nav.canGoForward).toBe(true);
+      // The stack itself must not change — only our position in it moves.
+      expect(nav.history).toEqual(["http://a/", "http://b/", "http://c/"]);
+    });
+
+    it("jumps forward multiple steps and sets flags for a middle entry", () => {
+      const store = threeEntryTab();
+      store.jumpHistory("t1", 0); // go to the start first
+      store.jumpHistory("t1", 2); // forward two steps to the end
+      let nav = useBrowserStore.getState().navs.t1;
+      expect(nav.index).toBe(2);
+      expect(nav.url).toBe("http://c/");
+      expect(nav.canGoForward).toBe(false);
+      // Middle entry: both directions available.
+      store.jumpHistory("t1", 1);
+      nav = useBrowserStore.getState().navs.t1;
+      expect(nav.index).toBe(1);
+      expect(nav.url).toBe("http://b/");
+      expect(nav.canGoBack).toBe(true);
+      expect(nav.canGoForward).toBe(true);
+    });
+
+    it("is a no-op for an out-of-range or same target index", () => {
+      const store = threeEntryTab();
+      store.jumpHistory("t1", -1);
+      store.jumpHistory("t1", 3);
+      store.jumpHistory("t1", 2); // same as current index
+      const nav = useBrowserStore.getState().navs.t1;
+      expect(nav.index).toBe(2);
+      expect(nav.url).toBe("http://c/");
+      expect(nav.history).toEqual(["http://a/", "http://b/", "http://c/"]);
+    });
+
+    it("is a no-op for an unknown tab", () => {
+      useBrowserStore.getState().jumpHistory("ghost", 0);
+      expect(useBrowserStore.getState().navs.ghost).toBeUndefined();
+    });
+
+    it("a settled nav event after a multi-step jump updates in place (no corruption)", () => {
+      const store = threeEntryTab();
+      store.jumpHistory("t1", 0); // optimistic pre-set to index 0
+      // The native view settles on the target URL — must hit the in-place branch.
+      store.applyNavEvent(navEvent({ tabId: "t1", url: "http://a/", loading: false }));
+      const nav = useBrowserStore.getState().navs.t1;
+      expect(nav.index).toBe(0);
+      expect(nav.url).toBe("http://a/");
+      expect(nav.history).toEqual(["http://a/", "http://b/", "http://c/"]);
+    });
   });
 
   describe("suspendTab", () => {

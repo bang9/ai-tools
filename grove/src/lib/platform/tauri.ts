@@ -393,6 +393,16 @@ export async function browserReload(tabId: string): Promise<void> {
   return platform.invoke("browser_reload", { tabId });
 }
 
+/**
+ * No-op on Tauri: WKWebView exposes no native session-history offset API, so
+ * multi-step jumps go through explicit navigation instead. The caller
+ * (browser-webview.ts) only invokes this when `browserHasNativeHistory` is true
+ * (Electron), so it never actually runs here — the stub exists for parity.
+ */
+export async function browserGoToOffset(_tabId: string, _offset: number): Promise<void> {
+  return Promise.resolve();
+}
+
 export async function browserSetBounds(tabId: string, bounds: BrowserBounds): Promise<void> {
   return platform.invoke("browser_set_bounds", { tabId, bounds });
 }

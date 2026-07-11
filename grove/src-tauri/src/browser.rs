@@ -51,6 +51,12 @@ struct BrowserNavPayload {
     // frontend falls back to its own stack heuristic.
     can_go_back: Option<bool>,
     can_go_forward: Option<bool>,
+    // True for a document-title change: pure title metadata that must NOT drive
+    // the frontend's history push/replace classification. WKWebView reports a
+    // title change as a settled (loading=false) event carrying the current URL;
+    // without this flag the store treats it as a same-page redirect and collapses
+    // the back stack (Tauri's canGoBack derives from the FE index).
+    title_only: bool,
 }
 
 /// Payload for the `browser:new-window` event emitted when a page requests a
@@ -600,6 +606,7 @@ fn emit_nav(
     url: String,
     title: Option<String>,
     loading: bool,
+    title_only: bool,
 ) {
     let _ = app.emit(
         "browser:nav",
@@ -610,6 +617,7 @@ fn emit_nav(
             loading,
             can_go_back: None,
             can_go_forward: None,
+            title_only,
         },
     );
 }
@@ -762,11 +770,14 @@ pub fn browser_create(
                 payload.url().to_string(),
                 None,
                 loading,
+                false,
             );
         })
         .on_document_title_changed(move |webview, title| {
             let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
-            emit_nav(&title_app, &title_tab, url, Some(title), false);
+            // title_only=true: pure title metadata, never a navigation. See
+            // BrowserNavPayload::title_only.
+            emit_nav(&title_app, &title_tab, url, Some(title), false, true);
         })
         // target="_blank" links / window.open: never create a native window —
         // the frontend opens a Grove browser tab instead (browser:new-window).

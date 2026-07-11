@@ -21,6 +21,14 @@ export interface BrowserNavEvent {
   loading: boolean;
   canGoBack: boolean | null;
   canGoForward: boolean | null;
+  /**
+   * True for a document-title-change event: pure title metadata that must never
+   * drive history push/replace or index/url/loading changes. A title change
+   * arrives as a settled (loading=false) event carrying the current URL; without
+   * this flag the store misclassifies it as a same-page redirect and collapses
+   * the back stack (on Tauri canGoBack derives from the FE index).
+   */
+  titleOnly?: boolean;
 }
 
 export interface BrowserNewWindowEvent {

@@ -42,6 +42,13 @@ interface BrowserState {
   history: BrowserHistoryEntry[];
   /** Committed navigation from the URL bar. */
   navigate: (tabId: string, url: string) => void;
+  /**
+   * Jump directly to an arbitrary entry in a tab's history stack (a
+   * multi-step back/forward from the history dropdown). Optimistically pre-sets
+   * the index so the resulting single settled nav event lands on the in-place
+   * branch of applyNavEvent (which only matches history[index∓1]).
+   */
+  jumpHistory: (tabId: string, targetIndex: number) => void;
   /** Apply a navigation event emitted by the native webview. */
   applyNavEvent: (ev: BrowserNavEvent) => void;
   /**
@@ -83,11 +90,68 @@ export const useBrowserStore = create<BrowserState>((set) => ({
       };
     }),
 
+  jumpHistory: (tabId, targetIndex) =>
+    set((state) => {
+      const nav = state.navs[tabId];
+      if (!nav) return {};
+      if (targetIndex < 0 || targetIndex > nav.history.length - 1) return {};
+      if (targetIndex === nav.index) return {};
+      // Optimistically move to the target BEFORE navigation. applyNavEvent only
+      // matches a settled nav URL against history[index∓1] (single-step), so a
+      // multi-step jump must pre-set the index — otherwise the resulting event's
+      // url would not match any adjacent slot and would corrupt the stack. The
+      // history array itself is left untouched (only our position in it moves).
+      return {
+        navs: {
+          ...state.navs,
+          [tabId]: {
+            ...nav,
+            url: nav.history[targetIndex],
+            index: targetIndex,
+            loading: true,
+            canGoBack: targetIndex > 0,
+            canGoForward: targetIndex < nav.history.length - 1,
+          },
+        },
+      };
+    }),
+
   applyNavEvent: (ev) =>
     set((state) => {
       const nav = state.navs[ev.tabId];
       // Never create entries from native events — only update known tabs.
       if (!nav) return {};
+
+      // Title-change events are PURE METADATA: they carry the current URL with
+      // loading=false, so if they flowed into the push/replace classification
+      // below they'd be misread as a same-page redirect and REPLACE the current
+      // history entry — collapsing the back stack. On Tauri canGoBack derives
+      // from the FE index (native emits canGoBack=null), so a collapsed stack
+      // means Back never becomes available. Update ONLY the title here; never
+      // touch url/loading/history/index/canGoBack/canGoForward.
+      if (ev.titleOnly) {
+        let history = state.history;
+        const normalized = normalizeHistoryUrl(ev.url);
+        if (normalized && normalized !== "about:blank") {
+          // Refresh the frecency title without bumping the visit count — a title
+          // update is never a new visit.
+          history = upsertHistory(
+            state.history,
+            ev.url,
+            ev.title ?? nav.title ?? "",
+            Date.now(),
+            false,
+          );
+          if (history !== state.history) saveHistory(history);
+        }
+        return {
+          history,
+          navs: {
+            ...state.navs,
+            [ev.tabId]: { ...nav, title: ev.title ?? nav.title },
+          },
+        };
+      }
 
       let history = nav.history;
       let index = nav.index;
