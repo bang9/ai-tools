@@ -381,8 +381,14 @@ function AppTabBar() {
           "flex items-center gap-1.5 px-2 h-9 shrink-0 min-w-0 border-b border-border bg-sidebar",
         )}
       >
-        {/* Tab strip scrolls on its own when tabs overflow the bar */}
-        <div className={cn("flex h-full min-w-0 items-center gap-1.5 overflow-x-auto")}>
+        {/* Tab strip: takes the full remaining width and scrolls (scrollbar
+            hidden); side padding keeps the hover scale/lift from clipping. */}
+        <div
+          className={cn(
+            "flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-1",
+            "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          )}
+        >
           {tabs.map((tab) => {
             if (tab.type === "terminal") {
               return (
@@ -411,37 +417,37 @@ function AppTabBar() {
               />
             );
           })}
+
+          {/* Add tab dropdown — needs a directory selection (tabs are per-scope) */}
+          {capabilities.hasDirectory && (
+            <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+              <PopoverTrigger asChild>
+                <IconButton title="Add tab" aria-label="Add tab" className={cn("shrink-0")}>
+                  <Plus className={cn("size-3")} />
+                </IconButton>
+              </PopoverTrigger>
+              <PopoverContent className={cn("w-auto min-w-[140px] p-1")}>
+                {addTabOptions.map(({ type, label, icon: Icon }) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => handleAddTab(type, label)}
+                    className={cn(
+                      "flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-xs",
+                      "text-foreground hover:bg-accent hover:text-accent-foreground transition-colors",
+                    )}
+                  >
+                    <Icon className={cn("h-3.5 w-3.5")} />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </PopoverContent>
+            </Popover>
+          )}
         </div>
 
-        {/* Add tab dropdown — needs a directory selection (tabs are per-scope) */}
-        {capabilities.hasDirectory && (
-          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-            <PopoverTrigger asChild>
-              <IconButton title="Add tab" aria-label="Add tab" className={cn("shrink-0")}>
-                <Plus className={cn("size-3")} />
-              </IconButton>
-            </PopoverTrigger>
-            <PopoverContent className={cn("w-auto min-w-[140px] p-1")}>
-              {addTabOptions.map(({ type, label, icon: Icon }) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => handleAddTab(type, label)}
-                  className={cn(
-                    "flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-xs",
-                    "text-foreground hover:bg-accent hover:text-accent-foreground transition-colors",
-                  )}
-                >
-                  <Icon className={cn("h-3.5 w-3.5")} />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-        )}
-
         {/* Workspace actions */}
-        <div className={cn("ml-auto flex items-center gap-1.5 pl-2")}>
+        <div className={cn("flex shrink-0 items-center gap-1.5 pl-2")}>
           <SelectedWorktreePrAction worktreePath={worktreePath} />
         </div>
 
