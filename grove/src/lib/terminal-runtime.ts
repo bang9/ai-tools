@@ -10,6 +10,7 @@ import { clearPtyScrollback, platform, ptyOutputTransport, resizePty, writePty }
 import { useTerminalStore } from "../store/terminal";
 import { isSafeExternalUrl, openUrl } from "./url-open";
 import { PtyInputQueue } from "./terminal-input-queue";
+import { runGuardedWriteCompletionStep } from "./terminal-write-callback-guard";
 import {
   clearPtyOutputHandler,
   routePtyOutput,
@@ -1037,8 +1038,11 @@ class TerminalPaneRuntime {
     }
 
     this.term.write(this.initialScrollback, () => {
-      this.finishInitialHydration();
-      this.flushPendingOutput();
+      // Guard each step independently so a throw cannot escape into xterm's
+      // WriteBuffer and wedge the pane, and so a failed finish step still runs
+      // the flush that keeps output draining.
+      runGuardedWriteCompletionStep("hydration-finish", () => this.finishInitialHydration());
+      runGuardedWriteCompletionStep("hydration-flush", () => this.flushPendingOutput());
     });
   }
 
@@ -1050,7 +1054,9 @@ class TerminalPaneRuntime {
     }
 
     this.term.write(chunk, () => {
-      this.flushPendingOutput();
+      // A throw here would wedge the WriteBuffer permanently; guard it so the
+      // recursion degrades to a stalled drain instead of a frozen pane.
+      runGuardedWriteCompletionStep("pending-output-flush", () => this.flushPendingOutput());
     });
   }
 
