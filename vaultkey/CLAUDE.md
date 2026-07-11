@@ -28,8 +28,21 @@ vaultkey list menulens
 
 Run `vaultkey --help` for the full command list.
 
+## Multiple Vaults
+
+Vaults are named; each is a separate git repo with its own password. Commands operate
+on the default vault unless overridden.
+
+```bash
+vaultkey --vault work init git@github.com:org/work-secrets.git  # add a named vault
+vaultkey --vault work get acme/prod API_KEY                     # one-off override
+vaultkey use work                                               # switch default
+vaultkey vaults                                                 # list (* = default)
+```
+
 ## Notes
 
-- Password input comes from `VAULTKEY_PASSWORD`, `--password`, or interactive prompt.
+- Password priority: `--password` flag → `VAULTKEY_PASSWORD_<VAULT_NAME>` env (e.g. `VAULTKEY_PASSWORD_WORK`) → `VAULTKEY_PASSWORD` env → interactive prompt.
+- Vault selection priority: `--vault` flag → `VAULTKEY_VAULT` env → default set via `use`.
 - Use scope names like `project/env`, for example `menulens/prod`.
 - `set` and `delete` already sync changes; `push` and `pull` are for explicit repository sync.

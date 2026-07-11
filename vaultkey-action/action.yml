@@ -333,8 +333,9 @@ runs:
     - name: Cleanup vault state
       shell: bash
       run: |
-        # Remove vault clone so later steps cannot access other secrets
-        rm -rf ~/.vaultkey/repo ~/.vaultkey/config.json
+        # Remove vault clones and config so later steps cannot access other secrets
+        # (covers both the legacy ~/.vaultkey/repo path and ~/.vaultkey/repos/<name>)
+        rm -rf ~/.vaultkey
         # Remove VAULTKEY_PASSWORD from GITHUB_ENV so later steps cannot decrypt
         # Note: GITHUB_ENV is append-only, but we can overwrite with empty value
         {

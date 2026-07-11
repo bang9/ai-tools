@@ -63,7 +63,12 @@ func TestSaveConfigRejectsSymlinkedConfigDir(t *testing.T) {
 
 	t.Setenv("HOME", homeDir)
 
-	err := SaveConfig(&Config{RepoPath: filepath.Join(homeDir, "repo")})
+	err := SaveConfig(&Config{
+		DefaultVault: DefaultVaultName,
+		Vaults: map[string]VaultEntry{
+			DefaultVaultName: {RepoPath: filepath.Join(homeDir, "repo")},
+		},
+	})
 	if err == nil {
 		t.Fatal("expected symlinked config dir to be rejected")
 	}

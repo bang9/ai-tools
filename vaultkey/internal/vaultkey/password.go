@@ -8,33 +8,43 @@ import (
 	"golang.org/x/term"
 )
 
-func GetPassword(flagValue string) (string, error) {
-	// 1. Environment variable
-	if env := os.Getenv("VAULTKEY_PASSWORD"); env != "" {
-		return env, nil
+// vaultPasswordEnv maps a vault name to its dedicated password env var,
+// e.g. "work" -> VAULTKEY_PASSWORD_WORK, "my-team" -> VAULTKEY_PASSWORD_MY_TEAM.
+func vaultPasswordEnv(vaultName string) string {
+	if vaultName == "" {
+		return ""
 	}
+	sanitized := strings.NewReplacer("-", "_").Replace(strings.ToUpper(vaultName))
+	return "VAULTKEY_PASSWORD_" + sanitized
+}
 
-	// 2. --password flag
+// resolvePassword applies the non-interactive sources in priority order:
+// explicit --password flag, per-vault env, then global env.
+func resolvePassword(flagValue, vaultName string) string {
 	if flagValue != "" {
-		return flagValue, nil
+		return flagValue
 	}
+	if key := vaultPasswordEnv(vaultName); key != "" {
+		if env := os.Getenv(key); env != "" {
+			return env
+		}
+	}
+	return os.Getenv("VAULTKEY_PASSWORD")
+}
 
-	// 3. Interactive prompt
+func GetPassword(flagValue, vaultName string) (string, error) {
+	if pw := resolvePassword(flagValue, vaultName); pw != "" {
+		return pw, nil
+	}
 	return promptPassword("Password: ")
 }
 
-func GetPasswordWithConfirm(flagValue string) (string, error) {
-	// 1. Environment variable
-	if env := os.Getenv("VAULTKEY_PASSWORD"); env != "" {
-		return env, nil
+func GetPasswordWithConfirm(flagValue, vaultName string) (string, error) {
+	if pw := resolvePassword(flagValue, vaultName); pw != "" {
+		return pw, nil
 	}
 
-	// 2. --password flag
-	if flagValue != "" {
-		return flagValue, nil
-	}
-
-	// 3. Interactive prompt with confirmation
+	// Interactive prompt with confirmation
 	pw, err := promptPassword("New password: ")
 	if err != nil {
 		return "", err

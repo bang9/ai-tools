@@ -14,6 +14,7 @@ import (
 var (
 	passwordFlag string
 	ciFlag       bool
+	vaultFlag    string
 
 	// Set via -ldflags at build time
 	version = "dev"
@@ -28,28 +29,62 @@ func main() {
 
 	root.PersistentFlags().StringVar(&passwordFlag, "password", "", "vault password (or use VAULTKEY_PASSWORD env)")
 	root.PersistentFlags().BoolVar(&ciFlag, "ci", false, "CI mode: skip interactive prompts")
+	root.PersistentFlags().StringVar(&vaultFlag, "vault", "", "vault to operate on (or use VAULTKEY_VAULT env; defaults to the vault set via 'vaultkey use')")
 
-	root.AddCommand(initCmd(), setCmd(), getCmd(), listCmd(), deleteCmd(), pushCmd(), pullCmd(), upgradeCmd(), migrateCmd())
+	root.AddCommand(initCmd(), setCmd(), getCmd(), listCmd(), deleteCmd(), pushCmd(), pullCmd(), useCmd(), vaultsCmd(), upgradeCmd(), migrateCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
+// selectedVaultName returns the vault explicitly requested via --vault or
+// VAULTKEY_VAULT, or "" when the config's default vault should be used.
+func selectedVaultName() string {
+	if vaultFlag != "" {
+		return vaultFlag
+	}
+	return os.Getenv("VAULTKEY_VAULT")
+}
+
+// resolveVault loads the config and picks the vault to operate on.
+func resolveVault() (string, vaultkey.VaultEntry, error) {
+	cfg, err := vaultkey.LoadConfig()
+	if err != nil {
+		return "", vaultkey.VaultEntry{}, err
+	}
+	return cfg.Resolve(selectedVaultName())
+}
+
 func initCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init <git-repo-url>",
-		Short: "Clone repo and create a new vault",
+		Short: "Clone repo and create a new vault (name it with --vault, default: \"default\")",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoURL := args[0]
 
+			name := selectedVaultName()
+			if name == "" {
+				name = vaultkey.DefaultVaultName
+			}
+			if err := vaultkey.ValidateVaultName(name); err != nil {
+				return err
+			}
+
+			cfg, err := vaultkey.LoadConfigIfExists()
+			if err != nil {
+				return err
+			}
+			if _, exists := cfg.Vaults[name]; exists {
+				return fmt.Errorf("vault %q already exists (pick another name with --vault, or remove it from %s first)", name, vaultkey.ConfigPath())
+			}
+
 			var pw string
-			var err error
 			if ciFlag {
-				pw, err = vaultkey.GetPassword(passwordFlag)
+				pw, err = vaultkey.GetPassword(passwordFlag, name)
 			} else {
-				pw, err = vaultkey.GetPasswordWithConfirm(passwordFlag)
+				pw, err = vaultkey.GetPasswordWithConfirm(passwordFlag, name)
 			}
 			if err != nil {
 				return err
@@ -60,7 +95,12 @@ func initCmd() *cobra.Command {
 				return fmt.Errorf("checking config dir: %w", err)
 			}
 
-			repoPath := filepath.Join(configDir, "repo")
+			reposDir := vaultkey.ReposDir()
+			if err := vaultkey.EnsurePathNotSymlink(reposDir); err != nil {
+				return fmt.Errorf("checking repos dir: %w", err)
+			}
+
+			repoPath := filepath.Join(reposDir, name)
 			if err := vaultkey.EnsurePathNotSymlink(repoPath); err != nil {
 				return fmt.Errorf("checking repo path: %w", err)
 			}
@@ -93,11 +133,18 @@ func initCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "Created new vault.")
 			}
 
-			if err := vaultkey.SaveConfig(&vaultkey.Config{RepoPath: repoPath}); err != nil {
+			cfg.Vaults[name] = vaultkey.VaultEntry{RepoPath: repoPath}
+			if cfg.DefaultVault == "" {
+				cfg.DefaultVault = name
+			}
+			if err := vaultkey.SaveConfig(cfg); err != nil {
 				return err
 			}
 
-			fmt.Fprintln(os.Stderr, "Initialized successfully.")
+			fmt.Fprintf(os.Stderr, "Initialized vault %q successfully.\n", name)
+			if cfg.DefaultVault != name {
+				fmt.Fprintf(os.Stderr, "Default vault is still %q. Run 'vaultkey use %s' to switch.\n", cfg.DefaultVault, name)
+			}
 			return nil
 		},
 	}
@@ -111,20 +158,20 @@ func setCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			scope, key, value := args[0], args[1], args[2]
 
-			cfg, err := vaultkey.LoadConfig()
+			name, entry, err := resolveVault()
 			if err != nil {
 				return err
 			}
 
-			pw, err := vaultkey.GetPassword(passwordFlag)
+			pw, err := vaultkey.GetPassword(passwordFlag, name)
 			if err != nil {
 				return err
 			}
 
 			// Pull latest before mutation
-			_ = vaultkey.GitPull(cfg.RepoPath)
+			_ = vaultkey.GitPull(entry.RepoPath)
 
-			v, err := vaultkey.LoadVault(cfg.RepoPath, pw)
+			v, err := vaultkey.LoadVault(entry.RepoPath, pw)
 			if err != nil {
 				return err
 			}
@@ -137,9 +184,9 @@ func setCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "Set %s/%s\n", scope, key)
+			fmt.Fprintf(os.Stderr, "Set %s/%s (vault: %s)\n", scope, key, name)
 
-			if err := vaultkey.GitSync(cfg.RepoPath); err != nil {
+			if err := vaultkey.GitSync(entry.RepoPath); err != nil {
 				return fmt.Errorf("sync failed: %w", err)
 			}
 			fmt.Fprintln(os.Stderr, "Synced.")
@@ -178,17 +225,7 @@ func listCmd() *cobra.Command {
 		Short: "List scopes and keys (values are not shown)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := vaultkey.LoadConfig()
-			if err != nil {
-				return err
-			}
-
-			pw, err := vaultkey.GetPassword(passwordFlag)
-			if err != nil {
-				return err
-			}
-
-			v, err := vaultkey.LoadVault(cfg.RepoPath, pw)
+			v, err := openVault()
 			if err != nil {
 				return err
 			}
@@ -220,20 +257,20 @@ func deleteCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			scope, key := args[0], args[1]
 
-			cfg, err := vaultkey.LoadConfig()
+			name, entry, err := resolveVault()
 			if err != nil {
 				return err
 			}
 
-			pw, err := vaultkey.GetPassword(passwordFlag)
+			pw, err := vaultkey.GetPassword(passwordFlag, name)
 			if err != nil {
 				return err
 			}
 
 			// Pull latest before mutation
-			_ = vaultkey.GitPull(cfg.RepoPath)
+			_ = vaultkey.GitPull(entry.RepoPath)
 
-			v, err := vaultkey.LoadVault(cfg.RepoPath, pw)
+			v, err := vaultkey.LoadVault(entry.RepoPath, pw)
 			if err != nil {
 				return err
 			}
@@ -242,9 +279,9 @@ func deleteCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "Deleted %s/%s\n", scope, key)
+			fmt.Fprintf(os.Stderr, "Deleted %s/%s (vault: %s)\n", scope, key, name)
 
-			if err := vaultkey.GitSync(cfg.RepoPath); err != nil {
+			if err := vaultkey.GitSync(entry.RepoPath); err != nil {
 				return fmt.Errorf("sync failed: %w", err)
 			}
 			fmt.Fprintln(os.Stderr, "Synced.")
@@ -259,12 +296,12 @@ func pushCmd() *cobra.Command {
 		Short: "Commit and push vault changes to remote",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := vaultkey.LoadConfig()
+			_, entry, err := resolveVault()
 			if err != nil {
 				return err
 			}
 
-			if err := vaultkey.GitPush(cfg.RepoPath); err != nil {
+			if err := vaultkey.GitPush(entry.RepoPath); err != nil {
 				return err
 			}
 
@@ -280,16 +317,67 @@ func pullCmd() *cobra.Command {
 		Short: "Pull latest vault changes from remote",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			_, entry, err := resolveVault()
+			if err != nil {
+				return err
+			}
+
+			if err := vaultkey.GitPull(entry.RepoPath); err != nil {
+				return err
+			}
+
+			fmt.Fprintln(os.Stderr, "Pulled successfully.")
+			return nil
+		},
+	}
+}
+
+func useCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use <vault-name>",
+		Short: "Set the default vault",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+
 			cfg, err := vaultkey.LoadConfig()
 			if err != nil {
 				return err
 			}
 
-			if err := vaultkey.GitPull(cfg.RepoPath); err != nil {
+			if _, _, err := cfg.Resolve(name); err != nil {
 				return err
 			}
 
-			fmt.Fprintln(os.Stderr, "Pulled successfully.")
+			cfg.DefaultVault = name
+			if err := vaultkey.SaveConfig(cfg); err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stderr, "Default vault set to %q.\n", name)
+			return nil
+		},
+	}
+}
+
+func vaultsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "vaults",
+		Short: "List configured vaults (* marks the default)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := vaultkey.LoadConfig()
+			if err != nil {
+				return err
+			}
+
+			for _, name := range cfg.VaultNames() {
+				marker := " "
+				if name == cfg.DefaultVault {
+					marker = "*"
+				}
+				fmt.Printf("%s %s\t%s\n", marker, name, cfg.Vaults[name].RepoPath)
+			}
 			return nil
 		},
 	}
@@ -316,20 +404,20 @@ func migrateCmd() *cobra.Command {
 		Short: "Migrate vault from v1 (PBKDF2) to v2 (Argon2id + AAD)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := vaultkey.LoadConfig()
+			name, entry, err := resolveVault()
 			if err != nil {
 				return err
 			}
 
-			pw, err := vaultkey.GetPassword(passwordFlag)
+			pw, err := vaultkey.GetPassword(passwordFlag, name)
 			if err != nil {
 				return err
 			}
 
 			// Pull latest before mutation
-			_ = vaultkey.GitPull(cfg.RepoPath)
+			_ = vaultkey.GitPull(entry.RepoPath)
 
-			v, err := vaultkey.LoadVault(cfg.RepoPath, pw)
+			v, err := vaultkey.LoadVault(entry.RepoPath, pw)
 			if err != nil {
 				return err
 			}
@@ -346,7 +434,7 @@ func migrateCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "Migrated %d secret(s) to v2 (Argon2id + AAD).\n", count)
 
-			if err := vaultkey.GitSync(cfg.RepoPath); err != nil {
+			if err := vaultkey.GitSync(entry.RepoPath); err != nil {
 				return fmt.Errorf("sync failed: %w", err)
 			}
 			fmt.Fprintln(os.Stderr, "Synced.")
@@ -356,15 +444,15 @@ func migrateCmd() *cobra.Command {
 }
 
 func openVault() (*vaultkey.Vault, error) {
-	cfg, err := vaultkey.LoadConfig()
+	name, entry, err := resolveVault()
 	if err != nil {
 		return nil, err
 	}
 
-	pw, err := vaultkey.GetPassword(passwordFlag)
+	pw, err := vaultkey.GetPassword(passwordFlag, name)
 	if err != nil {
 		return nil, err
 	}
 
-	return vaultkey.LoadVault(cfg.RepoPath, pw)
+	return vaultkey.LoadVault(entry.RepoPath, pw)
 }

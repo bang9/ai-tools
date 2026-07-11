@@ -47,21 +47,47 @@ vaultkey pull   # pull from remote
 
 | Command | Description |
 |---------|-------------|
-| `init <repo-url>` | Clone repo and create vault |
+| `init <repo-url>` | Clone repo and create vault (name with `--vault`) |
 | `set <scope> <key> <value>` | Store encrypted secret |
 | `get <scope> <key>` | Decrypt and print secret |
 | `list [prefix]` | List scopes/keys (no values) |
 | `delete <scope> <key>` | Remove a secret |
 | `push` | Commit and push changes |
 | `pull` | Pull latest from remote |
+| `use <vault-name>` | Set the default vault |
+| `vaults` | List configured vaults (`*` marks default) |
+
+## Multiple Vaults
+
+Each vault is a separate git repo with its own password. Vaults are named; the first
+`init` creates a vault called `default`.
+
+```bash
+# Add a second vault named "work"
+vaultkey --vault work init git@github.com:your-org/work-secrets.git
+
+# One-off: target a specific vault
+vaultkey --vault work get acme/prod API_KEY
+VAULTKEY_VAULT=work vaultkey get acme/prod API_KEY
+
+# Switch the default vault
+vaultkey use work
+vaultkey vaults
+```
+
+Vault selection priority: `--vault` flag → `VAULTKEY_VAULT` env → default set via `use`.
+
+Pre-multi-vault configs (single `repo_path`) are migrated automatically: the existing
+vault becomes `default` and keeps working unchanged.
 
 ## Password
 
 Password is required for all encrypt/decrypt operations. Provided via (in priority order):
 
-1. `VAULTKEY_PASSWORD` environment variable
-2. `--password` flag
-3. Interactive prompt
+1. `--password` flag
+2. `VAULTKEY_PASSWORD_<VAULT_NAME>` environment variable (uppercased, `-` → `_`, e.g. `VAULTKEY_PASSWORD_WORK`)
+3. `VAULTKEY_PASSWORD` environment variable
+4. Interactive prompt
 
 ## Scope Convention
 
