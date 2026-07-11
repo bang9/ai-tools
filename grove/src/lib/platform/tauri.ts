@@ -354,6 +354,13 @@ export async function reloadAppWindow(): Promise<void> {
 
 // === BROWSER COMMANDS ===
 
+/**
+ * No-op on Tauri: the browser is a NATIVE child webview positioned over a
+ * transparent host "hole" by bounds, not an in-DOM element mounted into `el`.
+ * Only Electron (in-DOM `<webview>`) uses the host container.
+ */
+export function registerBrowserHost(_tabId: string, _el: HTMLElement | null): void {}
+
 export async function browserCreate(
   tabId: string,
   url: string,
@@ -402,6 +409,14 @@ export async function browserSetGrabMode(tabId: string, enabled: boolean): Promi
   return platform.invoke("browser_set_grab_mode", { tabId, enabled });
 }
 
+/**
+ * Move the browser webview behind the transparent main webview (so a DOM
+ * overlay composites over the page) or back in front (so the page is clickable).
+ */
+export async function browserSetBehind(tabId: string, behind: boolean): Promise<void> {
+  return platform.invoke("browser_set_behind", { tabId, behind });
+}
+
 export async function browserDetectBrowsers(): Promise<DetectedBrowser[]> {
   return platform.invoke("detect_installed_browsers");
 }
@@ -416,6 +431,14 @@ export async function browserImportCookies(family: string, host?: string): Promi
  * by the frontend URL stack via explicit navigation.
  */
 export const browserHasNativeHistory = false;
+
+/**
+ * Tauri renders the browser as a NATIVE child webview over a transparent host
+ * "hole" (punchout). It sits in FRONT (clickable) normally and is moved BEHIND
+ * the transparent main webview only while a DOM overlay (address dropdown) is
+ * open, so the overlay composites over the page. See browser_set_behind.
+ */
+export const browserPunchoutOverlay = true;
 
 export function onBrowserNav(handler: (event: BrowserNavEvent) => void): Promise<UnlistenFn> {
   return platform.listen<BrowserNavEvent>("browser:nav", handler);

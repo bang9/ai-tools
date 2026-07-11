@@ -27,6 +27,7 @@
     }
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "grove",
@@ -37,7 +38,8 @@
         "height": 800,
         "minWidth": 800,
         "minHeight": 600,
-        "acceptFirstMouse": true
+        "acceptFirstMouse": true,
+        "transparent": true
       }
     ],
     "security": {

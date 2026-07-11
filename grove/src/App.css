@@ -217,7 +217,8 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: transparent;
     font-family: var(--app-font-sans);
     font-size: 13px;
     line-height: 1.5;

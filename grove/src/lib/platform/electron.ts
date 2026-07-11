@@ -35,6 +35,26 @@ import type {
   PtyOutputTransport,
   UnlistenFn,
 } from "./types";
+import {
+  domBrowserClose,
+  domBrowserCloseAll,
+  domBrowserCreate,
+  domBrowserFind,
+  domBrowserGoBack,
+  domBrowserGoForward,
+  domBrowserNavigate,
+  domBrowserOpenDevtools,
+  domBrowserReload,
+  domBrowserSetVisible,
+  domBrowserStopFind,
+  emitDomBrowserNewWindow,
+  onDomBrowserFavicon,
+  onDomBrowserFind,
+  onDomBrowserFindOpen,
+  onDomBrowserNav,
+  onDomBrowserNewWindow,
+  registerBrowserHostDom,
+} from "../browser-dom-webview";
 
 interface GroveElectronBridge {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -374,54 +394,76 @@ export async function reloadAppWindow(): Promise<void> {
 }
 
 // === BROWSER COMMANDS ===
+//
+// Electron renders browser guests as in-DOM `<webview>` elements (orca-style),
+// NOT the native WebContentsView. Because the guest lives in the document, the
+// address dropdown and menus overlay the page through normal z-index stacking —
+// no punchout, no push-down. All control/events below delegate to the in-DOM
+// manager in lib/browser-dom-webview.ts; see that file for the mechanism and
+// landmines. Cookie import / browser detection stay on IPC (main-process work).
+
+/**
+ * Register (or clear, on null) the React-owned host div a browser tab's
+ * `<webview>` mounts into. Tauri no-ops this (native webview positioned by
+ * bounds); Electron appends the in-DOM guest here.
+ */
+export function registerBrowserHost(tabId: string, el: HTMLElement | null): void {
+  registerBrowserHostDom(tabId, el);
+}
 
 export async function browserCreate(
   tabId: string,
   url: string,
-  bounds: BrowserBounds,
+  _bounds: BrowserBounds,
 ): Promise<void> {
-  return platform.invoke("browser_create", { tabId, url, bounds });
+  // Bounds are irrelevant for an in-DOM guest — it fills its host via CSS.
+  domBrowserCreate(tabId, url);
 }
 
 export async function browserNavigate(tabId: string, url: string): Promise<void> {
-  return platform.invoke("browser_navigate", { tabId, url });
+  domBrowserNavigate(tabId, url);
 }
 
 export async function browserGoBack(tabId: string): Promise<void> {
-  return platform.invoke("browser_go_back", { tabId });
+  domBrowserGoBack(tabId);
 }
 
 export async function browserGoForward(tabId: string): Promise<void> {
-  return platform.invoke("browser_go_forward", { tabId });
+  domBrowserGoForward(tabId);
 }
 
 export async function browserReload(tabId: string): Promise<void> {
-  return platform.invoke("browser_reload", { tabId });
+  domBrowserReload(tabId);
 }
 
-export async function browserSetBounds(tabId: string, bounds: BrowserBounds): Promise<void> {
-  return platform.invoke("browser_set_bounds", { tabId, bounds });
-}
+/** No-op: an in-DOM `<webview>` is positioned by CSS layout, not bounds. */
+export async function browserSetBounds(_tabId: string, _bounds: BrowserBounds): Promise<void> {}
 
 export async function browserSetVisible(tabId: string, visible: boolean): Promise<void> {
-  return platform.invoke("browser_set_visible", { tabId, visible });
+  domBrowserSetVisible(tabId, visible);
 }
 
 export async function browserClose(tabId: string): Promise<void> {
-  return platform.invoke("browser_close", { tabId });
+  domBrowserClose(tabId);
 }
 
 export async function browserCloseAll(): Promise<void> {
-  return platform.invoke("browser_close_all");
+  domBrowserCloseAll();
 }
 
 export async function browserOpenDevtools(tabId: string): Promise<void> {
-  return platform.invoke("browser_open_devtools", { tabId });
+  domBrowserOpenDevtools(tabId);
 }
 
-export async function browserSetGrabMode(tabId: string, enabled: boolean): Promise<void> {
-  return platform.invoke("browser_set_grab_mode", { tabId, enabled });
-}
+/**
+ * No-op on Electron for now — grab mode injects a guest picker script, which an
+ * in-DOM `<webview>` needs a dedicated preload to host. Tauri grab is unaffected.
+ * TODO: wire via a `<webview>` preload + `ipc-message` channel.
+ */
+export async function browserSetGrabMode(_tabId: string, _enabled: boolean): Promise<void> {}
+
+/** Punchout layering — Tauri only. Electron's in-DOM overlay needs no layering. */
+export async function browserSetBehind(_tabId: string, _behind: boolean): Promise<void> {}
 
 export async function browserDetectBrowsers(): Promise<DetectedBrowser[]> {
   return platform.invoke("detect_installed_browsers");
@@ -432,21 +474,40 @@ export async function browserImportCookies(family: string, host?: string): Promi
   return platform.invoke("browser_import_cookies", { family, host });
 }
 
-/** Electron exposes real session history (webContents.navigationHistory). */
+/** The `<webview>` element exposes real session history (canGoBack/goBack). */
 export const browserHasNativeHistory = true;
 
+/**
+ * Electron uses an in-DOM `<webview>`, so DOM chrome overlays the page via
+ * normal stacking — no punchout (Tauri) and no push-down needed.
+ */
+export const browserPunchoutOverlay = false;
+
 export function onBrowserNav(handler: (event: BrowserNavEvent) => void): Promise<UnlistenFn> {
-  return platform.listen<BrowserNavEvent>("browser:nav", handler);
+  return Promise.resolve(onDomBrowserNav(handler));
+}
+
+// One-time pump: target=_blank / window.open is denied+forwarded by the main
+// process (setWindowOpenHandler) as `browser:new-window`; feed it to the DOM bus.
+let newWindowPumpStarted = false;
+function ensureNewWindowPump(): void {
+  if (newWindowPumpStarted) return;
+  newWindowPumpStarted = true;
+  void platform.listen<{ url: string }>("browser:new-window", (payload) => {
+    if (payload?.url) emitDomBrowserNewWindow({ openerTabId: "", url: payload.url });
+  });
 }
 
 export function onBrowserNewWindow(
   handler: (event: BrowserNewWindowEvent) => void,
 ): Promise<UnlistenFn> {
-  return platform.listen<BrowserNewWindowEvent>("browser:new-window", handler);
+  ensureNewWindowPump();
+  return Promise.resolve(onDomBrowserNewWindow(handler));
 }
 
-export function onBrowserGrab(handler: (event: BrowserGrabEvent) => void): Promise<UnlistenFn> {
-  return platform.listen<BrowserGrabEvent>("browser:grab", handler);
+export function onBrowserGrab(_handler: (event: BrowserGrabEvent) => void): Promise<UnlistenFn> {
+  // Electron grab is not wired yet (see browserSetGrabMode); never fires.
+  return Promise.resolve(() => {});
 }
 
 /**
@@ -460,29 +521,33 @@ export async function browserFind(
   forward: boolean,
   findNext: boolean,
 ): Promise<void> {
-  return platform.invoke("browser_find", { tabId, query, forward, findNext });
+  domBrowserFind(tabId, query, forward, findNext);
 }
 
 export async function browserStopFind(tabId: string): Promise<void> {
-  return platform.invoke("browser_stop_find", { tabId });
+  domBrowserStopFind(tabId);
 }
 
 export function onBrowserFind(handler: (event: BrowserFindEvent) => void): Promise<UnlistenFn> {
-  return platform.listen<BrowserFindEvent>("browser:find", handler);
+  return Promise.resolve(onDomBrowserFind(handler));
 }
 
-/** Fired when the user presses Cmd/Ctrl+F over the page; open the find bar. */
+/**
+ * Fired when the user presses Cmd/Ctrl+F over the page; open the find bar.
+ * Not wired for the in-DOM guest yet (needs a `<webview>` preload to catch the
+ * keychord inside the page); the toolbar ⌘F path still works. Never fires today.
+ */
 export function onBrowserFindOpen(
   handler: (event: { tabId: string }) => void,
 ): Promise<UnlistenFn> {
-  return platform.listen<{ tabId: string }>("browser:find-open", handler);
+  return Promise.resolve(onDomBrowserFindOpen(handler));
 }
 
 /** Fired when the guest resolves the page favicon. */
 export function onBrowserFavicon(
   handler: (event: BrowserFaviconEvent) => void,
 ): Promise<UnlistenFn> {
-  return platform.listen<BrowserFaviconEvent>("browser:favicon", handler);
+  return Promise.resolve(onDomBrowserFavicon(handler));
 }
 
 // === ENV SYNC COMMANDS ===

@@ -44,6 +44,8 @@ import {
 import { runCommand } from "../../lib/command";
 import {
   browserFind,
+  browserPunchoutOverlay,
+  browserSetBehind,
   browserSetGrabMode,
   browserStopFind,
   onBrowserFavicon,
@@ -51,6 +53,7 @@ import {
   onBrowserFindOpen,
   onBrowserGrab,
   openExternal,
+  registerBrowserHost,
   writePty,
   type BrowserFaviconEvent,
   type BrowserFindEvent,
@@ -254,6 +257,17 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   useEffect(() => {
     initBrowserWebviewBridge();
   }, []);
+
+  // Register the content host so the Electron in-DOM `<webview>` mounts into it
+  // (no-op on Tauri, whose native webview is positioned by bounds). Runs when the
+  // host first mounts (hasNav) and tears the guest down when the tab unmounts.
+  useEffect(() => {
+    if (!hasNav) return;
+    registerBrowserHost(tabId, hostRef.current);
+    return () => {
+      registerBrowserHost(tabId, null);
+    };
+  }, [tabId, hasNav]);
 
   // Keep the address bar in sync with committed/native navigation — but never
   // clobber an in-progress edit (e.g. a redirect settling while the user is
@@ -626,6 +640,15 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
 
   const suggestionsShowing = suggestOpen && rows.length > 0;
 
+  // Tauri punchout: the browser webview sits in FRONT (clickable) by default and
+  // is moved BEHIND the transparent main webview only while a DOM overlay (the
+  // address dropdown) is open — otherwise clicks would land on the React layer
+  // instead of the page. Electron uses push-down, so it opts out.
+  useEffect(() => {
+    if (!browserPunchoutOverlay) return;
+    void browserSetBehind(tabId, suggestionsShowing || overlayOpen).catch(() => {});
+  }, [tabId, suggestionsShowing, overlayOpen]);
+
   // Keep the native webview positioned over the host area whenever it is the
   // active, visible tab. Also runs on remount (worktree switch) so a persisted
   // native webview snaps back to the right place.
@@ -644,8 +667,11 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       if (rect.width === 0) return; // hidden — skip
       let top = rect.y;
       let height = rect.height;
-      const dd = suggestionsShowing ? suggestRef.current?.getBoundingClientRect() : null;
-      if (dd) {
+      // Tauri (punchout) keeps the browser behind a transparent host, so the
+      // dropdown floats over it — full rect. Electron's WebContentsView can't
+      // punch through, so shrink the webview to reveal the dropdown below it.
+      if (!browserPunchoutOverlay && suggestionsShowing && suggestRef.current) {
+        const dd = suggestRef.current.getBoundingClientRect();
         const offset = Math.max(0, Math.min(dd.bottom - rect.y, rect.height));
         top = rect.y + offset;
         height = rect.height - offset;
@@ -705,10 +731,12 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
 
   return (
     <div className={cn("flex h-full flex-col")}>
-      {/* Toolbar */}
+      {/* Toolbar. `relative z-20` lifts it (and its address dropdown) above the
+          content area so the dropdown overlays Electron's in-DOM <webview>
+          through normal stacking. Harmless on Tauri (transparent punchout hole). */}
       <div
         className={cn(
-          "flex h-9 shrink-0 items-center gap-1 border-b border-border bg-sidebar px-2",
+          "relative z-20 flex h-9 shrink-0 items-center gap-1 border-b border-border bg-sidebar px-2",
         )}
       >
         <IconButton
@@ -971,9 +999,11 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
       {/* Content */}
       <div className={cn("relative min-h-0 flex-1")}>
         {hasNav ? (
-          // Native webview host — the native layer is positioned over this div
-          // via syncBrowserBounds. It renders nothing itself.
-          <div ref={hostRef} className={cn("h-full w-full bg-background")} />
+          // Native webview host. Transparent "hole": the browser webview sits
+          // BEHIND the (transparent) main webview and shows through here, while
+          // DOM overlays render on top. No desktop bleed because the window has
+          // an opaque backing (see install_opaque_window_backing in lib.rs).
+          <div ref={hostRef} className={cn("h-full w-full bg-transparent")} />
         ) : (
           <div
             className={cn(

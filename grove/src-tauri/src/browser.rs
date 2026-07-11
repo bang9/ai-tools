@@ -801,6 +801,97 @@ pub fn browser_create(
     Ok(())
 }
 
+/// Give the main window an OPAQUE backing so the browser "punchout" never
+/// bleeds the desktop. The window is created `transparent: true` (which makes
+/// the main webview composite transparently — required for the punchout hole),
+/// but a transparent window has no backing, so any transparent hole with no
+/// browser behind it (e.g. while switching mission↔project) would reveal the
+/// desktop. Setting the NSWindow opaque with a dark background color puts a
+/// solid layer behind everything: the hole shows the browser when present, or
+/// this color otherwise — never the desktop. macOS only; call once at startup.
+pub fn install_opaque_window_backing(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(win) = app.get_webview_window("main") else {
+            return;
+        };
+        let _ = win.with_webview(|platform_webview| unsafe {
+            use objc2::runtime::AnyObject;
+            use objc2::{class, msg_send};
+
+            let wk = platform_webview.inner() as *mut AnyObject;
+            if wk.is_null() {
+                return;
+            }
+            let ns_window: *mut AnyObject = msg_send![&*wk, window];
+            if ns_window.is_null() {
+                return;
+            }
+            let color: *mut AnyObject = msg_send![
+                class!(NSColor),
+                colorWithSRGBRed: 0.09f64, green: 0.09f64, blue: 0.10f64, alpha: 1.0f64
+            ];
+            let _: () = msg_send![&*ns_window, setBackgroundColor: color];
+            let _: () = msg_send![&*ns_window, setOpaque: true];
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+/// Move a child browser webview to the BACK (`behind = true`) or FRONT
+/// (`behind = false`) of its superview — the macOS half of the "punchout"
+/// overlay.
+///
+/// LANDMINE: the browser webview must sit in FRONT by default, or the page is
+/// unclickable — with the browser behind the transparent main webview, mouse
+/// events land on the React layer (macOS routes input by subview order, not
+/// visual transparency), not the page. So we only move it BEHIND while a DOM
+/// overlay (the address dropdown) is open — you're interacting with the overlay
+/// then, not the page — and move it back to FRONT when the overlay closes. See
+/// `browser_set_behind` + the caller in BrowserPanel.
+fn reorder_browser_webview(webview: &Webview, behind: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = webview.with_webview(move |platform_webview| unsafe {
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+
+            let wk = platform_webview.inner() as *mut AnyObject;
+            if wk.is_null() {
+                return;
+            }
+            let superview: *mut AnyObject = msg_send![&*wk, superview];
+            if superview.is_null() {
+                return;
+            }
+            // NSWindowBelow = -1 (back), NSWindowAbove = 1 (front); relativeTo nil.
+            let ordering: isize = if behind { -1 } else { 1 };
+            let nil: *mut AnyObject = std::ptr::null_mut();
+            let _: () =
+                msg_send![&*superview, addSubview: wk, positioned: ordering, relativeTo: nil];
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (webview, behind);
+}
+
+/// Move a tab's browser webview behind the transparent main webview (so a DOM
+/// overlay composites over the page) or back in front (so the page is
+/// clickable). Silent no-op for an unknown tab.
+#[tauri::command]
+pub fn browser_set_behind(
+    state: State<'_, BrowserState>,
+    tab_id: String,
+    behind: bool,
+) -> Result<(), String> {
+    let map = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(entry) = map.get(&tab_id) {
+        reorder_browser_webview(&entry.webview, behind);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn browser_navigate(
     state: State<'_, BrowserState>,

@@ -310,16 +310,18 @@ function AppTabContent() {
 
   const tabContent = (
     <>
-      {/* Terminal always mounted, hidden when not active tab */}
+      {/* Terminal always mounted, hidden when not active tab. Opaque bg: the
+          window is transparent for the browser punchout, so every non-browser
+          surface must paint its own background or it would reveal the backing. */}
       <div
-        className={cn("absolute inset-0 flex flex-col")}
+        className={cn("absolute inset-0 flex flex-col bg-background")}
         style={{ display: isTerminal ? "flex" : "none" }}
       >
         <TerminalPanel />
       </div>
 
       {isChanges && (
-        <div className={cn("absolute inset-0")}>
+        <div className={cn("absolute inset-0 bg-background")}>
           <ChangesPanel />
         </div>
       )}
@@ -339,7 +341,7 @@ function AppTabContent() {
       {fileTabs.map((tab) => (
         <div
           key={tab.id}
-          className={cn("absolute inset-0")}
+          className={cn("absolute inset-0 bg-background")}
           style={{ display: tab.id === activeTabId ? "block" : "none" }}
         >
           <FileViewerPanel tabId={tab.id} isActive={tab.id === activeTabId} />

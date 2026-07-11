@@ -8,7 +8,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 grove-core = { path = "../grove-core" }
-tauri = { version = "2", features = ["devtools", "unstable"] }
+tauri = { version = "2", features = ["macos-private-api", "devtools", "unstable"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }

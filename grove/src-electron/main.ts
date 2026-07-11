@@ -1,5 +1,14 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, shell, WebContentsView } from "electron";
-import type { MenuItemConstructorOptions } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  ipcMain,
+  Menu,
+  session,
+  shell,
+  WebContentsView,
+} from "electron";
+import type { CookiesSetDetails, MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -14,6 +23,7 @@ const RENDERER_DEV_URL =
   process.env.GROVE_RENDERER_URL ?? process.env.VITE_DEV_SERVER_URL ?? "http://localhost:1420";
 
 const JSON_RESPONSE_COMMANDS = new Set([
+  "detect_installed_browsers",
   "get_terminal_theme",
   "get_app_config",
   "get_grove_preferences",
@@ -258,6 +268,11 @@ interface BrowserTabEntry {
 
 const browserViews = new Map<string, BrowserTabEntry>();
 
+// All browser guests share one persistent partition so imported cookies /
+// logins are scoped to the embedded browser and survive restarts, isolated
+// from the app's own session.
+const BROWSER_PARTITION = "persist:grove-browser";
+
 const BROWSER_COMMANDS = new Set([
   "browser_create",
   "browser_navigate",
@@ -269,7 +284,41 @@ const BROWSER_COMMANDS = new Set([
   "browser_close",
   "browser_close_all",
   "browser_open_devtools",
+  "browser_import_cookies",
 ]);
+
+interface ImportedCookie {
+  host: string;
+  name: string;
+  value: string;
+  path: string;
+  secure: boolean;
+  httpOnly: boolean;
+  expiresUtc: number | null;
+  sameSite: "no_restriction" | "lax" | "strict" | null;
+}
+
+function toElectronCookie(cookie: ImportedCookie): CookiesSetDetails {
+  const cleanHost = cookie.host.replace(/^\./, "");
+  const scheme = cookie.secure ? "https" : "http";
+  const sameSite =
+    cookie.sameSite === "no_restriction" ||
+    cookie.sameSite === "lax" ||
+    cookie.sameSite === "strict"
+      ? cookie.sameSite
+      : "unspecified";
+  return {
+    url: `${scheme}://${cleanHost}${cookie.path || "/"}`,
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.host,
+    path: cookie.path || "/",
+    secure: cookie.secure,
+    httpOnly: cookie.httpOnly,
+    sameSite,
+    ...(cookie.expiresUtc ? { expirationDate: cookie.expiresUtc } : {}),
+  };
+}
 
 function sendBrowserNav(
   win: BrowserWindow,
@@ -466,6 +515,27 @@ async function handleBrowserCommand(
     return;
   }
 
+  if (command === "browser_import_cookies") {
+    // Decrypt the source browser's cookies in grove-core, then write them into
+    // the shared browser partition so the user is logged in inside Grove.
+    const family = requireStringArg(args, "family");
+    const host = typeof args.host === "string" ? args.host : undefined;
+    const json = (await native.readBrowserCookies(family, host)) as string;
+    const cookies = JSON.parse(json) as ImportedCookie[];
+    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    let imported = 0;
+    for (const cookie of cookies) {
+      try {
+        await browserSession.cookies.set(toElectronCookie(cookie));
+        imported += 1;
+      } catch {
+        // Skip individual cookies Electron rejects (e.g. malformed domains);
+        // one bad cookie must not abort the whole import.
+      }
+    }
+    return imported;
+  }
+
   const tabId = requireStringArg(args, "tabId");
 
   if (command === "browser_create") {
@@ -486,6 +556,7 @@ async function handleBrowserCommand(
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        partition: BROWSER_PARTITION,
       },
     });
 
@@ -623,6 +694,23 @@ function broadcast(channel: string, payload: unknown) {
   }
 }
 
+function registerBrowserGuestWindowOpenPolicy() {
+  // Electron 33 removed the `<webview>` `new-window` DOM event, so target=_blank
+  // / window.open on an in-DOM browser guest is caught here: deny the native
+  // popup and forward the URL to the renderer, which opens a Grove browser tab.
+  app.on("web-contents-created", (_event, contents) => {
+    if (contents.getType() !== "webview") {
+      return;
+    }
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isAllowedBrowserUrl(url) && url !== "about:blank") {
+        broadcast("browser:new-window", { url });
+      }
+      return { action: "deny" };
+    });
+  });
+}
+
 function registerOptionalLogForwarding() {
   const candidateNames = ["setLogListener", "registerLogListener", "onLog"] as const;
 
@@ -689,8 +777,16 @@ function createMainWindow() {
     acceptFirstMouse: true,
     webPreferences: {
       preload: resolvePreloadPath(),
-      nodeIntegration: false,
-      contextIsolation: true,
+      // Match orca's proven browser-host config exactly. `sandbox: true`
+      // (contextIsolation + nodeIntegration:false are the implied defaults) is
+      // required for the in-DOM <webview> guest to initialize/attach; a window
+      // configured with only contextIsolation left the <webview> element inert
+      // (never upgraded — no guest, dom-ready never fired).
+      sandbox: true,
+      // Browser tabs render via an in-DOM <webview> element (orca-style), so
+      // the address dropdown and menus overlay the page naturally — unlike a
+      // WebContentsView, which is a native layer painted over the DOM.
+      webviewTag: true,
     },
   });
 
@@ -764,6 +860,7 @@ app.whenReady().then(() => {
   native.installPanicHook();
   registerIpcHandlers();
   registerOptionalLogForwarding();
+  registerBrowserGuestWindowOpenPolicy();
   createMainWindow();
 
   app.on("activate", () => {

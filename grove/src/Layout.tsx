@@ -59,7 +59,7 @@ function Layout() {
   if (!loaded) return null;
 
   return (
-    <div className={cn("flex flex-col h-full w-full bg-background")}>
+    <div className={cn("flex flex-col h-full w-full")}>
       <TitleBar />
       <ResizablePanelGroup
         className={cn("flex-1 min-h-0")}

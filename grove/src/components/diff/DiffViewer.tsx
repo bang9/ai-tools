@@ -89,7 +89,7 @@ export default function DiffViewer({ diffs, isStaged, isCommitView, commitHash }
 
   if (diffs.length === 0) {
     return (
-      <div className={cn("flex items-center justify-center h-full")}>
+      <div className={cn("flex items-center justify-center h-full bg-background")}>
         <span className={cn("text-sm text-muted-foreground")}>Select files to view diff</span>
       </div>
     );

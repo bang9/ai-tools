@@ -754,6 +754,7 @@ pub fn run() {
             browser::browser_close,
             browser::browser_close_all,
             browser::browser_open_devtools,
+            browser::browser_set_behind,
             browser::detect_installed_browsers,
             browser::browser_import_cookies,
             // Dev Permissions
@@ -775,6 +776,9 @@ pub fn run() {
                 );
             }
             eventbus::init(app.handle());
+            // Opaque backing for the transparent (punchout) window so the
+            // browser hole never bleeds the desktop.
+            browser::install_opaque_window_backing(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
