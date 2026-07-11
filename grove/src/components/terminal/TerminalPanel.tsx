@@ -19,7 +19,6 @@ import {
   buildTerminalSnapshotRequest,
   collectSessionPanes,
 } from "../../lib/terminal-session";
-import TerminalTabBar from "./TerminalTabBar";
 import {
   getTerminalPaneLaunchCwd,
   subscribeTerminalPaneActivity,
@@ -78,22 +77,16 @@ const TerminalSessionView = memo(function TerminalSessionView({
   }
 
   return (
-    <div
-      className={cn("absolute inset-0 flex-col")}
-      style={{ display: isActive ? "flex" : "none" }}
-    >
-      <TerminalTabBar worktreePath={worktreePath} session={session} />
-      <div className={cn("relative flex-1 overflow-hidden")}>
-        {session.tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={cn("absolute inset-0")}
-            style={{ display: tab.id === session.activeTabId ? "block" : "none" }}
-          >
-            <SplitContainer node={tab.node} worktreePath={worktreePath} tabId={tab.id} />
-          </div>
-        ))}
-      </div>
+    <div className={cn("absolute inset-0")} style={{ display: isActive ? "block" : "none" }}>
+      {session.tabs.map((tab) => (
+        <div
+          key={tab.id}
+          className={cn("absolute inset-0")}
+          style={{ display: tab.id === session.activeTabId ? "block" : "none" }}
+        >
+          <SplitContainer node={tab.node} worktreePath={worktreePath} tabId={tab.id} />
+        </div>
+      ))}
     </div>
   );
 });

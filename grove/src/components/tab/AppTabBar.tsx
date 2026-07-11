@@ -1,5 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
-import { GitPullRequest, Globe, Loader2, Plus, Settings, X } from "lucide-react";
+import {
+  FileDiff,
+  GitPullRequest,
+  Globe,
+  Loader2,
+  Plus,
+  Settings,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import { cn } from "../../lib/cn";
 import { IconButton } from "../ui/button";
 import { useTabStore, selectActiveTabIdForWorktree, selectTabsForWorktree } from "../../store/tab";
@@ -7,18 +16,129 @@ import { useResolvedSidebarSelection } from "../../hooks/useResolvedSidebarSelec
 import { usePreferencesUiStore } from "../../store/preferences-ui";
 import { useMissionStore } from "../../store/mission";
 import { useProjectStore } from "../../store/project";
-import type { AppTabType } from "../../types";
+import { useTerminalStore, type AiSession } from "../../store/terminal";
+import type { AppTabType, TerminalTab } from "../../types";
 import { useWorktreePrUrl } from "../sidebar/worktree-pr";
 import { runCommand } from "../../lib/command";
 import { createWorktreePr, openExternal } from "../../lib/platform";
+import { collectTerminalPanes } from "../../lib/terminal-session";
+import { addTerminalTab, closeTerminalTab } from "../../lib/terminal-tab-commands";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import PreferencesModal from "../preferences/PreferencesModal";
 
 const ADD_TAB_OPTIONS: {
-  type: Exclude<AppTabType, "terminal" | "changes">;
+  type: Exclude<AppTabType, "file">;
   label: string;
   icon: typeof Globe;
-}[] = [{ type: "browser", label: "Browser", icon: Globe }];
+}[] = [
+  { type: "browser", label: "Browser", icon: Globe },
+  { type: "terminal", label: "Terminal", icon: TerminalSquare },
+  { type: "changes", label: "Changes", icon: FileDiff },
+];
+
+const APP_TAB_CHIP_CLASS = cn(
+  "group flex items-center gap-1.5 h-6 px-2 rounded-md shrink-0 text-xs font-medium",
+  "backdrop-blur-sm border border-white/10 shadow-sm transition-all duration-200 ease-out",
+);
+
+function appTabChipStateClass(isActive: boolean) {
+  return {
+    "bg-white/15 text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)] -translate-y-0.5 scale-105":
+      isActive,
+    "bg-white/30 text-muted-foreground border-white/45 shadow-[0_1px_6px_rgba(0,0,0,0.3)] translate-y-0 scale-100 hover:-translate-y-0.5 hover:scale-105 hover:bg-white/35 hover:text-foreground hover:shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)]":
+      !isActive,
+  };
+}
+
+function terminalTabNeedsAttention(
+  tab: TerminalTab,
+  bellPtyIds: ReadonlySet<string>,
+  aiSessions: Record<string, AiSession>,
+): boolean {
+  return collectTerminalPanes(tab.node).some(
+    ({ ptyId }) => !!ptyId && (bellPtyIds.has(ptyId) || aiSessions[ptyId]?.status === "attention"),
+  );
+}
+
+/**
+ * The pinned Terminal slot in the app tab bar expands into one chip per
+ * terminal tab of the current worktree's terminal session.
+ */
+function TerminalTabGroup({
+  terminalPath,
+  isTerminalContentActive,
+  onActivateTerminal,
+}: {
+  terminalPath: string | null;
+  isTerminalContentActive: boolean;
+  onActivateTerminal: () => void;
+}) {
+  const session = useTerminalStore((s) =>
+    terminalPath ? (s.sessions[terminalPath] ?? null) : null,
+  );
+  const bellPtyIds = useTerminalStore((s) => s.bellPtyIds);
+  const aiSessions = useTerminalStore((s) => s.aiSessions);
+  const setActiveTerminalTab = useTerminalStore((s) => s.setActiveTab);
+
+  if (!session || session.tabs.length === 0) {
+    return (
+      <button
+        type="button"
+        onClick={onActivateTerminal}
+        className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isTerminalContentActive))}
+      >
+        <span className={cn("max-w-40 truncate")}>Terminal</span>
+      </button>
+    );
+  }
+
+  return (
+    <>
+      {session.tabs.map((tab, index) => {
+        const isActiveTerminalTab = tab.id === session.activeTabId;
+        const isActive = isTerminalContentActive && isActiveTerminalTab;
+        const needsAttention = !isActive && terminalTabNeedsAttention(tab, bellPtyIds, aiSessions);
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => {
+              if (terminalPath) {
+                setActiveTerminalTab(terminalPath, tab.id);
+              }
+              onActivateTerminal();
+            }}
+            className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
+          >
+            <span className={cn("max-w-40 truncate")}>
+              {index === 0 ? "Terminal" : `Terminal ${index + 1}`}
+            </span>
+            {needsAttention && <span className={cn("size-1.5 shrink-0 rounded-full bg-red-500")} />}
+            {session.tabs.length > 1 && (
+              <span
+                role="button"
+                tabIndex={-1}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (terminalPath) {
+                    closeTerminalTab(terminalPath, tab.id).catch(() => {});
+                  }
+                }}
+                title="Close terminal tab"
+                className={cn(
+                  "shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-muted",
+                  { "opacity-100": isActive },
+                )}
+              >
+                <X className={cn("size-2.5")} />
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </>
+  );
+}
 
 function SelectedWorktreePrAction({ worktreePath }: { worktreePath: string | null }) {
   const projects = useProjectStore((state) => state.projects);
@@ -170,11 +290,18 @@ function AppTabBar() {
   const setPreferencesTab = usePreferencesUiStore((state) => state.setActiveTab);
 
   const handleAddTab = useCallback(
-    (type: Exclude<AppTabType, "terminal">, label: string) => {
-      addTab(type, label);
+    (type: Exclude<AppTabType, "file">, label: string) => {
+      if (type === "terminal") {
+        if (terminalPath) {
+          addTerminalTab(terminalPath).catch(() => {});
+          setActiveTab("terminal");
+        }
+      } else {
+        addTab(type, label);
+      }
       setMenuOpen(false);
     },
-    [addTab],
+    [addTab, setActiveTab, terminalPath],
   );
 
   return (
@@ -185,22 +312,23 @@ function AppTabBar() {
         )}
       >
         {tabs.map((tab) => {
+          if (tab.id === "terminal") {
+            return (
+              <TerminalTabGroup
+                key="terminal"
+                terminalPath={terminalPath}
+                isTerminalContentActive={activeTabId === "terminal"}
+                onActivateTerminal={() => setActiveTab("terminal")}
+              />
+            );
+          }
           const isActive = tab.id === activeTabId;
           return (
             <button
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                "group flex items-center gap-1.5 h-6 px-2 rounded-md shrink-0 text-xs font-medium",
-                "backdrop-blur-sm border border-white/10 shadow-sm transition-all duration-200 ease-out",
-                {
-                  "bg-white/15 text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)] -translate-y-0.5 scale-105":
-                    isActive,
-                  "bg-white/30 text-muted-foreground border-white/45 shadow-[0_1px_6px_rgba(0,0,0,0.3)] translate-y-0 scale-100 hover:-translate-y-0.5 hover:scale-105 hover:bg-white/35 hover:text-foreground hover:shadow-[0_2px_8px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.15)]":
-                    !isActive,
-                },
-              )}
+              className={cn(APP_TAB_CHIP_CLASS, appTabChipStateClass(isActive))}
             >
               <span className={cn("max-w-40 truncate")}>{tab.title}</span>
               {tab.closable && (

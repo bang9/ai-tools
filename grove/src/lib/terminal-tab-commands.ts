@@ -4,6 +4,9 @@ import { useTerminalStore } from "../store/terminal";
 import { collectTerminalPanes } from "./terminal-session";
 
 export async function addTerminalTab(worktreePath: string): Promise<void> {
+  // Tabs attach to an existing session; without one the pty would leak
+  // because the store's addTab is a no-op.
+  if (!useTerminalStore.getState().sessions[worktreePath]) return;
   const newPaneId = crypto.randomUUID();
   const newPtyId = crypto.randomUUID();
   const created = await runCommandSafely(
