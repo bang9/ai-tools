@@ -1,0 +1,11 @@
+{
+  "name": "sgr-styling",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "G1sxbUJPTEQbWzBtIBtbM21JVEFMSUMbWzBtIBtbNG1VTkRFUkxJTkUbWzBtDQobWzE7Mzs0bUFMTC1USFJFRRtbMG0gbm9ybWFsDQobWzM4OzU7MTk2bTI1Ni1yZWQbWzBtIBtbNDg7NTsyMW0yNTYtYmctYmx1ZRtbMG0NChtbMzg7MjsyNTU7MTI4OzBtdHJ1ZWNvbG9yLW9yYW5nZRtbMG0gG1s0ODsyOzA7NjQ7MTI4bXRjLWJnG1swbQ0KG1s3bVJFVkVSU0UbWzBtIBtbOW1TVFJJS0UbWzBtIHRhaWw=",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKG1sxbUJPTEQbW20gG1szbUlUQUxJQxtbbSAbWzRtVU5ERVJMSU5FDQobWzE7M21BTEwtVEhSRUUbW20gbm9ybWFsDQobWzM4OzU7MTk2bTI1Ni1yZWQbW20gG1s0ODs1OzIxbTI1Ni1iZy1ibHVlDQobWzM4OzI7MjU1OzEyODswOzQ5bXRydWVjb2xvci1vcmFuZ2UbW20gG1s0ODsyOzA7NjQ7MTI4bXRjLWJnDQobWzQ5OzdtUkVWRVJTRRtbbSBTVFJJS0UgdGFpbA==",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 227
+}

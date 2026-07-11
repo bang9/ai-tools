@@ -1,0 +1,11 @@
+{
+  "name": "scroll-region",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "G1sxOzFIdG9wIGxpbmUgb3V0c2lkZSByZWdpb24NChtbMzs4chtbMzsxSHJlZ2lvbiBBDQpyZWdpb24gQg0KcmVnaW9uIEMNCnJlZ2lvbiBEDQpyZWdpb24gRRtbODsxSAoKCnNjcm9sbGVkIGluc2lkZSByZWdpb24bWzEwOzFIYm90dG9tIGxpbmUgb3V0c2lkZSByZWdpb24=",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKdG9wIGxpbmUgb3V0c2lkZSByZWdpb24bWzM7MUhyZWdpb24gRA0KcmVnaW9uIEUbWzg7MUhzY3JvbGxlZCBpbnNpZGUgcmVnaW9uG1sxMDsxSGJvdHRvbSBsaW5lIG91dHNpZGUgcmVnaW9uG1szOzhyG1sxMDsyN0g=",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 155
+}

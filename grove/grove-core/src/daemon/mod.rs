@@ -27,6 +27,12 @@ pub mod client;
 #[cfg(unix)]
 pub mod supervisor;
 
+/// Process-global daemon client slot (design P9 cutover seam). Unix-only because
+/// [`client::ClientHandle`] is; a non-unix `ack_cold_restore` no-op stub below
+/// keeps the public entry point resolvable on every target.
+#[cfg(unix)]
+mod global;
+
 pub use framing::{
     seq_is_monotonic, ExitStatus, FrameError, SeqTracker, StreamDecoder, StreamFrame,
     StreamFrameKind, MAX_SESSION_ID_BYTES, MAX_STREAM_FRAME_PAYLOAD, STREAM_FRAME_HEADER_BYTES,
@@ -44,8 +50,17 @@ pub use protocol::{
 pub use client::{
     BridgeError, ClientError, ClientHandle, ColdRestoreCache, ColdRestorePayload, CreateOrAttach,
     CreateOrAttachResult, DaemonClient, DaemonClientOptions, SessionInfo, StreamSubscriber,
-    DEFAULT_REQUEST_TIMEOUT,
+    WarmReattach, DEFAULT_REQUEST_TIMEOUT,
 };
+
+#[cfg(unix)]
+pub use global::{ack_cold_restore, set_global_client};
+
+/// Non-unix stub for the P9 cold-restore ack entry point. The daemon client is
+/// unix-only, so off-unix there is never a global client to forward to — this
+/// keeps `daemon::ack_cold_restore` resolvable for callers that stay portable.
+#[cfg(not(unix))]
+pub fn ack_cold_restore(_session_id: &str) {}
 
 #[cfg(unix)]
 pub use supervisor::{

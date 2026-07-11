@@ -92,7 +92,15 @@ export type CreatePtySessionState = "attached" | "created";
 export interface CreatePtyInitialHydration {
   text: string;
   truncated: boolean;
-  source: "tmuxCapture";
+  source: "tmuxCapture" | "daemonSnapshot";
+  // Daemon-snapshot reattach metadata; present only when source ===
+  // "daemonSnapshot" (grove-core CreatePtyInitialHydration).
+  snapshotCols?: number | null;
+  snapshotRows?: number | null;
+  pendingEscapeTailAnsi?: string | null;
+  kittyKeyboardFlags?: number | null;
+  isAlternateScreen?: boolean | null;
+  isColdRestore?: boolean | null;
 }
 
 export interface CreatePtyResult {
@@ -542,6 +550,12 @@ export async function appliedPtySize(ptyId: string): Promise<AppliedPtySize | nu
 
 export async function clearPtyScrollback(ptyId: string): Promise<void> {
   return platform.invoke("clear_pty_scrollback", { ptyId });
+}
+
+// Acknowledge a superseded daemon cold-restore payload (design P6/P16). No-ops
+// until the P9 cutover installs the global daemon client.
+export async function ackColdRestore(ptyId: string): Promise<void> {
+  return platform.invoke("ack_cold_restore", { id: ptyId });
 }
 
 export async function closePty(ptyId: string): Promise<void> {

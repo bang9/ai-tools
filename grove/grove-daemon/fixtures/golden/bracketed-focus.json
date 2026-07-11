@@ -1,0 +1,11 @@
+{
+  "name": "bracketed-focus",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "cHJvbXB0PiAbWz8yMDA0aBtbPzEwMDRo",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKcHJvbXB0PiAbWz8yMDA0aBtbPzEwMDRo",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 24
+}

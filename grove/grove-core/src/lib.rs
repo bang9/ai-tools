@@ -185,6 +185,11 @@ pub enum CreatePtySessionState {
 #[serde(rename_all = "camelCase")]
 pub enum CreatePtyInitialHydrationSource {
     TmuxCapture,
+    /// A warm/cold reattach payload served by the PTY daemon (design S15/S16).
+    /// The renderer replays it with the clear+reset+kitty+tail order that the
+    /// tmux capture path never runs; the extra fields below are populated only
+    /// for this variant.
+    DaemonSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -193,6 +198,21 @@ pub struct CreatePtyInitialHydration {
     pub text: String,
     pub truncated: bool,
     pub source: CreatePtyInitialHydrationSource,
+    // Daemon-snapshot reattach metadata (design S15). Optional + serde-default so
+    // the tmux capture path and any already-persisted shape deserialize
+    // unchanged; only DaemonSnapshot populates them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_cols: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_rows: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_escape_tail_ansi: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kitty_keyboard_flags: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_alternate_screen: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_cold_restore: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -368,4 +388,62 @@ pub struct FileDiff {
 pub struct BehindInfo {
     pub behind: u32,
     pub default_branch: String,
+}
+
+#[cfg(test)]
+mod create_pty_hydration_serde_tests {
+    use super::*;
+
+    // A pre-daemon (tmux) reply — no snapshot fields — must still deserialize:
+    // the new fields default to None so already-in-flight/persisted shapes load.
+    #[test]
+    fn deserializes_old_tmux_shape_with_defaults() {
+        let json = r#"{"text":"hello","truncated":false,"source":"tmuxCapture"}"#;
+        let hydration: CreatePtyInitialHydration = serde_json::from_str(json).unwrap();
+        assert_eq!(hydration.text, "hello");
+        assert_eq!(hydration.source, CreatePtyInitialHydrationSource::TmuxCapture);
+        assert_eq!(hydration.snapshot_cols, None);
+        assert_eq!(hydration.snapshot_rows, None);
+        assert_eq!(hydration.pending_escape_tail_ansi, None);
+        assert_eq!(hydration.kitty_keyboard_flags, None);
+        assert_eq!(hydration.is_alternate_screen, None);
+        assert_eq!(hydration.is_cold_restore, None);
+    }
+
+    // The tmux reply must serialize byte-identically to before: every new field
+    // is None and skip_serializing_if omits it, so no key is added.
+    #[test]
+    fn serializes_tmux_shape_without_new_keys() {
+        let hydration = CreatePtyInitialHydration {
+            text: "hi".into(),
+            truncated: true,
+            source: CreatePtyInitialHydrationSource::TmuxCapture,
+            snapshot_cols: None,
+            snapshot_rows: None,
+            pending_escape_tail_ansi: None,
+            kitty_keyboard_flags: None,
+            is_alternate_screen: None,
+            is_cold_restore: None,
+        };
+        let json = serde_json::to_string(&hydration).unwrap();
+        assert_eq!(json, r#"{"text":"hi","truncated":true,"source":"tmuxCapture"}"#);
+    }
+
+    // The daemon snapshot reply round-trips with camelCase keys and the new
+    // "daemonSnapshot" source discriminant.
+    #[test]
+    fn round_trips_daemon_snapshot_shape() {
+        let json = r#"{"text":"buf","truncated":false,"source":"daemonSnapshot","snapshotCols":120,"snapshotRows":40,"pendingEscapeTailAnsi":"partial-tail","kittyKeyboardFlags":5,"isAlternateScreen":true,"isColdRestore":true}"#;
+        let hydration: CreatePtyInitialHydration = serde_json::from_str(json).unwrap();
+        assert_eq!(hydration.source, CreatePtyInitialHydrationSource::DaemonSnapshot);
+        assert_eq!(hydration.snapshot_cols, Some(120));
+        assert_eq!(hydration.snapshot_rows, Some(40));
+        assert_eq!(hydration.pending_escape_tail_ansi.as_deref(), Some("partial-tail"));
+        assert_eq!(hydration.kitty_keyboard_flags, Some(5));
+        assert_eq!(hydration.is_alternate_screen, Some(true));
+        assert_eq!(hydration.is_cold_restore, Some(true));
+        let reserialized = serde_json::to_string(&hydration).unwrap();
+        let reparsed: CreatePtyInitialHydration = serde_json::from_str(&reserialized).unwrap();
+        assert_eq!(reparsed, hydration);
+    }
 }

@@ -2225,6 +2225,14 @@ fn create_tmux_initial_hydration(capture: &TmuxCapturedContent) -> CreatePtyInit
         text: String::from_utf8_lossy(&capture.bytes).into_owned(),
         truncated: capture.truncated,
         source: CreatePtyInitialHydrationSource::TmuxCapture,
+        // Daemon-snapshot-only fields stay None here so the tmux capture reply
+        // serializes byte-identically to before (skip_serializing_if omits them).
+        snapshot_cols: None,
+        snapshot_rows: None,
+        pending_escape_tail_ansi: None,
+        kitty_keyboard_flags: None,
+        is_alternate_screen: None,
+        is_cold_restore: None,
     }
 }
 

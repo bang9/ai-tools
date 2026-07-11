@@ -1,0 +1,11 @@
+{
+  "name": "alt-enter-vim-like",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "bm9ybWFsIHNoZWxsIG91dHB1dCBiZWZvcmUgdGhlIGVkaXRvcg0KJCB2aW0gZmlsZS50eHQNChtbPzEwNDloG1syShtbSBtbPzI1bBtbMTsxSCAgMSBmbiBtYWluKCkgew0KG1syOzFIICAyICAgICBwcmludGxuISgiaGkiKTsNChtbMzsxSCAgMyB9DQobWzI0OzFIG1s3bS0tIElOU0VSVCAtLRtbMG0bWzI7MjBIG1s/MjVo",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKbm9ybWFsIHNoZWxsIG91dHB1dCBiZWZvcmUgdGhlIGVkaXRvcg0KJCB2aW0gZmlsZS50eHQNChtbMG0bWz8xMDQ5aBtbPzI1aBtbbRtbSBtbSiAgMSBmbiBtYWluKCkgew0KICAyICAgICBwcmludGxuISgiaGkiKTsNCiAgMyB9G1syNDsxSBtbN20tLSBJTlNFUlQgLS0bWzI7MjBIG1tt",
+  "pending_tail_b64": "",
+  "is_alternate_screen": true,
+  "kitty_flags": 0,
+  "output_sequence": 183
+}

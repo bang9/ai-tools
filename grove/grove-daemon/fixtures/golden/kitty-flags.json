@@ -1,0 +1,11 @@
+{
+  "name": "kitty-flags",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "a2l0dHkga2V5Ym9hcmQgYXBwDQpsaW5lIHR3bxtbPjF1",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKa2l0dHkga2V5Ym9hcmQgYXBwDQpsaW5lIHR3bw==",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 1,
+  "output_sequence": 33
+}

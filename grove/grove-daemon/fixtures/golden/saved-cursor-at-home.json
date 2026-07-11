@@ -1,0 +1,11 @@
+{
+  "name": "saved-cursor-at-home",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "G1sxOzFIGzdjb250ZW50IHdyaXR0ZW4gYWZ0ZXIgaG9tZSBzYXZlDQpzZWNvbmQgcm93",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKY29udGVudCB3cml0dGVuIGFmdGVyIGhvbWUgc2F2ZQ0Kc2Vjb25kIHJvdw==",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 51
+}

@@ -657,4 +657,354 @@ mod tests {
             assert_eq!(s1.snapshot_ansi, s2.snapshot_ansi, "alt fixed-point broke");
         }
     }
+
+    // ── P6 golden-corpus differential fixtures (design R2 gate) ────────────────
+    //
+    // These fixtures are the CROSS-LANGUAGE half of the R2 gate: this Rust test
+    // is the GENERATOR (feed a crafted byte stream through the same emulator +
+    // mode_state tee pipeline `Session` uses, serialize via `warm_payload()`),
+    // and `src/lib/terminal-daemon-snapshot-golden.test.ts` is the CONSUMER
+    // (replays the serialized payload into @xterm/headless and asserts it
+    // reproduces the same terminal as feeding the original input bytes).
+    //
+    // Behavior: with `GROVE_REGEN_GOLDEN=1` the committed JSON files are
+    // (re)written; otherwise the test asserts the committed bytes EXACTLY match
+    // a fresh regeneration (a stale fixture = a serializer change and MUST be
+    // re-reviewed against the JS differential before re-committing).
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    /// One generation step: PTY output bytes fed through the emulator, or an
+    /// out-of-band resize (advances vt100 dims without contributing input bytes —
+    /// mirrors `Session::resize`, which never feeds the SIGWINCH into the stream).
+    enum GoldenStep {
+        Feed(Vec<u8>),
+        Resize(u16, u16),
+    }
+
+    struct GoldenCase {
+        name: &'static str,
+        /// Initial dims (rows, cols) the session's emulator opens at.
+        rows: u16,
+        cols: u16,
+        steps: Vec<GoldenStep>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct GoldenFixture {
+        name: String,
+        cols: u16,
+        rows: u16,
+        input_b64: String,
+        payload_b64: String,
+        pending_tail_b64: String,
+        is_alternate_screen: bool,
+        kitty_flags: u32,
+        output_sequence: u64,
+    }
+
+    fn generate_fixture(case: &GoldenCase) -> GoldenFixture {
+        // Mimic the Session pipeline: emulator + mode_state tee. The ingestion
+        // counter (Session::output_sequence) is the total byte count fed to the
+        // emulator; a resize contributes no bytes. We stamp the snapshot with it
+        // exactly as `Session::snapshot` stamps from `ingest_seq`.
+        let mut emu = DaemonEmulator::new(case.rows, case.cols, DEFAULT_SCROLLBACK_LINES);
+        let mut input: Vec<u8> = Vec::new();
+        for step in &case.steps {
+            match step {
+                GoldenStep::Feed(bytes) => {
+                    emu.process(bytes);
+                    input.extend_from_slice(bytes);
+                }
+                GoldenStep::Resize(cols, rows) => emu.resize(*cols, *rows),
+            }
+        }
+        let seq = input.len() as u64;
+        let snap = emu.snapshot(SnapshotOptions::default(), seq);
+        GoldenFixture {
+            name: case.name.to_string(),
+            cols: snap.cols,
+            rows: snap.rows,
+            input_b64: b64(&input),
+            payload_b64: b64(&snap.warm_payload()),
+            pending_tail_b64: b64(&snap.pending_escape_tail),
+            is_alternate_screen: snap.is_alternate_screen,
+            kitty_flags: snap.kitty_keyboard_flags,
+            output_sequence: snap.output_sequence,
+        }
+    }
+
+    fn feed(s: &str) -> GoldenStep {
+        GoldenStep::Feed(s.as_bytes().to_vec())
+    }
+    fn feed_bytes(b: &[u8]) -> GoldenStep {
+        GoldenStep::Feed(b.to_vec())
+    }
+
+    fn golden_cases() -> Vec<GoldenCase> {
+        let mut cases = Vec::new();
+
+        // 1. plain-text-scroll: 200 lines force the grid past 24 rows so the
+        //    serialized viewport is the scrolled tail, not the first lines.
+        {
+            let mut body = String::new();
+            for i in 1..=200 {
+                body.push_str(&format!("line {i:03} lorem ipsum dolor sit amet\r\n"));
+            }
+            cases.push(GoldenCase {
+                name: "plain-text-scroll",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(&body)],
+            });
+        }
+
+        // 2. cjk-emoji-wide: Korean + ZWJ emoji + wide chars parked AT the line
+        //    edge (col 79/80) so any vt100↔xterm width disagreement surfaces.
+        {
+            let mut body = String::new();
+            body.push_str("한국어 터미널 상태 확인 진행중\r\n");
+            body.push_str("wide 你好世界 mix 漢字テスト end\r\n");
+            body.push_str("emoji 🌍 🚀 ✅ 🤖 family 👨‍👩‍👧‍👦 flag 🇰🇷\r\n");
+            // Push a wide glyph so its first cell lands at column 79 (0-based 78)
+            // and its second cell would fall in the last column.
+            body.push_str(&format!("{}가", "x".repeat(78)));
+            cases.push(GoldenCase {
+                name: "cjk-emoji-wide",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(&body)],
+            });
+        }
+
+        // 3. sgr-styling: 256-color + truecolor + bold/italic/underline spans.
+        {
+            let body = concat!(
+                "\x1b[1mBOLD\x1b[0m \x1b[3mITALIC\x1b[0m \x1b[4mUNDERLINE\x1b[0m\r\n",
+                "\x1b[1;3;4mALL-THREE\x1b[0m normal\r\n",
+                "\x1b[38;5;196m256-red\x1b[0m \x1b[48;5;21m256-bg-blue\x1b[0m\r\n",
+                "\x1b[38;2;255;128;0mtruecolor-orange\x1b[0m ",
+                "\x1b[48;2;0;64;128mtc-bg\x1b[0m\r\n",
+                "\x1b[7mREVERSE\x1b[0m \x1b[9mSTRIKE\x1b[0m tail",
+            );
+            cases.push(GoldenCase {
+                name: "sgr-styling",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 4. scroll-region: DECSTBM region armed, content scrolled INSIDE it so
+        //    the region must survive the round-trip (design FIX 3).
+        {
+            let body = concat!(
+                "\x1b[1;1Htop line outside region\r\n",
+                "\x1b[3;8r",                    // region rows 3..8
+                "\x1b[3;1Hregion A\r\nregion B\r\nregion C\r\nregion D\r\nregion E",
+                "\x1b[8;1H\n\n\nscrolled inside region", // linefeeds scroll only 3..8
+                "\x1b[10;1Hbottom line outside region",
+            );
+            cases.push(GoldenCase {
+                name: "scroll-region",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 5. alt-enter-vim-like: normal output, then alt-enter + a full-screen
+        //    redraw with absolute cursor positioning (a vim/htop-shaped frame).
+        {
+            let body = concat!(
+                "normal shell output before the editor\r\n",
+                "$ vim file.txt\r\n",
+                "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l",
+                "\x1b[1;1H  1 fn main() {\r\n",
+                "\x1b[2;1H  2     println!(\"hi\");\r\n",
+                "\x1b[3;1H  3 }\r\n",
+                "\x1b[24;1H\x1b[7m-- INSERT --\x1b[0m",
+                "\x1b[2;20H\x1b[?25h", // park cursor mid-screen, show it
+            );
+            cases.push(GoldenCase {
+                name: "alt-enter-vim-like",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 6. mouse-modes: press-release + button-motion + SGR encoding armed.
+        {
+            let body = "app with mouse\r\nclick to interact\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+            cases.push(GoldenCase {
+                name: "mouse-modes",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 7. bracketed-focus: bracketed-paste + focus-reporting armed.
+        {
+            let body = "prompt> \x1b[?2004h\x1b[?1004h";
+            cases.push(GoldenCase {
+                name: "bracketed-focus",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 8. kitty-flags: CSI > 1 u push. Rides BESIDE the payload; the preamble
+        //    deliberately omits it (renderer reset stays authoritative).
+        {
+            let body = "kitty keyboard app\r\nline two\x1b[>1u";
+            cases.push(GoldenCase {
+                name: "kitty-flags",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 9. cwd-title: OSC 7 (cwd) + OSC 0 (icon+title) + visible text.
+        {
+            let body =
+                "\x1b]7;file://host/Users/me/project\x07\x1b]0;my-shell — project\x07working directory set";
+            cases.push(GoldenCase {
+                name: "cwd-title",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 10. saved-cursor: DECSC mid-screen, then more output moves the cursor.
+        {
+            let body = concat!(
+                "line one\r\nline two\r\n",
+                "\x1b[5;10H",   // park at row5 col10
+                "\x1b7",        // DECSC (save)
+                "\x1b[10;1Hmore output after save\r\ntrailing",
+            );
+            cases.push(GoldenCase {
+                name: "saved-cursor",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 11. saved-cursor-at-home: DECSC at 1;1 (the never-saved default → the
+        //     injection is skipped; design 4c home-skip).
+        {
+            let body = "\x1b[1;1H\x1b7content written after home save\r\nsecond row";
+            cases.push(GoldenCase {
+                name: "saved-cursor-at-home",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed(body)],
+            });
+        }
+
+        // 12. wrap-pending-at-col: exactly `cols` chars written into a row leave
+        //     the cursor in the deferred-wrap state (col == cols).
+        {
+            cases.push(GoldenCase {
+                name: "wrap-pending-at-col",
+                rows: 4,
+                cols: 10,
+                steps: vec![feed("0123456789")], // 10 chars into a 10-col row
+            });
+        }
+
+        // 13. partial-escape-split: the stream ends mid-CSI, so the pending
+        //     escape tail is non-empty and the restorer must write it LAST.
+        {
+            cases.push(GoldenCase {
+                name: "partial-escape-split",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed("visible text done\x1b[?100")],
+            });
+        }
+
+        // 14. post-resize: feed at the opening dims, resize the emulator, feed
+        //     more. Content that wrapped at the narrow width is NOT reflowed by
+        //     vt100 (design §3.4 / D6 "resize = truncate/pad, NO reflow").
+        {
+            let long = "A".repeat(100); // wraps at 80, would fit on one row at 120
+            cases.push(GoldenCase {
+                name: "post-resize",
+                rows: 24,
+                cols: 80,
+                steps: vec![
+                    feed(&format!("{long}\r\nafter first line\r\n")),
+                    GoldenStep::Resize(120, 30),
+                    feed("appended after resize at wider dims"),
+                ],
+            });
+        }
+
+        // 15. scrollback-then-alt: long primary history, THEN alt-screen entry —
+        //     exercises the frozen-primary path (design S8): scrollback_ansi is
+        //     the frozen primary, snapshot_ansi is the live alt body.
+        {
+            let mut body = String::new();
+            for i in 1..=120 {
+                body.push_str(&format!("history {i:03} scrollback content here\r\n"));
+            }
+            body.push_str("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
+            body.push_str("\x1b[1;1HALT SCREEN TUI TOP\r\n");
+            body.push_str("\x1b[12;30Hcentered alt content\r\n");
+            body.push_str("\x1b[24;1Hstatus bar bottom\x1b[?25h");
+            cases.push(GoldenCase {
+                name: "scrollback-then-alt",
+                rows: 24,
+                cols: 80,
+                steps: vec![feed_bytes(body.as_bytes())],
+            });
+        }
+
+        cases
+    }
+
+    #[test]
+    fn golden_corpus_fixtures_match_committed() {
+        let dir = format!("{}/fixtures/golden", env!("CARGO_MANIFEST_DIR"));
+        let regen = std::env::var("GROVE_REGEN_GOLDEN").as_deref() == Ok("1");
+        if regen {
+            std::fs::create_dir_all(&dir).expect("create golden fixture dir");
+        }
+        for case in golden_cases() {
+            let fixture = generate_fixture(&case);
+            // Pretty + trailing newline: deterministic, diff-friendly, and the
+            // exact bytes the JS consumer reads with readFileSync.
+            let json = format!(
+                "{}\n",
+                serde_json::to_string_pretty(&fixture).expect("serialize fixture")
+            );
+            let path = format!("{dir}/{}.json", fixture.name);
+            if regen {
+                std::fs::write(&path, json.as_bytes()).expect("write golden fixture");
+            } else {
+                let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!(
+                        "missing golden fixture {path}: {e}\n\
+                         hint: re-run with GROVE_REGEN_GOLDEN=1 to (re)generate the corpus"
+                    )
+                });
+                assert_eq!(
+                    committed, json,
+                    "stale golden fixture {path}: the serializer output changed.\n\
+                     hint: verify the JS differential still passes, then re-run with \
+                     GROVE_REGEN_GOLDEN=1 to regenerate"
+                );
+            }
+        }
+    }
 }

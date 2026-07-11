@@ -8,6 +8,7 @@ import type { ITheme } from "@xterm/xterm";
 import type { TerminalTheme } from "../types";
 import { subscribeTerminalLayoutSync } from "./terminal-layout-sync";
 import {
+  ackColdRestore,
   appliedPtySize,
   clearPtyScrollback,
   platform,
@@ -15,6 +16,11 @@ import {
   resizePty,
   writePty,
 } from "./platform";
+import {
+  planHydrationReplay,
+  TERMINAL_FOCUS_IN,
+  type HydrationReplayStep,
+} from "./terminal-reattach-replay";
 import {
   createPtySizeReassertion,
   reconcilePtySizeAcrossFrames,
@@ -64,13 +70,22 @@ import {
 } from "./terminal-color-scheme";
 import { log } from "./logger";
 
-export type TerminalInitialContentSource = "snapshotFallback" | "tmuxCapture";
+export type TerminalInitialContentSource = "snapshotFallback" | "tmuxCapture" | "daemonSnapshot";
 
 export interface TerminalPaneSeed {
   initialScrollback?: string;
   initialScrollbackSource?: TerminalInitialContentSource;
   launchCwd?: string;
   ptyId?: string;
+  // Daemon-snapshot reattach metadata (source === "daemonSnapshot"); ignored for
+  // every other source. See terminal-reattach-replay.ts for how they order the
+  // replay.
+  snapshotCols?: number;
+  snapshotRows?: number;
+  isAlternateScreen?: boolean;
+  pendingEscapeTailAnsi?: string;
+  kittyKeyboardFlags?: number;
+  isColdRestore?: boolean;
 }
 
 type FocusHandler = (ptyId: string) => void;
@@ -352,14 +367,25 @@ export function primeTerminalPane(paneId: string, seed: TerminalPaneSeed) {
   }
 
   const existing = paneSeeds.get(paneId);
+  // The daemon-snapshot metadata describes the scrollback it shipped with, so it
+  // tracks whichever seed actually supplies initialScrollback (mirrors the
+  // initialScrollbackSource rule below).
+  const providesScrollback = seed.initialScrollback !== undefined;
   paneSeeds.set(paneId, {
     ...existing,
     ...seed,
     initialScrollback: seed.initialScrollback ?? existing?.initialScrollback,
-    initialScrollbackSource:
-      seed.initialScrollback !== undefined
-        ? seed.initialScrollbackSource
-        : existing?.initialScrollbackSource,
+    initialScrollbackSource: providesScrollback
+      ? seed.initialScrollbackSource
+      : existing?.initialScrollbackSource,
+    snapshotCols: providesScrollback ? seed.snapshotCols : existing?.snapshotCols,
+    snapshotRows: providesScrollback ? seed.snapshotRows : existing?.snapshotRows,
+    isAlternateScreen: providesScrollback ? seed.isAlternateScreen : existing?.isAlternateScreen,
+    pendingEscapeTailAnsi: providesScrollback
+      ? seed.pendingEscapeTailAnsi
+      : existing?.pendingEscapeTailAnsi,
+    kittyKeyboardFlags: providesScrollback ? seed.kittyKeyboardFlags : existing?.kittyKeyboardFlags,
+    isColdRestore: providesScrollback ? seed.isColdRestore : existing?.isColdRestore,
   });
 }
 
@@ -538,6 +564,17 @@ class TerminalPaneRuntime {
   private layoutSyncSuppressed = false;
   private initialScrollback = "";
   private initialScrollbackSource: TerminalInitialContentSource | undefined;
+  // Daemon-snapshot reattach metadata; consumed once by startHydration and only
+  // meaningful when initialScrollbackSource === "daemonSnapshot".
+  private snapshotCols: number | undefined;
+  private snapshotRows: number | undefined;
+  private pendingEscapeTailAnsi: string | undefined;
+  private kittyKeyboardFlags: number | undefined;
+  private isColdRestore = false;
+  // Set only around the synchronous xterm-only resize in the daemon-snapshot
+  // replay so that resize does not forward a SIGWINCH to the live PTY (consulted
+  // by sendPtyResize). See terminal-reattach-replay.ts step (1).
+  private suppressSnapshotReplayPtyResize = false;
   private hydrationStarted = false;
   private hydrated = false;
   // True only while the restored-scrollback bytes are being parsed (see
@@ -594,6 +631,11 @@ class TerminalPaneRuntime {
     this.launchCwd = seed?.launchCwd;
     this.initialScrollback = seed?.initialScrollback ?? "";
     this.initialScrollbackSource = seed?.initialScrollbackSource;
+    this.snapshotCols = seed?.snapshotCols;
+    this.snapshotRows = seed?.snapshotRows;
+    this.pendingEscapeTailAnsi = seed?.pendingEscapeTailAnsi;
+    this.kittyKeyboardFlags = seed?.kittyKeyboardFlags;
+    this.isColdRestore = seed?.isColdRestore ?? false;
     this.hydrated = this.initialScrollback.length === 0;
     this.colorSchemeMode = colorSchemeModeForBackground(theme?.background);
     this.term = new Terminal({
@@ -810,6 +852,11 @@ class TerminalPaneRuntime {
     if (!this.hydrationStarted && seed.initialScrollback !== undefined) {
       this.initialScrollback = seed.initialScrollback;
       this.initialScrollbackSource = seed.initialScrollbackSource;
+      this.snapshotCols = seed.snapshotCols;
+      this.snapshotRows = seed.snapshotRows;
+      this.pendingEscapeTailAnsi = seed.pendingEscapeTailAnsi;
+      this.kittyKeyboardFlags = seed.kittyKeyboardFlags;
+      this.isColdRestore = seed.isColdRestore ?? false;
       this.hydrated = this.initialScrollback.length === 0;
     }
   }
@@ -1538,6 +1585,11 @@ class TerminalPaneRuntime {
   // syncPtySize path and the authoritative reconcile/reassert path (which have
   // already confirmed drift, so they bypass shouldSendResize).
   private sendPtyResize(cols: number, rows: number) {
+    // A daemon-snapshot replay retimes xterm to the snapshot's grid to avoid a
+    // rewrap; that resize is layout-only and must NOT SIGWINCH the live PTY.
+    if (this.suppressSnapshotReplayPtyResize) {
+      return;
+    }
     const ptyId = this.ptyId;
     if (!cols || !rows || !ptyId) {
       return;
@@ -1661,25 +1713,96 @@ class TerminalPaneRuntime {
     }
 
     this.hydrationStarted = true;
-    if (!this.initialScrollback) {
+    // planHydrationReplay returns the pre-daemon single-write (or nothing) for
+    // every non-daemonSnapshot source, so this path stays byte-identical for
+    // tmux capture / snapshot fallback; only "daemonSnapshot" yields the
+    // clear+reset+kitty+tail+focus order (terminal-reattach-replay.ts).
+    const steps = planHydrationReplay({
+      source: this.initialScrollbackSource,
+      payload: this.initialScrollback,
+      currentCols: this.term.cols,
+      currentRows: this.term.rows,
+      snapshotCols: this.snapshotCols,
+      snapshotRows: this.snapshotRows,
+      pendingEscapeTailAnsi: this.pendingEscapeTailAnsi,
+      kittyKeyboardFlags: this.kittyKeyboardFlags,
+      isColdRestore: this.isColdRestore,
+      focused: useTerminalStore.getState().focusedPtyId === this.ptyId,
+    });
+    this.runHydrationReplay(steps);
+  }
+
+  private runHydrationReplay(steps: HydrationReplayStep[]) {
+    // (1) xterm-only resize to the snapshot's grid, suppressing the PTY forward
+    // so no SIGWINCH reaches the live session (resize BEFORE the clear so the
+    // rewrap happens once, at the correct width).
+    const resize = steps.find((step) => step.kind === "xtermResize");
+    if (resize?.kind === "xtermResize") {
+      this.suppressSnapshotReplayPtyResize = true;
+      try {
+        this.term.resize(resize.cols, resize.rows);
+      } finally {
+        this.suppressSnapshotReplayPtyResize = false;
+      }
+    }
+
+    const writes: string[] = [];
+    for (const step of steps) {
+      if (step.kind === "termWrite") {
+        writes.push(step.data);
+      }
+    }
+    const postSteps = steps.filter(
+      (step) => step.kind === "focusIn" || step.kind === "ackColdRestore",
+    );
+
+    const finish = () => {
+      // Post-replay transport/daemon actions run before finish so a focused
+      // reattach's focus-in reaches the live session as soon as the payload is
+      // parsed. Guarded individually — a throw must not escape xterm's
+      // WriteBuffer nor starve the finish/flush that keep output draining.
+      for (const step of postSteps) {
+        runGuardedWriteCompletionStep("reattach-post-replay", () => this.applyPostReplayStep(step));
+      }
+      runGuardedWriteCompletionStep("hydration-finish", () => this.finishInitialHydration());
+      runGuardedWriteCompletionStep("hydration-flush", () => this.flushPendingOutput());
+    };
+
+    if (writes.length === 0) {
+      // Empty payload, non-daemon source: same as the pre-daemon early return —
+      // finish + flush directly, no replay-guard scope.
       this.finishInitialHydration();
       this.flushPendingOutput();
       return;
     }
 
-    // Why: the 2031 replay guard must cover EXACTLY the restored-scrollback
-    // bytes. pendingOutput drained after this write is LIVE output (a real TUI
+    // Why: the 2031 replay guard must cover EXACTLY the replayed bytes.
+    // pendingOutput drained after these writes is LIVE output (a real TUI
     // subscribing during startup) and must be honored, so the flag — not the
-    // broader hydrated bit — scopes the guard.
+    // broader hydrated bit — scopes the guard. It clears once the LAST replay
+    // write is parsed.
     this.replayingScrollback = true;
-    this.term.write(this.initialScrollback, () => {
+    for (let i = 0; i < writes.length - 1; i++) {
+      this.term.write(writes[i]);
+    }
+    this.term.write(writes[writes.length - 1], () => {
       this.replayingScrollback = false;
-      // Guard each step independently so a throw cannot escape into xterm's
-      // WriteBuffer and wedge the pane, and so a failed finish step still runs
-      // the flush that keeps output draining.
-      runGuardedWriteCompletionStep("hydration-finish", () => this.finishInitialHydration());
-      runGuardedWriteCompletionStep("hydration-flush", () => this.flushPendingOutput());
+      finish();
     });
+  }
+
+  private applyPostReplayStep(step: HydrationReplayStep) {
+    if (step.kind === "focusIn") {
+      // Focus-in goes to the PTY (not xterm) so the live agent moves its cursor
+      // back to the input caret after a focused reattach.
+      this.writeInput(new TextEncoder().encode(TERMINAL_FOCUS_IN));
+      return;
+    }
+    if (step.kind === "ackColdRestore" && this.ptyId) {
+      // The snapshot superseded the cold-restore payload; ack so the daemon does
+      // not redeliver it on the next reattach.
+      ackColdRestore(this.ptyId).catch(() => {});
+    }
   }
 
   private flushPendingOutput() {
@@ -1700,6 +1823,13 @@ class TerminalPaneRuntime {
     const source = this.initialScrollbackSource;
     this.initialScrollback = "";
     this.initialScrollbackSource = undefined;
+    // Consumed once: drop the daemon-snapshot metadata so a later PTY swap into
+    // this runtime never replays a stale snapshot preamble.
+    this.snapshotCols = undefined;
+    this.snapshotRows = undefined;
+    this.pendingEscapeTailAnsi = undefined;
+    this.kittyKeyboardFlags = undefined;
+    this.isColdRestore = false;
     if (source === "tmuxCapture") {
       this.reportActivity("tmuxCapture");
     }

@@ -428,6 +428,18 @@ async fn close_pty(pty_id: String) -> Result<(), String> {
     blocking(move || grove_core::pty::close(&pty_id)).await
 }
 
+// Acknowledge that a daemon cold-restore payload has been superseded by fresh
+// renderer state so the daemon stops redelivering it (design P6/P16). No-ops
+// until the P9 cutover installs the global daemon client.
+#[tauri::command]
+async fn ack_cold_restore(id: String) -> Result<(), String> {
+    blocking(move || {
+        grove_core::daemon::ack_cold_restore(&id);
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn poll_pty_bells() -> Result<Vec<PtyBellEvent>, String> {
     blocking(grove_core::pty::poll_bell_events).await
@@ -710,6 +722,7 @@ pub fn run() {
             applied_pty_size,
             clear_pty_scrollback,
             close_pty,
+            ack_cold_restore,
             poll_pty_bells,
             save_terminal_session_snapshot,
             load_terminal_session_snapshot,

@@ -1,0 +1,11 @@
+{
+  "name": "cwd-title",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "G103O2ZpbGU6Ly9ob3N0L1VzZXJzL21lL3Byb2plY3QHG10wO215LXNoZWxsIOKAlCBwcm9qZWN0B3dvcmtpbmcgZGlyZWN0b3J5IHNldA==",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKd29ya2luZyBkaXJlY3Rvcnkgc2V0",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 79
+}

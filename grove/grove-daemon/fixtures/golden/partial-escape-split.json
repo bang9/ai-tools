@@ -1,0 +1,11 @@
+{
+  "name": "partial-escape-split",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "dmlzaWJsZSB0ZXh0IGRvbmUbWz8xMDA=",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKdmlzaWJsZSB0ZXh0IGRvbmU=",
+  "pending_tail_b64": "G1s/MTAw",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 23
+}

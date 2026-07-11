@@ -38,6 +38,66 @@ describe("buildTerminalPaneSeed", () => {
     });
   });
 
+  it("threads daemon-snapshot reattach metadata onto the seed for attached sessions", () => {
+    expect(
+      buildTerminalPaneSeed(pane, "pty-3", {
+        sessionState: "attached",
+        initialHydration: {
+          text: "alt screen buffer",
+          truncated: false,
+          source: "daemonSnapshot",
+          snapshotCols: 120,
+          snapshotRows: 40,
+          isAlternateScreen: true,
+          pendingEscapeTailAnsi: "\x1b[38;2",
+          kittyKeyboardFlags: 5,
+          isColdRestore: true,
+        },
+      }),
+    ).toEqual({
+      ptyId: "pty-3",
+      launchCwd: "/tmp/project",
+      initialScrollback: "alt screen buffer",
+      initialScrollbackSource: "daemonSnapshot",
+      snapshotCols: 120,
+      snapshotRows: 40,
+      isAlternateScreen: true,
+      pendingEscapeTailAnsi: "\x1b[38;2",
+      kittyKeyboardFlags: 5,
+      isColdRestore: true,
+    });
+  });
+
+  it("collapses null daemon-snapshot wire fields to undefined", () => {
+    expect(
+      buildTerminalPaneSeed(pane, "pty-4", {
+        sessionState: "attached",
+        initialHydration: {
+          text: "warm buffer",
+          truncated: false,
+          source: "daemonSnapshot",
+          snapshotCols: null,
+          snapshotRows: null,
+          isAlternateScreen: null,
+          pendingEscapeTailAnsi: null,
+          kittyKeyboardFlags: null,
+          isColdRestore: null,
+        },
+      }),
+    ).toEqual({
+      ptyId: "pty-4",
+      launchCwd: "/tmp/project",
+      initialScrollback: "warm buffer",
+      initialScrollbackSource: "daemonSnapshot",
+      snapshotCols: undefined,
+      snapshotRows: undefined,
+      isAlternateScreen: undefined,
+      pendingEscapeTailAnsi: undefined,
+      kittyKeyboardFlags: undefined,
+      isColdRestore: undefined,
+    });
+  });
+
   it("uses pane snapshot scrollback for created sessions", () => {
     expect(
       buildTerminalPaneSeed(pane, "pty-2", {

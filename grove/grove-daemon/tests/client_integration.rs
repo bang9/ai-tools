@@ -252,6 +252,74 @@ async fn in_flight_rpc_rejected_on_disconnect_without_hanging() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn warm_reattach_returns_live_snapshot_with_modes() {
+    // Design P9/S15 end to end: a second createOrAttach on a LIVE session must come
+    // back with the warm VT snapshot the daemon builds from its emulator — the
+    // current screen, its alt-screen flag, and the rehydrate mode bytes — NOT a
+    // fresh spawn. The first attach here dropped that payload before P6.
+    let (socket, base_dir) = unique_paths();
+    let _daemon = spawn_daemon(&socket, "tok-warm", &base_dir);
+    assert!(wait_ready(&socket, &daemon_token_path(&base_dir), Duration::from_secs(5)).await);
+
+    let client = client_for(&socket, &base_dir);
+    let collector = Arc::new(Collector::default());
+    client.subscribe("warm1", collector.clone());
+
+    let first = client.create_or_attach(attach("warm1")).await.expect("create warm1");
+    assert!(first.is_new, "fresh session should be new");
+    assert!(first.warm_reattach.is_none(), "a fresh spawn carries no warm reattach");
+
+    // Drive the CHILD to EMIT (not type) the mode-setting escapes so the daemon's
+    // emulator ingests them from PTY output: set a title, enter the alternate
+    // screen (?1049h), enable button-motion mouse tracking (?1002h), then paint an
+    // alt-screen marker. `printf` from the shell writes these to its stdout.
+    client
+        .write(
+            "warm1",
+            b"printf '\\033]0;WARMTITLE\\007\\033[?1049h\\033[?1002hALT_SCREEN_BODY'\n",
+        )
+        .await
+        .expect("write escapes");
+
+    // Poll createOrAttach until the emulator has ingested the alt-screen enter.
+    // Re-attaching a live session is idempotent (it just re-serves the snapshot).
+    let mut warm = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let r = client.create_or_attach(attach("warm1")).await.expect("reattach warm1");
+        assert!(!r.is_new, "an adopted live session is never new");
+        if let Some(w) = r.warm_reattach {
+            if w.is_alternate_screen {
+                warm = Some(w);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let warm = warm.expect("warm reattach with alt screen never materialized");
+
+    assert!(warm.is_alternate_screen, "session must be in the alternate screen");
+    assert!(!warm.snapshot.is_empty(), "warm snapshot must be non-empty");
+    assert!(
+        warm.snapshot.contains("?1049h"),
+        "rehydrate must re-arm the alternate screen; snapshot: {:?}",
+        warm.snapshot
+    );
+    assert!(
+        warm.snapshot.contains("?1002h"),
+        "rehydrate must re-arm button-motion mouse mode; snapshot: {:?}",
+        warm.snapshot
+    );
+    assert!(
+        warm.pending_escape_tail_ansi.is_none(),
+        "no partial escape was left mid-sequence; got {:?}",
+        warm.pending_escape_tail_ansi
+    );
+    assert_eq!(warm.cols, 80, "warm dims must match the live session");
+    assert_eq!(warm.rows, 24, "warm dims must match the live session");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reconnect_after_kill_delivers_exit_and_restreams() {
     let (socket, base_dir) = unique_paths();
     let mut daemon_a = spawn_daemon(&socket, "tok-recon", &base_dir);

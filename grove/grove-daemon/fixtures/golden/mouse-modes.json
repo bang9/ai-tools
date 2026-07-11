@@ -1,0 +1,11 @@
+{
+  "name": "mouse-modes",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "YXBwIHdpdGggbW91c2UNCmNsaWNrIHRvIGludGVyYWN0G1s/MTAwMGgbWz8xMDAyaBtbPzEwMDZo",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKYXBwIHdpdGggbW91c2UNCmNsaWNrIHRvIGludGVyYWN0G1s/MTAwMmgbWz8xMDA2aA==",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 57
+}

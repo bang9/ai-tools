@@ -239,13 +239,55 @@ pub struct CreateOrAttach {
     pub env: Vec<(String, String)>,
 }
 
+/// The warm-reattach payload the daemon returns when `createOrAttach` adopts a
+/// LIVE session (design P9/S15): the current VT snapshot plus the dims/modes the
+/// renderer needs to rehydrate the screen exactly. `snapshot` is the daemon's
+/// pre-concatenated `scrollback ++ rehydrate ++ body` string. Every field past the
+/// core five is optional so a minimal or degraded reply still parses;
+/// `emulator_degraded` defaults false — only the poisoned-emulator branch sets it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WarmReattach {
+    pub snapshot: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub is_alternate_screen: bool,
+    pub output_sequence: u64,
+    pub pending_escape_tail_ansi: Option<String>,
+    /// The daemon emits this as `snapshotKittyKeyboardFlags` (not the camelCase of
+    /// the field name), so it is renamed explicitly.
+    #[serde(rename = "snapshotKittyKeyboardFlags")]
+    pub kitty_keyboard_flags: Option<u32>,
+    pub cwd: Option<String>,
+    pub last_title: Option<String>,
+    pub emulator_degraded: bool,
+}
+
+impl WarmReattach {
+    /// Parse a warm-reattach payload from a `createOrAttach` reply, gated on the
+    /// daemon's `isReattach: true` marker. Returns `None` for a fresh-spawn reply
+    /// (no marker); tolerates missing optional fields on a live/degraded reply.
+    fn from_result(result: &Value) -> Option<Self> {
+        let is_reattach = result
+            .get("isReattach")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !is_reattach {
+            return None;
+        }
+        serde_json::from_value(result.clone()).ok()
+    }
+}
+
 /// The resolved `createOrAttach` outcome. `is_cold_restore` + `cold_restore` are
-/// the P16 scaffold surface (empty until P5–P8 land the daemon side).
+/// the P16 cold-seed surface; `warm_reattach` is `Some` iff the daemon adopted a
+/// LIVE session (reply `isReattach: true`) and carries its warm VT snapshot (P9).
 #[derive(Debug, Clone)]
 pub struct CreateOrAttachResult {
     pub is_new: bool,
     pub is_cold_restore: bool,
     pub cold_restore: Option<ColdRestorePayload>,
+    pub warm_reattach: Option<WarmReattach>,
 }
 
 /// One entry of `listSessions` (design L3 adoption / P8 resync).
@@ -626,6 +668,7 @@ impl DaemonClient {
                 is_new: false,
                 is_cold_restore: true,
                 cold_restore: Some(payload),
+                warm_reattach: None,
             });
         }
 
@@ -661,10 +704,16 @@ impl DaemonClient {
             None
         };
 
+        // Warm reattach (design P9/S15): the daemon marks a live-session adopt with
+        // `isReattach: true` and rides the VT snapshot beside it. Absent on a fresh
+        // spawn (`isNew: true`, no marker), so `warm_reattach` stays None there.
+        let warm_reattach = WarmReattach::from_result(&result);
+
         Ok(CreateOrAttachResult {
             is_new,
             is_cold_restore: is_cold,
             cold_restore,
+            warm_reattach,
         })
     }
 
@@ -1177,6 +1226,101 @@ mod tests {
         let result = json!({ "isNew": true });
         let payload = ColdRestorePayload::from_result(&result);
         assert_eq!(payload, ColdRestorePayload::default());
+    }
+
+    #[test]
+    fn warm_reattach_parses_full_reply() {
+        // A full live-adopt reply: every field, including the daemon's
+        // `snapshotKittyKeyboardFlags` alias, maps onto the struct.
+        let result = json!({
+            "isNew": false,
+            "isReattach": true,
+            "snapshot": "BODY",
+            "cols": 120,
+            "rows": 40,
+            "isAlternateScreen": true,
+            "outputSequence": 4096,
+            "pendingEscapeTailAnsi": "\x1b[?10",
+            "snapshotKittyKeyboardFlags": 5,
+            "cwd": "/tmp/work",
+            "lastTitle": "vim",
+        });
+        let warm = WarmReattach::from_result(&result).expect("full reply must parse");
+        assert_eq!(warm.snapshot, "BODY");
+        assert_eq!(warm.cols, 120);
+        assert_eq!(warm.rows, 40);
+        assert!(warm.is_alternate_screen);
+        assert_eq!(warm.output_sequence, 4096);
+        assert_eq!(warm.pending_escape_tail_ansi.as_deref(), Some("\x1b[?10"));
+        assert_eq!(warm.kitty_keyboard_flags, Some(5));
+        assert_eq!(warm.cwd.as_deref(), Some("/tmp/work"));
+        assert_eq!(warm.last_title.as_deref(), Some("vim"));
+        assert!(!warm.emulator_degraded);
+    }
+
+    #[test]
+    fn warm_reattach_parses_minimal_reply() {
+        // The daemon omits the optional fields for a primary-screen session with no
+        // modes/title/cwd/pending tail — those default; the core five survive.
+        let result = json!({
+            "isNew": false,
+            "isReattach": true,
+            "snapshot": "SCROLLBACK",
+            "cols": 80,
+            "rows": 24,
+            "isAlternateScreen": false,
+            "outputSequence": 12,
+        });
+        let warm = WarmReattach::from_result(&result).expect("minimal reply must parse");
+        assert_eq!(warm.snapshot, "SCROLLBACK");
+        assert_eq!(warm.cols, 80);
+        assert_eq!(warm.rows, 24);
+        assert!(!warm.is_alternate_screen);
+        assert_eq!(warm.output_sequence, 12);
+        assert!(warm.pending_escape_tail_ansi.is_none());
+        assert!(warm.kitty_keyboard_flags.is_none());
+        assert!(warm.cwd.is_none());
+        assert!(warm.last_title.is_none());
+        assert!(!warm.emulator_degraded);
+    }
+
+    #[test]
+    fn warm_reattach_parses_degraded_reply() {
+        // The poisoned-emulator branch: raw ring tail as snapshot + the
+        // `emulatorDegraded` flag, still marked `isReattach`.
+        let result = json!({
+            "isNew": false,
+            "isReattach": true,
+            "snapshot": "RAW-RING-TAIL",
+            "cols": 80,
+            "rows": 24,
+            "isAlternateScreen": false,
+            "outputSequence": 99,
+            "emulatorDegraded": true,
+        });
+        let warm = WarmReattach::from_result(&result).expect("degraded reply must parse");
+        assert_eq!(warm.snapshot, "RAW-RING-TAIL");
+        assert!(warm.emulator_degraded);
+        assert!(warm.pending_escape_tail_ansi.is_none());
+    }
+
+    #[test]
+    fn warm_reattach_absent_without_reattach_marker() {
+        // A fresh-spawn reply carries no `isReattach`, so there is no warm payload.
+        assert_eq!(WarmReattach::from_result(&json!({ "isNew": true })), None);
+        // An explicit `isReattach: false` is likewise not a warm reattach.
+        assert_eq!(
+            WarmReattach::from_result(&json!({ "isReattach": false, "snapshot": "x" })),
+            None
+        );
+    }
+
+    #[test]
+    fn global_ack_cold_restore_is_noop_without_global_client() {
+        // Contract item 2: `daemon::ack_cold_restore` forwards to the process-global
+        // client if one is installed, else no-ops. No global is set in this test
+        // binary, so the call must return without panicking.
+        crate::daemon::ack_cold_restore("no-such-session");
     }
 
     fn dead_endpoint_options() -> DaemonClientOptions {

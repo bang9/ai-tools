@@ -375,6 +375,17 @@ pub async fn close_pty(pty_id: String) -> Result<()> {
     blocking_core(move || grove_core::pty::close(&pty_id)).await
 }
 
+// Acknowledge that a daemon cold-restore payload has been superseded (design
+// P6/P16). No-ops until the P9 cutover installs the global daemon client.
+#[napi]
+pub async fn ack_cold_restore(id: String) -> Result<()> {
+    blocking_core(move || {
+        grove_core::daemon::ack_cold_restore(&id);
+        Ok(())
+    })
+    .await
+}
+
 #[napi]
 pub async fn poll_pty_bells() -> Result<String> {
     blocking_json(grove_core::pty::poll_bell_events).await

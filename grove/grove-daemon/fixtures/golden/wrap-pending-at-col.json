@@ -1,0 +1,11 @@
+{
+  "name": "wrap-pending-at-col",
+  "cols": 10,
+  "rows": 4,
+  "input_b64": "MDEyMzQ1Njc4OQ==",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tKMDEyMzQ1Njc4OQ==",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 10
+}

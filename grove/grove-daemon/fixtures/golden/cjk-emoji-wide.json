@@ -1,0 +1,11 @@
+{
+  "name": "cjk-emoji-wide",
+  "cols": 80,
+  "rows": 24,
+  "input_b64": "7ZWc6rWt7Ja0IO2EsOuvuOuEkCDsg4Htg5wg7ZmV7J24IOynhO2WieykkQ0Kd2lkZSDkvaDlpb3kuJbnlYwgbWl4IOa8ouWtl+ODhuOCueODiCBlbmQNCmVtb2ppIPCfjI0g8J+agCDinIUg8J+kliBmYW1pbHkg8J+RqOKAjfCfkanigI3wn5Gn4oCN8J+RpiBmbGFnIPCfh7Dwn4e3DQp4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHjqsIA=",
+  "payload_b64": "G1s/MjVoG1ttG1tIG1tK7ZWc6rWt7Ja0IO2EsOuvuOuEkCDsg4Htg5wg7ZmV7J24IOynhO2WieykkQ0Kd2lkZSDkvaDlpb3kuJbnlYwgbWl4IOa8ouWtl+ODhuOCueODiCBlbmQNCmVtb2ppIPCfjI0g8J+agCDinIUg8J+kliBmYW1pbHkg8J+RqOKAjfCfkanigI3wn5Gn4oCN8J+RpiBmbGFnIPCfh7Dwn4e3DQp4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHjqsIA=",
+  "pending_tail_b64": "",
+  "is_alternate_screen": false,
+  "kitty_flags": 0,
+  "output_sequence": 242
+}
