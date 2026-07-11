@@ -11,15 +11,17 @@ import { usePanelLayoutStore } from "./store/panel-layout";
 import { useFullscreen } from "./hooks/useFullscreen";
 import { usePtyResizeHold } from "./hooks/usePtyResizeHold";
 
-const TITLE_BAR_HEIGHT = 38;
-
 function TitleBar() {
   const isFullscreen = useFullscreen();
 
+  // Height must stay a className: on Electron windowDragRegionProps is a
+  // `style` prop ({ WebkitAppRegion: "drag" }), so spreading it would clobber
+  // an inline height style and collapse the bar to its content height.
   return (
     <div
-      className={cn("flex items-center shrink-0 bg-sidebar select-none border-b border-border")}
-      style={{ height: TITLE_BAR_HEIGHT }}
+      className={cn(
+        "flex h-[38px] items-center shrink-0 bg-sidebar select-none border-b border-border",
+      )}
       {...windowDragRegionProps}
     >
       {/* Traffic light spacer (macOS) / padding in fullscreen */}
