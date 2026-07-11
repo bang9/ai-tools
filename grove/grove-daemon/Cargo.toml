@@ -1,0 +1,28 @@
+[package]
+name = "grove-daemon"
+version = "0.1.0"
+edition = "2021"
+
+# The detached PTY daemon binary (design P2). A thin `main.rs` over the `server`
+# + `session` library modules so integration tests can drive the server in-proc.
+[lib]
+name = "grove_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "grove-daemon"
+path = "src/main.rs"
+
+[dependencies]
+grove-core = { path = "../grove-core" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+portable-pty = "0.8"
+
+[dev-dependencies]
+grove-core = { path = "../grove-core" }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+base64 = "0.22"

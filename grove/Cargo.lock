@@ -1362,6 +1362,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "grove-daemon"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "grove-core",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "grove-electron-native"
 version = "0.1.0"
 dependencies = [

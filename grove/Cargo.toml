@@ -1,3 +1,3 @@
 [workspace]
-members = ["grove-core", "src-tauri", "src-electron/native"]
+members = ["grove-core", "grove-daemon", "src-tauri", "src-electron/native"]
 resolver = "2"

@@ -1,5 +1,6 @@
 pub mod browser_cookies;
 pub mod config;
+pub mod daemon;
 pub mod file_browser;
 pub mod git_diff;
 pub mod git_project;

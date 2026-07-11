@@ -214,12 +214,21 @@ struct CoalescerShared {
 /// `sink.on_output`. The reader thread only appends bytes (`push`); a single
 /// dedicated flusher thread is the SOLE emitter, so bytes always reach the sink
 /// in read order with no cross-thread interleaving. Emits happen off the lock.
-struct OutputCoalescer {
+///
+/// Why pub: this is a SHARED grove-core library (design §1.1/§6/G2). The tmux
+/// path constructs it directly; the daemon crate (`grove-daemon`) constructs the
+/// SAME type between its PTY read loop and the stream socket. Visibility is the
+/// only change — behavior is byte-identical for the tmux path.
+pub struct OutputCoalescer {
     shared: Arc<CoalescerShared>,
+    /// Join handle for the sole flusher thread. Retained so a consumer can block
+    /// until the final tail has been emitted (see `close_and_join`). The tmux
+    /// path never joins and detaches on drop exactly as before.
+    flusher: Option<std::thread::JoinHandle<()>>,
 }
 
 impl OutputCoalescer {
-    fn new(sink: Arc<dyn PtyEventSink>, id: String) -> Self {
+    pub fn new(sink: Arc<dyn PtyEventSink>, id: String) -> Self {
         let shared = Arc::new(CoalescerShared {
             state: Mutex::new(CoalescerInner {
                 pending: Vec::new(),
@@ -232,11 +241,14 @@ impl OutputCoalescer {
             id,
         });
         let flusher_shared = Arc::clone(&shared);
-        std::thread::spawn(move || run_output_flusher(flusher_shared));
-        Self { shared }
+        let flusher = std::thread::spawn(move || run_output_flusher(flusher_shared));
+        Self {
+            shared,
+            flusher: Some(flusher),
+        }
     }
 
-    fn push(&self, data: &[u8]) {
+    pub fn push(&self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
@@ -269,10 +281,22 @@ impl OutputCoalescer {
         self.shared.cvar.notify_one();
     }
 
-    fn close(&self) {
+    pub fn close(&self) {
         let mut state = lock_recover(&self.shared.state);
         state.closed = true;
         self.shared.cvar.notify_all();
+    }
+
+    /// Close the coalescer and BLOCK until the flusher thread has emitted its
+    /// final tail and exited. Why: the daemon must order a session's `Exit`
+    /// frame strictly AFTER its last `Data` frame (design P13); joining the sole
+    /// emitter is that ordering barrier — no `Exit` can overtake buffered output.
+    /// Consumes self. Only the daemon needs this; the tmux path uses `close`.
+    pub fn close_and_join(mut self) {
+        self.close();
+        if let Some(handle) = self.flusher.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -379,7 +403,12 @@ struct WriteCompletion {
 /// bytes returns (or the deadline elapses). Mirrors the OutputCoalescer
 /// sole-flusher pattern on the input side: one thread is the SOLE writer, so
 /// concurrent writePty calls can never interleave or reorder whole batches.
-struct PtyWriter {
+///
+/// Why pub: SHARED grove-core library (design §1.1/§6/G3). The daemon constructs
+/// one per session so paste-body-then-CR ordering holds across the socket. It
+/// consumes it via [`PtyWriter::spawn_input_only`], not `spawn`, so it drags in
+/// no tmux Enter-detection.
+pub struct PtyWriter {
     shared: Arc<WriterShared>,
     deadline: Duration,
 }
@@ -405,7 +434,31 @@ impl PtyWriter {
         Arc::new(Self { shared, deadline })
     }
 
-    fn write(&self, data: &[u8]) -> Result<(), String> {
+    /// Spawn an ordered FIFO writer with NO tmux Enter-detection side effect.
+    /// Why: the daemon reuses the exact FIFO + 30s-deadline + backpressure
+    /// machinery, but has no tmux session to flip AI status on. It hands the
+    /// writer a throwaway tracked state whose `last_ai_status` is `None`, so
+    /// `run_enter_detection` short-circuits (`needs_idle_detection(None)==false`)
+    /// and no tmux `set-option` ever fires. Purely additive — the tmux `spawn`
+    /// path and `run_pty_writer` are untouched.
+    pub fn spawn_input_only(writer: Box<dyn Write + Send>, deadline: Duration) -> Arc<Self> {
+        let tracked = Arc::new(Mutex::new(PtyRuntimeState {
+            launch_cwd: String::new(),
+            process_id: None,
+            session_name: String::new(),
+            last_known_cwd: None,
+            scrollback: VecDeque::new(),
+            scrollback_truncated: false,
+            last_bell_flag: false,
+            last_ai_status: None,
+            last_output_at: None,
+            idle_since: None,
+            reader_exited: false,
+        }));
+        Self::spawn(writer, tracked, deadline)
+    }
+
+    pub fn write(&self, data: &[u8]) -> Result<(), String> {
         // Why: an empty write delivers nothing; skip the queue so it never holds
         // a slot or waits on a completion. Matches today's write_all(&[]) => Ok.
         if data.is_empty() {
@@ -2133,7 +2186,11 @@ fn cache_last_known_cwd(pty_id: &str, cwd: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn append_scrollback_capped(
+/// Append `chunk` to a raw scrollback ring, dropping oldest bytes past `limit`.
+/// Why pub: SHARED grove-core library (design §1.1/§6/G4). The daemon holds one
+/// ring per session as the byte-exact source for cold restore. Behavior is
+/// unchanged; only visibility widened.
+pub fn append_scrollback_capped(
     scrollback: &mut VecDeque<u8>,
     scrollback_truncated: &mut bool,
     chunk: &[u8],
