@@ -242,11 +242,18 @@ async fn pty_pub_api_lifecycle_and_warm_reattach_against_real_daemon() {
         "a closed pane reports no applied size instead of erroring"
     );
 
-    // Tear the DETACHED daemon down so it does not outlive the test run.
-    daemon::global_client()
+    // Tear the DETACHED daemon down so it does not outlive the test run. A shutdown
+    // that kills the daemon naturally drops the control connection, so the reply may
+    // never arrive — `ConnectionLost` here means the daemon IS going down, which is
+    // exactly the goal. Production tolerates it the same way (supervisor
+    // `request_shutdown` ignores the result); only assert the RPC was delivered.
+    let shutdown = daemon::global_client()
         .expect("the global client is installed by create()")
         .client()
         .shutdown(true)
-        .await
-        .expect("daemon shutdown");
+        .await;
+    assert!(
+        matches!(shutdown, Ok(()) | Err(daemon::client::ClientError::ConnectionLost)),
+        "shutdown should ack or drop the connection as the daemon exits, got {shutdown:?}"
+    );
 }
