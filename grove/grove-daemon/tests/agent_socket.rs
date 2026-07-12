@@ -25,7 +25,11 @@
 //! through the REAL `sysctl` path. Nothing in it is simulated except which pid the
 //! socket reported.
 
-#![cfg(unix)]
+// macOS-only: these drive the REAL agent socket, whose claim path needs the peer pid
+// (LOCAL_PEERPID) and process facts (sysctl KERN_PROC_PID) — both macOS-only, matching
+// grove's macOS-only shipping target. The pure map_event/resolve logic is covered on
+// every target by the FakeKernel unit tests in `agent.rs`.
+#![cfg(target_os = "macos")]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

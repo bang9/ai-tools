@@ -180,13 +180,18 @@ pub fn system_kernel() -> std::sync::Arc<dyn Kernel> {
 // ---------------------------------------------------------------------------
 
 /// `sys/un.h`: `SOL_LOCAL` / `LOCAL_PEERPID`. Not exported by `libc`.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 const SOL_LOCAL: libc::c_int = 0;
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 const LOCAL_PEERPID: libc::c_int = 0x002;
 
 /// The pid of the process on the other end of an `AF_UNIX`/`SOCK_STREAM` socket.
 /// The claimant cannot lie about who it is — the kernel answers, not the client.
+///
+/// macOS-only, like [`SysctlKernel::facts`]: the whole agent-status subsystem rests
+/// on `LOCAL_PEERPID` + `sysctl(KERN_PROC_PID)`, and grove ships only on macOS. On
+/// any other target it returns `None` (peer unidentifiable ⇒ no agent claim), which
+/// is the correct fail-closed answer rather than a wrong pid from a foreign option.
 ///
 /// **This MUST be called at `accept()`, on the accepting task, before any `.await`.**
 /// Measured: `getsockopt` returns `ENOTCONN` the moment the peer closes its socket
@@ -194,7 +199,7 @@ const LOCAL_PEERPID: libc::c_int = 0x002;
 /// A lazy read at dispatch time is a genuine race (4/5 reruns failed against a
 /// fire-and-exit peer). `None` therefore means "unreadable", and a claim with an
 /// unreadable pid is REJECTED — never unwrapped, never assumed.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 pub fn peer_pid(fd: std::os::fd::RawFd) -> Option<i32> {
     // SAFETY: `fd` is a live socket fd owned by the caller; we pass a correctly
     // sized out-param and its length, exactly as getsockopt(2) requires.
@@ -213,6 +218,14 @@ pub fn peer_pid(fd: std::os::fd::RawFd) -> Option<i32> {
         }
         Some(pid)
     }
+}
+
+/// Non-macOS: agent-status is macOS-only (see the macOS impl above), so the peer is
+/// unidentifiable and no claim is honored. grove never runs here in production; this
+/// exists so the daemon still compiles for CI/dev on other targets.
+#[cfg(not(target_os = "macos"))]
+pub fn peer_pid(_fd: std::os::fd::RawFd) -> Option<i32> {
+    None
 }
 
 // ---------------------------------------------------------------------------
