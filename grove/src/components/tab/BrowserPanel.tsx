@@ -77,6 +77,14 @@ import { useOverlayPresence } from "../../hooks/useOverlayPresence";
 
 const QUICK_URLS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"];
 
+// Suggestion inputs for a panel that is mounted but hidden (an inactive tab, or
+// any tab of a background worktree). Shared constants so a background panel
+// neither recomputes over the whole frecency history on every navigation nor
+// allocates a fresh snapshot each render.
+const EMPTY_SUGGESTIONS: BrowserHistoryEntry[] = [];
+const EMPTY_TOP_SITES: string[] = [];
+const EMPTY_HISTORY_INDEX: Map<string, BrowserHistoryEntry> = new Map();
+
 /** Hold the Back/Forward button this long to open its history dropdown. */
 const HISTORY_LONG_PRESS_MS = 400;
 
@@ -237,23 +245,27 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   // text, never the completed text — an inline completion must not narrow the
   // list. Entries carry title + favicon for richer rows.
   const suggestions = useMemo<BrowserHistoryEntry[]>(
-    () => buildSuggestions(history, typed, Date.now()),
-    [history, typed],
+    () => (isActive ? buildSuggestions(history, typed, Date.now()) : EMPTY_SUGGESTIONS),
+    [history, isActive, typed],
   );
 
   // Most-frecent sites for the empty-state quick links.
   const topSites = useMemo(
-    () => buildSuggestions(history, "", Date.now(), 3).map((entry) => entry.url),
-    [history],
+    () =>
+      isActive
+        ? buildSuggestions(history, "", Date.now(), 3).map((entry) => entry.url)
+        : EMPTY_TOP_SITES,
+    [history, isActive],
   );
 
   // Frecency-history lookup keyed by normalized URL, so a history-dropdown row
   // can show the page's favicon + title when we've visited it before.
   const historyByNormalized = useMemo(() => {
+    if (!isActive) return EMPTY_HISTORY_INDEX;
     const map = new Map<string, BrowserHistoryEntry>();
     for (const entry of history) map.set(entry.normalizedUrl, entry);
     return map;
-  }, [history]);
+  }, [history, isActive]);
 
   // Address-bar dropdown rows: a leading "search the web" action (when the typed
   // text reads as a query) followed by frecency-ranked history. `url` is what
@@ -734,12 +746,17 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   // address dropdown or a back/forward history dropdown) is open — otherwise
   // clicks would land on the React layer instead of the page. Electron uses
   // normal DOM stacking (toolbar z-index), so it opts out.
+  //
+  // `overlayOpen` is a GLOBAL signal, so this must be gated on `isActive`: every
+  // browser tab of every worktree stays mounted, and letting them all reorder
+  // their native subviews on one overlay can stack a background view over the
+  // active one.
   useEffect(() => {
-    if (!browserPunchoutOverlay) return;
+    if (!browserPunchoutOverlay || !isActive) return;
     void browserSetBehind(tabId, suggestionsShowing || historyMenuShowing || overlayOpen).catch(
       () => {},
     );
-  }, [tabId, suggestionsShowing, historyMenuShowing, overlayOpen]);
+  }, [isActive, tabId, suggestionsShowing, historyMenuShowing, overlayOpen]);
 
   // Keep the native webview positioned over the host area whenever it is the
   // active, visible tab. Also runs on remount (worktree switch) so a persisted
@@ -756,7 +773,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     let rafId = 0;
     const sync = () => {
       const rect = el.getBoundingClientRect();
-      if (rect.width === 0) return; // hidden — skip
+      if (rect.width === 0 || rect.height === 0) return; // hidden/collapsed — skip
       let top = rect.y;
       let height = rect.height;
       // Tauri (punchout) keeps the browser behind a transparent host, so the
@@ -802,6 +819,13 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     const apply = () => {
       const visible = isActive && hasNav && document.visibilityState === "visible";
       if (visible && url && !isBrowserWebviewCreated(tabId)) {
+        // Re-register the host that the guest teardown dropped along with the
+        // webview (Electron: closing a guest deletes its whole registry entry,
+        // host included). The host-registration effect does not re-run here —
+        // this panel never unmounted — so without this the Electron reconcile
+        // has no host to mount into and an evicted tab comes back blank. No-op
+        // on Tauri.
+        registerBrowserHost(tabId, hostRef.current);
         // Created visible over the host; the bounds-sync effect snaps it into
         // place right after.
         createBrowserWebview(tabId, url, readHostBounds(hostRef.current));

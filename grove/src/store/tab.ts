@@ -86,6 +86,23 @@ function getSession(state: TabState): TabSession {
   return getSessionForWorktree(state, state.activeWorktree);
 }
 
+/**
+ * Locate the session that OWNS a tabId. Browser tabs of every worktree stay
+ * mounted and keep navigating in the background, so nav/favicon events arrive
+ * for tabs outside the active session — looking only at the active one would
+ * silently drop their title and favicon updates.
+ */
+function findTabOwner(
+  state: TabState,
+  tabId: string,
+): { worktreePath: string; session: TabSession; tab: AppTab } | null {
+  for (const [worktreePath, session] of Object.entries(state.sessions)) {
+    const tab = session.tabs.find((t) => t.id === tabId);
+    if (tab) return { worktreePath, session, tab };
+  }
+  return null;
+}
+
 function updateSession(
   state: TabState,
   updater: (session: TabSession) => TabSession,
@@ -223,24 +240,34 @@ export const useTabStore = create<TabState>((set, get) => ({
 
   updateTabTitle: (tabId, title) =>
     set((state) => {
-      const session = getSession(state);
-      const tab = session.tabs.find((t) => t.id === tabId);
-      if (!tab || tab.title === title) return {};
-      return updateSession(state, () => ({
-        ...session,
-        tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
-      }));
+      const owner = findTabOwner(state, tabId);
+      if (!owner || owner.tab.title === title) return {};
+      const { worktreePath, session } = owner;
+      return {
+        sessions: {
+          ...state.sessions,
+          [worktreePath]: {
+            ...session,
+            tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
+          },
+        },
+      };
     }),
 
   updateTabFavicon: (tabId, faviconUrl) =>
     set((state) => {
-      const session = getSession(state);
-      const tab = session.tabs.find((t) => t.id === tabId);
-      if (!tab || tab.faviconUrl === faviconUrl) return {};
-      return updateSession(state, () => ({
-        ...session,
-        tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, faviconUrl } : t)),
-      }));
+      const owner = findTabOwner(state, tabId);
+      if (!owner || owner.tab.faviconUrl === faviconUrl) return {};
+      const { worktreePath, session } = owner;
+      return {
+        sessions: {
+          ...state.sessions,
+          [worktreePath]: {
+            ...session,
+            tabs: session.tabs.map((t) => (t.id === tabId ? { ...t, faviconUrl } : t)),
+          },
+        },
+      };
     }),
 
   removeSession: (worktreePath) => {

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   useTabStore,
   selectActiveTabIdForWorktree,
@@ -43,6 +44,49 @@ function findPaneIdForPty(ptyId: string): string | null {
   return null;
 }
 
+/**
+ * Browser tabs of ONE worktree. Every worktree's browser tabs stay mounted (only
+ * CSS visibility changes) so a worktree switch never unmounts a BrowserPanel:
+ * Electron's in-DOM `<webview>` is destroyed the moment it leaves the DOM, which
+ * would reload the page.
+ *
+ * `tabScopePath` is the SELECTED worktree, passed down from the parent — the
+ * store's `activeWorktree` must not be read here: the parent sets it in an
+ * effect, and child effects run first, so for one commit the outgoing worktree's
+ * panel would still report itself active and paint its native webview over the
+ * incoming one.
+ */
+const WorktreeBrowserTabs = memo(function WorktreeBrowserTabs({
+  worktreePath,
+  tabScopePath,
+}: {
+  worktreePath: string;
+  tabScopePath: string | null;
+}) {
+  const tabs = useTabStore((state) => selectTabsForWorktree(state, worktreePath));
+  const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, worktreePath));
+  const isActiveWorktree = worktreePath === tabScopePath;
+
+  return (
+    <>
+      {tabs
+        .filter((tab) => tab.type === "browser")
+        .map((tab) => {
+          const isActive = isActiveWorktree && tab.id === activeTabId;
+          return (
+            <div
+              key={tab.id}
+              className={cn("absolute inset-0")}
+              style={{ display: isActive ? "block" : "none" }}
+            >
+              <BrowserPanel tabId={tab.id} isActive={isActive} />
+            </div>
+          );
+        })}
+    </>
+  );
+});
+
 function AppTabContent() {
   const { terminalPath, worktreePath } = useResolvedSidebarSelection();
   // Tabs follow the terminal scope: mission roots have a terminal path but no
@@ -65,8 +109,17 @@ function AppTabContent() {
 
   const activeTabId = useTabStore((state) => selectActiveTabIdForWorktree(state, tabScopePath));
   const tabs = useTabStore((state) => selectTabsForWorktree(state, tabScopePath));
-  const browserTabs = tabs.filter((tab) => tab.type === "browser");
   const fileTabs = tabs.filter((tab) => tab.type === "file");
+
+  const sessionWorktreePaths = useTabStore(useShallow((state) => Object.keys(state.sessions)));
+  // Deterministic render order is MANDATORY: if the session key order changes
+  // (hydration, removeSession), React moves the existing host divs with
+  // insertBefore — and moving an Electron `<webview>` in the DOM destroys its
+  // guest, which is exactly what mounting every worktree exists to prevent.
+  const browserWorktreePaths = useMemo(
+    () => [...sessionWorktreePaths].sort(),
+    [sessionWorktreePaths],
+  );
   const isTerminal = activeTabId === TERMINAL_CONTENT_TAB_ID;
   const isChanges = activeTabId === CHANGES_TAB_ID;
 
@@ -326,15 +379,10 @@ function AppTabContent() {
         </div>
       )}
 
-      {/* Browser tabs stay mounted so pages survive tab switches */}
-      {browserTabs.map((tab) => (
-        <div
-          key={tab.id}
-          className={cn("absolute inset-0")}
-          style={{ display: tab.id === activeTabId ? "block" : "none" }}
-        >
-          <BrowserPanel tabId={tab.id} isActive={tab.id === activeTabId} />
-        </div>
+      {/* Browser tabs of EVERY worktree stay mounted so pages survive tab and
+          worktree switches */}
+      {browserWorktreePaths.map((path) => (
+        <WorktreeBrowserTabs key={path} worktreePath={path} tabScopePath={tabScopePath} />
       ))}
 
       {/* File viewer tabs stay mounted so scroll/zoom state survives switches */}

@@ -189,6 +189,56 @@ describe("useTabStore", () => {
       useTabStore.getState().updateTabTitle("missing", "Nope");
       expect(selectCurrentTabs(useTabStore.getState())).toHaveLength(0);
     });
+
+    it("renames a tab that lives in a non-active worktree session", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+
+      useTabStore.getState().updateTabTitle(id, "background.example");
+
+      const tab = selectTabsForWorktree(useTabStore.getState(), "/tmp/a").find((t) => t.id === id);
+      expect(tab?.title).toBe("background.example");
+      expect(selectTabsForWorktree(useTabStore.getState(), "/tmp/b")).toHaveLength(0);
+    });
+
+    it("is a no-op when the title is unchanged or the tab exists nowhere", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+
+      const sessions = useTabStore.getState().sessions;
+      useTabStore.getState().updateTabTitle(id, "Browser");
+      expect(useTabStore.getState().sessions).toBe(sessions);
+      useTabStore.getState().updateTabTitle("missing", "Nope");
+      expect(useTabStore.getState().sessions).toBe(sessions);
+    });
+  });
+
+  describe("updateTabFavicon", () => {
+    it("sets the favicon of a tab that lives in a non-active worktree session", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+
+      useTabStore.getState().updateTabFavicon(id, "https://example.com/favicon.ico");
+
+      const tab = selectTabsForWorktree(useTabStore.getState(), "/tmp/a").find((t) => t.id === id);
+      expect(tab?.faviconUrl).toBe("https://example.com/favicon.ico");
+    });
+
+    it("is a no-op when the favicon is unchanged or the tab exists nowhere", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      const id = useTabStore.getState().addTab("browser", "Browser");
+      useTabStore.getState().updateTabFavicon(id, "https://example.com/favicon.ico");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+
+      const sessions = useTabStore.getState().sessions;
+      useTabStore.getState().updateTabFavicon(id, "https://example.com/favicon.ico");
+      expect(useTabStore.getState().sessions).toBe(sessions);
+      useTabStore.getState().updateTabFavicon("missing", "https://example.com/favicon.ico");
+      expect(useTabStore.getState().sessions).toBe(sessions);
+    });
   });
 
   describe("terminal tab entries", () => {
