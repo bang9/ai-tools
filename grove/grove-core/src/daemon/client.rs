@@ -305,11 +305,11 @@ pub struct SessionInfo {
     pub cols: u16,
     #[serde(default)]
     pub rows: u16,
-    /// The session's child-shell pid (design G9). The hookless AI-status reconcile
-    /// (`pty::poll_bell_events`) roots its process-tree walk here — the daemon
-    /// replacement for tmux's `#{pane_pid}`. `default` so an older daemon that does
-    /// not send it degrades to "no live-tool detection", exactly as a missing tmux
-    /// pane pid did.
+    /// The session's child-shell pid — the daemon replacement for tmux's `#{pane_pid}`.
+    /// Used by terminal GC (the leftover-process sweep after a session kill). It is NOT a
+    /// status input: the process-tree walk that once inferred a running agent from it
+    /// phantom-badged on `vim /tmp/codex` and is deleted. `default` so an older daemon
+    /// that does not send it degrades to "no pid", exactly as a missing tmux pane pid did.
     #[serde(default)]
     pub pid: Option<u32>,
 }
@@ -830,28 +830,15 @@ impl DaemonClient {
         Ok(())
     }
 
-    /// Poll pending bell + current AI-status events, one per live session (design
-    /// G9). Each session's bell is DRAINED daemon-side on this read; `ai_status` is
-    /// current state. Replaces the tmux monitor-bell / `@grove_ai_status` polls; the
-    /// frontend `PtyBellEvent` contract is unchanged.
+    /// Poll pending bell + current agent status, one row per live session (design G9).
+    ///
+    /// Each session's bell is DRAINED daemon-side on this read. `ai_status` is DERIVED
+    /// daemon-side, right now, from (the agent's own hook events × the live kernel) — the
+    /// app is not a writer of status and has no `setAiStatus` to call: ONE writer, ONE
+    /// owner. The frontend `PtyBellEvent` contract is unchanged.
     pub async fn poll_bells(&self) -> Result<Vec<crate::PtyBellEvent>, ClientError> {
         let result = self.request("pollBells", Value::Null).await?;
         serde_json::from_value(result).map_err(|e| ClientError::Protocol(e.to_string()))
-    }
-
-    /// Inject a session's AI tool status (design G9): the daemon-native replacement
-    /// for a hook's `tmux set-option @grove_ai_status`. `None` clears it. Notify —
-    /// status delivery is not latency-gated on an ACK.
-    pub async fn set_ai_status(
-        &self,
-        session_id: &str,
-        status: Option<&str>,
-    ) -> Result<(), ClientError> {
-        self.notify(
-            "setAiStatus",
-            json!({ "sessionId": session_id, "aiStatus": status }),
-        )
-        .await
     }
 
     /// Flag a session background/foreground (design P6 `set_session_background`):
@@ -1297,14 +1284,6 @@ impl ClientHandle {
 
     pub fn poll_bells_blocking(&self) -> Result<Vec<crate::PtyBellEvent>, BridgeError> {
         self.block(self.client.poll_bells())
-    }
-
-    pub fn set_ai_status_blocking(
-        &self,
-        session_id: &str,
-        status: Option<&str>,
-    ) -> Result<(), BridgeError> {
-        self.block(self.client.set_ai_status(session_id, status))
     }
 
     pub fn set_session_background_blocking(

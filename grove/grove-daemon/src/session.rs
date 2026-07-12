@@ -26,9 +26,11 @@ use grove_core::pty::{append_scrollback_capped, OutputCoalescer, PtyWriter};
 use grove_core::PtyEventSink;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
+use crate::agent::{self, AgentClaim};
 use crate::checkpointer::{CheckpointSource, PendingTake};
 use crate::emulator::{DaemonEmulator, DaemonSnapshot, SnapshotOptions, DEFAULT_SCROLLBACK_LINES};
 use crate::history::HistoryRecord;
+use crate::kernel::Kernel;
 use crate::lock;
 use crate::server::{SessionReaper, StreamHub};
 
@@ -236,12 +238,13 @@ pub struct Session {
     /// ground-state `BEL` in output; DRAINED on each `poll_bells` read (swap-false).
     /// Replaces the tmux window-bell flag — no shell-out.
     bell: AtomicBool,
-    /// AI tool status in `tool:status` form (design G9 / grove `@grove_ai_status`).
-    /// Set out-of-band by the hook path (`setAiStatus` notify) and transitioned
-    /// idle→running on an Enter keypress (`enqueue_write` seeing `\r`), replicating
-    /// `pty.rs::run_enter_detection` minus the tmux `set-option` shell-out. Read
-    /// (NOT drained) by `poll_bells` — it is current state, not an event.
-    ai_status: Mutex<Option<String>>,
+    /// The agents that have claimed this pane (agent-status design §3.5). A `Vec`
+    /// because a pane may host more than one agent over its life. Written ONLY by
+    /// the `agentClaim`/`agentEvent` RPCs on the agent socket — never by the app,
+    /// never by bytes on the terminal. Status is NOT stored here: it is DERIVED from
+    /// these claims plus the live kernel at read time (`agent_status`), which is what
+    /// makes a SIGKILLed agent's badge clear with no TTL and no timer.
+    agents: Mutex<Vec<AgentClaim>>,
     /// Background bookkeeping flag (design P6 `set_session_background`): stored for
     /// later keep-tail thinning. No behavior beyond storage in this cut.
     background: AtomicBool,
@@ -371,7 +374,7 @@ impl Session {
             producer: Producer::default(),
             failsafe_ms: AtomicU64::new(PRODUCER_PAUSE_FAILSAFE.as_millis() as u64),
             bell: AtomicBool::new(false),
-            ai_status: Mutex::new(None),
+            agents: Mutex::new(Vec::new()),
             background: AtomicBool::new(false),
             ring_cap,
         });
@@ -550,42 +553,51 @@ impl Session {
     /// single-consumer channel guarantees write order == enqueue (notify-receive)
     /// order. A send error means the session was already torn down; drop silently.
     pub fn enqueue_write(&self, data: &[u8]) {
-        // Enter-detection (design G9): an input batch carrying `\r` flips a hookless
-        // tool's status idle→running, replicating `pty.rs::run_enter_detection`
-        // minus the tmux `set-option` shell-out. Done at enqueue time (vs the write
-        // thread) — the transition is about the user pressing Enter, observable from
-        // the input bytes; ordering against the actual PTY write is immaterial to
-        // the status.
-        if data.contains(&b'\r') {
-            self.detect_enter();
-        }
+        // NOTE (agent-status design §4): input bytes are NOT a status signal. The old
+        // Enter-detection here ("the user pressed Enter, therefore an agent is
+        // working") fired for `ls` and is DELETED. Status comes from the agent's own
+        // hook events and nothing else.
         let _ = self.write_tx.send(data.to_vec());
     }
 
-    /// Idle→running transition on an Enter keypress for a hookless tool (design G9,
-    /// mirrors `pty.rs::run_enter_detection`). A no-op unless the current status is
-    /// a hookless tool that is not already running.
-    fn detect_enter(&self) {
-        let mut st = lock(&self.ai_status);
-        let current = st.as_deref();
-        if grove_core::tool_hooks::needs_idle_detection(current)
-            && !grove_core::tool_hooks::is_running(current)
-        {
-            let running = grove_core::tool_hooks::to_running(current.unwrap());
-            *st = Some(running);
-        }
+    /// Record an agent's claim on this pane (agent-status design §3.3). Called from
+    /// the `agentClaim` RPC AFTER the daemon has verified the session key, the peer
+    /// pid, and that the claimant's controlling terminal is THIS pane's tty.
+    ///
+    /// Dead claims are pruned here purely to bound the `Vec` — correctness never
+    /// depends on it, because `agent_status` re-checks liveness against the kernel on
+    /// every read.
+    pub fn record_agent_claim(&self, claim: AgentClaim, kernel: &dyn Kernel) {
+        let mut agents = lock(&self.agents);
+        agent::prune(&mut agents, kernel);
+        agents.push(claim);
     }
 
-    /// Set the session's AI tool status out-of-band (design G9). The daemon-native
-    /// equivalent of a hook's `tmux set-option @grove_ai_status`: the P9 hook path
-    /// forwards status here via the `setAiStatus` notify.
-    pub fn set_ai_status(&self, status: Option<String>) {
-        *lock(&self.ai_status) = status;
+    /// Apply one hook event to a claim (agent-status design §3.4). Returns whether it
+    /// was accepted; an unknown `claim_id` or an out-of-order `at_ns` is DROPPED.
+    /// Dropping a status event is harmless by design (liveness comes from the kernel
+    /// and the next event self-corrects) — stalling the agent is not.
+    pub fn apply_agent_event(
+        &self,
+        claim_id: &str,
+        event: &str,
+        tool_name: Option<&str>,
+        at_ns: u64,
+    ) -> bool {
+        agent::apply_event(&mut lock(&self.agents), claim_id, event, tool_name, at_ns)
     }
 
-    /// The current AI tool status (design G9), read (not drained) by `poll_bells`.
-    pub fn ai_status(&self) -> Option<String> {
-        lock(&self.ai_status).clone()
+    /// The pane's `"<tool>:<status>"` badge, DERIVED at read time from (live claims ×
+    /// live kernel). `None` ⇒ no badge. This is the whole status read path; there is
+    /// no stored status to go stale, no TTL to tune, and nothing to garbage-collect.
+    pub fn agent_status(&self, kernel: &dyn Kernel) -> Option<String> {
+        agent::resolve(&lock(&self.agents), kernel)
+    }
+
+    /// The number of claims currently retained (tests/diagnostics only).
+    #[cfg(test)]
+    pub fn agent_claim_count(&self) -> usize {
+        lock(&self.agents).len()
     }
 
     /// Drain the pending terminal-bell flag (design G9): returns whether a real
@@ -959,7 +971,9 @@ fn run_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Phase;
     use crate::emulator::SnapshotOptions;
+    use crate::kernel::FakeKernel;
     use crate::server::{SessionReaper, StreamHub};
 
     fn spawn_test_session() -> Arc<Session> {
@@ -1102,29 +1116,89 @@ mod tests {
     }
 
     #[test]
-    fn ai_status_transitions_to_running_on_enter() {
-        // Design G9: an Enter keypress flips a hookless tool idle→running, mirroring
-        // run_enter_detection. A non-hookless / unset status is untouched.
+    fn pressing_enter_can_never_produce_a_badge() {
+        // The DELETED Enter-detector, pinned as a regression test. "The user pressed
+        // Enter, therefore an agent is working" is a guess, and it fired for `ls`.
+        // Typing in a plain shell must produce NO badge, ever — bytes on the terminal
+        // are not a status channel.
         let session = spawn_test_session();
-        assert_eq!(session.ai_status(), None);
+        let kernel = FakeKernel::new();
+        assert_eq!(session.agent_status(&kernel), None);
 
-        // Seed an idle hookless status (the hook path / setAiStatus does this).
-        session.set_ai_status(Some("codex:idle".to_string()));
+        session.enqueue_write(b"ls\r");
         session.enqueue_write(b"\r");
+        session.feed_emulator(b"\x1b]2;\xe2\x9c\xb3 Claude Code\x07"); // an OSC title, too
         assert_eq!(
-            session.ai_status().as_deref(),
-            Some("codex:running"),
-            "Enter must transition a hookless idle tool to running"
+            session.agent_status(&kernel),
+            None,
+            "no claim ⇒ no badge, no matter what is typed or printed"
+        );
+        Session::kill(&session);
+    }
+
+    #[test]
+    fn a_claim_plus_events_derives_the_badge_and_a_dead_agent_clears_it() {
+        // The session-level wiring of the claim/event/resolve triangle. The kernel is
+        // faked so this needs no real agent — the real-kernel proof lives in
+        // kernel.rs, and the socket-level proof in tests/agent_socket.rs.
+        let session = spawn_test_session();
+        let kernel = FakeKernel::new();
+        kernel.insert(777, 12_345, 9);
+
+        session.record_agent_claim(
+            AgentClaim {
+                claim_id: "cid".into(),
+                tool: "claude".into(),
+                pid: 777,
+                start_us: 12_345,
+                phase: Phase::Idle,
+                last_at_ns: 0,
+            },
+            &kernel,
+        );
+        assert_eq!(session.agent_status(&kernel).as_deref(), Some("claude:idle"));
+
+        assert!(session.apply_agent_event("cid", "UserPromptSubmit", None, 10));
+        assert_eq!(session.agent_status(&kernel).as_deref(), Some("claude:running"));
+
+        assert!(session.apply_agent_event("cid", "PermissionRequest", Some("Bash"), 20));
+        assert_eq!(
+            session.agent_status(&kernel).as_deref(),
+            Some("claude:attention"),
+            "PermissionRequest fires at the instant the agent blocks on the human"
         );
 
-        // Already running: Enter is a no-op (idempotent).
-        session.enqueue_write(b"\r");
-        assert_eq!(session.ai_status().as_deref(), Some("codex:running"));
+        // An event naming a claim we never minted is dropped.
+        assert!(!session.apply_agent_event("forged", "Stop", None, 30));
+        assert_eq!(session.agent_status(&kernel).as_deref(), Some("claude:attention"));
 
-        // A non-Enter write does not transition.
-        session.set_ai_status(Some("codex:idle".to_string()));
-        session.enqueue_write(b"ls");
-        assert_eq!(session.ai_status().as_deref(), Some("codex:idle"));
+        // The agent is SIGKILLed: zombie first, then reaped. The badge clears with no
+        // TTL, no timer, and nothing to garbage-collect.
+        kernel.zombify(777);
+        assert_eq!(session.agent_status(&kernel), None);
+        kernel.remove(777);
+        assert_eq!(session.agent_status(&kernel), None);
+
+        // The claim record itself is only pruned lazily (on the next claim) — the
+        // badge does not depend on that, which is the point.
+        assert_eq!(session.agent_claim_count(), 1);
+        session.record_agent_claim(
+            AgentClaim {
+                claim_id: "cid2".into(),
+                tool: "codex".into(),
+                pid: 888,
+                start_us: 999,
+                phase: Phase::Idle,
+                last_at_ns: 0,
+            },
+            &kernel,
+        );
+        assert_eq!(session.agent_claim_count(), 1, "the dead claim was pruned");
+        assert_eq!(
+            session.agent_status(&kernel),
+            None,
+            "the new claim's pid is not live either ⇒ still no badge"
+        );
         Session::kill(&session);
     }
 

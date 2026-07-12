@@ -53,24 +53,6 @@ async fn wait_until(timeout: Duration, label: &str, mut probe: impl FnMut() -> b
     }
 }
 
-/// Publish a status the way a tool hook does: an atomic write into the pane's
-/// `GROVE_AI_STATUS_FILE`. An EMPTY payload is the hook's explicit "clear".
-fn publish_hook_status(base_dir: &Path, session_id: &str, status: &str) {
-    let dir = base_dir.join("ai-status");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(session_id);
-    let tmp = dir.join(format!("{session_id}.test.tmp"));
-    std::fs::write(&tmp, status).unwrap();
-    std::fs::rename(&tmp, &path).unwrap();
-}
-
-fn status_of(events: &[PtyBellEvent], pty_id: &str) -> Option<String> {
-    events
-        .iter()
-        .find(|event| event.pty_id == pty_id)
-        .and_then(|event| event.ai_status.clone())
-}
-
 /// A second app's CONTROL socket — a raw hello, nothing more. Deliberately NOT a full
 /// `DaemonClient`: the daemon's stream hub holds ONE subscriber slot, so a second
 /// client's stream hello would evict the first app's stream and disconnect it. The GC
@@ -181,20 +163,47 @@ async fn ai_status_poll_and_terminal_gc_against_real_daemon() {
         "a quiet pane with no bell and no status must emit NO event; got {events:?}"
     );
 
-    // A hook publishes a status → exactly one event carrying it.
-    publish_hook_status(&base_dir, &session_id, "claude:running");
-    let events = pty::poll_bell_events().await.unwrap();
-    assert_eq!(events.len(), 1, "a status change emits one event");
-    assert_eq!(events[0].pty_id, "pty-1", "events are keyed by grove PTY id");
-    assert!(!events[0].bell);
-    assert_eq!(events[0].ai_status.as_deref(), Some("claude:running"));
+    // ── A PLAIN SHELL NEVER BADGES (agent-status design §3.6 rung D) ─────────────
+    // The whole file/timer/Enter status machine is DELETED. Status now has exactly one
+    // writer (the daemon, from the agent's own hook events, over the agentClaim/
+    // agentEvent socket — see tests/agent_socket.rs) and liveness has exactly one
+    // source (the kernel, at read time). Nothing this pane does can conjure a badge:
+    //
+    //  - it prints Claude's exact idle title (U+2733) as an OSC 2 — the title is dead
+    //    as a status source (Claude's BLOCKED title carries the SAME glyph, and
+    //    oh-my-zsh sets OSC 2 to the command line, so this is what a plain shell
+    //    running `claude --version` genuinely looks like);
+    //  - it presses Enter — the deleted Enter-detector would have called that "an
+    //    agent is working"; it fired for `ls`;
+    //  - it rings a real BEL, which still rings the bell UI and MUST NOT badge.
+    pty::write(
+        "pty-1",
+        b"printf '\\033]2;\\342\\234\\263 claude --version\\007'; printf '\\a'\r",
+    )
+    .await
+    .unwrap();
 
-    // Nothing changed since → NO event. (This also proves the write-back landed: the
-    // daemon now reports claude:running, so the poll finds no delta.)
+    let mut bell_events: Vec<PtyBellEvent> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while bell_events.is_empty() {
+        assert!(Instant::now() < deadline, "the BEL never reached the daemon");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let polled = pty::poll_bell_events().await.unwrap();
+        assert!(
+            polled.iter().all(|event| event.ai_status.is_none()),
+            "a plain shell must NEVER badge, whatever it types or prints; got {polled:?}"
+        );
+        bell_events = polled.into_iter().filter(|event| event.bell).collect();
+    }
+    assert_eq!(bell_events[0].pty_id, "pty-1", "events are keyed by grove PTY id");
+    assert_eq!(bell_events[0].ai_status, None);
+
+    // The bell DRAINS (the daemon swaps it false on read), so it never re-fires — and
+    // with no bell and no status, the delta emitter goes quiet again.
     let events = pty::poll_bell_events().await.unwrap();
     assert!(
-        events.is_empty(),
-        "an unchanged status must NOT re-emit; got {events:?}"
+        events.iter().all(|event| !event.bell),
+        "the bell drained on the previous poll; got {events:?}"
     );
     assert_eq!(
         client
@@ -203,106 +212,10 @@ async fn ai_status_poll_and_terminal_gc_against_real_daemon() {
             .unwrap()
             .iter()
             .find(|row| row.pty_id == session_id)
-            .and_then(|row| row.ai_status.clone())
-            .as_deref(),
-        Some("claude:running"),
-        "the hook's status must have been written back into the daemon's store"
-    );
-
-    // A real BEL in the pane's output → one event with bell=true, and the bell DRAINS
-    // (the daemon swaps it false on read), so it never re-fires.
-    pty::write("pty-1", b"printf '\\a'\r").await.unwrap();
-    let mut bell_events: Vec<PtyBellEvent> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while bell_events.is_empty() {
-        assert!(Instant::now() < deadline, "the BEL never reached the daemon");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        bell_events = pty::poll_bell_events()
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|event| event.bell)
-            .collect();
-    }
-    assert_eq!(bell_events[0].pty_id, "pty-1");
-    assert_eq!(
-        bell_events[0].ai_status.as_deref(),
-        Some("claude:running"),
-        "a bell event carries the CURRENT status, unchanged"
-    );
-    let events = pty::poll_bell_events().await.unwrap();
-    assert!(
-        events.iter().all(|event| !event.bell),
-        "the bell drained on the previous poll; got {events:?}"
-    );
-
-    // ── HOOK FILE vs ENTER-DETECTION ────────────────────────────────────────────
-    // The daemon flips a hookless tool idle→running when it sees `\r` in the input
-    // (Session::detect_enter — the successor of pty.rs's Enter-detection). A status
-    // the HOOK published since the last tick must WIN over that, exactly as a hook's
-    // `tmux set-option` overwrote whatever Enter-detection had just set.
-    client
-        .set_ai_status(&session_id, Some("codex:idle"))
-        .await
-        .unwrap();
-    pty::write("pty-1", b"\r").await.unwrap();
-    {
-        let client_ref = client;
-        let session = session_id.clone();
-        wait_until(Duration::from_secs(20), "daemon Enter-detection", || {
-            let session = session.clone();
-            futures_lite_block(async move {
-                client_ref
-                    .poll_bells()
-                    .await
-                    .unwrap()
-                    .iter()
-                    .find(|row| row.pty_id == session)
-                    .and_then(|row| row.ai_status.clone())
-                    .as_deref()
-                    == Some("codex:running")
-            })
-        })
-        .await;
-    }
-
-    publish_hook_status(&base_dir, &session_id, "codex:attention");
-    let events = pty::poll_bell_events().await.unwrap();
-    assert_eq!(
-        status_of(&events, "pty-1").as_deref(),
-        Some("codex:attention"),
-        "the hook FILE must win over the daemon's Enter-detection transition"
-    );
-
-    // ── IDLE CLOCK ──────────────────────────────────────────────────────────────
-    // running →(no output for CODEX_OUTPUT_IDLE_TIMEOUT=3s)→ idle, driven entirely by
-    // `last_output_at`, which the daemon stream sink stamps on every output frame.
-    client
-        .set_ai_status(&session_id, Some("codex:running"))
-        .await
-        .unwrap();
-    pty::write("pty-1", b"echo GROVE_IDLE_CLOCK\r").await.unwrap();
-    {
-        let sink = Arc::clone(&sink);
-        wait_until(Duration::from_secs(20), "idle-clock output", move || {
-            sink.text().contains("GROVE_IDLE_CLOCK")
-        })
-        .await;
-    }
-    // Fresh output ⇒ still running.
-    let events = pty::poll_bell_events().await.unwrap();
-    assert_eq!(
-        status_of(&events, "pty-1").as_deref(),
-        Some("codex:running"),
-        "a hookless tool with FRESH output must stay running"
-    );
-    // Output stops ⇒ idle once the 3s window elapses.
-    tokio::time::sleep(Duration::from_millis(3_300)).await;
-    let events = pty::poll_bell_events().await.unwrap();
-    assert_eq!(
-        status_of(&events, "pty-1").as_deref(),
-        Some("codex:idle"),
-        "no output for >3s must transition a hookless tool running→idle"
+            .and_then(|row| row.ai_status.clone()),
+        None,
+        "the daemon derives status from agent claims × the live kernel — and this pane \
+         has no claim, so there is nothing to report"
     );
 
     // ── TERMINAL GC ─────────────────────────────────────────────────────────────

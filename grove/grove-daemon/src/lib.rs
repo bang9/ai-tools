@@ -10,9 +10,11 @@
 //! This library exposes the server + session types so integration tests can run
 //! a full daemon in-process against a temp socket; `main.rs` is a thin wrapper.
 
+pub mod agent;
 pub mod checkpointer;
 pub mod emulator;
 pub mod history;
+pub mod kernel;
 pub mod mode_state;
 pub mod server;
 pub mod session;

@@ -1,0 +1,32 @@
+[package]
+name = "grove-agent"
+version = "0.1.0"
+edition = "2021"
+
+# The agent-status launcher + hook relay (agent-status design §5/Step 5). Installed
+# into `~/.grove/bin/grove-agent`, so its path is byte-stable forever — codex's hook
+# TRUST hash covers the hook command string, and a changed command re-shows codex's
+# "Hooks need review" modal.
+#
+# A `lib` + a thin `main` so the resolver, the argv planner and the socket client are
+# unit-testable without spawning the binary.
+[lib]
+name = "grove_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "grove-agent"
+path = "src/main.rs"
+
+[dependencies]
+# The protocol types (Hello / RpcRequest / AgentClaimParams / AgentEventParams) and the
+# hook DEFINITIONS (tool_hooks) come from grove-core: ONE impl, shared with the daemon
+# and the app, so the wire and the hook commands can never drift.
+grove-core = { path = "../grove-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+dirs = "5"
+
+[dev-dependencies]
+portable-pty = "0.8"

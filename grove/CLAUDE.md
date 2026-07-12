@@ -8,7 +8,7 @@ Dual-platform macOS desktop app (Tauri v2 by default, Electron optional) — Git
 - [Terminal Broadcast](docs/terminal-broadcast.md) — PiP, Mirror, consumer model, persistence policy
 - [Terminal Daemon Migration](docs/daemon-migration.md) — user-facing tmux → grove-daemon cutover: what survives a reboot, what `~/.tmux.conf` no longer does, scrollback preference, first-launch sweep
 - [Terminal Resize Pipeline](docs/terminal-resize.md) — fit-stability loop, viewport preservation, PTY resize dedupe, flicker masks, regression checklist
-- [Grove Hooks Runtime Design](docs/grove-hooks-runtime-design.md) — Claude/Codex hook parity, CODEX_HOME overlay delivery, status tracking architecture
+- [Agent Status](docs/grove-hooks-runtime-design.md) — the agent's own hooks + the kernel; `grove-agent` launcher, the claim/event socket channel, the degradation ladder
 - [Context Menu](docs/context-menu.md) — Sidebar right-click menu, launcher menu items, notes, and extending with extraItems
 - [Terminal Link Open](docs/open-link.md) — URL interception via open wrapper, Unix socket routing, preference-based link handling
 - [Preferences UI](docs/preferences-ui.md) — Modal structure, four-tab layout, heading hierarchy rules, file layout, data flow

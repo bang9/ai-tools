@@ -92,7 +92,6 @@ impl DaemonSocket {
     }
 }
 
-#[cfg(windows)]
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -133,11 +132,22 @@ pub fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// Which socket a client opened. Each host client opens TWO connections keyed by
 /// the same `client_id`: a control socket (NDJSON RPC) and a stream socket
 /// (binary output frames). Serialized as the orca-compatible `role` field.
+///
+/// [`ClientKind::Agent`] is the agent-status channel (agent-status design §3.2). It
+/// is PURELY ADDITIVE at protocol version 1 — the version is deliberately NOT
+/// bumped, because the socket AND the on-disk history root are version-namespaced,
+/// so a bump would orphan every shell a user currently has running and lose their
+/// scrollback. The cost of staying at v1 is that an OLD, already-running daemon the
+/// supervisor adopted cannot parse `role:"agent"`: its `Hello` decode fails and it
+/// answers `HelloAck{ok:false}`. That is the designed degradation — the claim fails,
+/// `grove-agent` execs the real agent anyway, and the pane simply shows no badge
+/// until that daemon is next restarted. Nothing hangs, errors, or blocks the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ClientKind {
     Control,
     Stream,
+    Agent,
 }
 
 /// First line sent on every socket. The server validates: message type,
@@ -173,6 +183,93 @@ impl HelloAck {
             error: Some(reason.into()),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Agent-status channel (agent-status design §3.2/§3.3)
+// ---------------------------------------------------------------------------
+
+/// Env var carrying the per-session agent key into a pane (see
+/// [`derive_session_key`]). NOT the daemon token — a shell in a pane must never be
+/// able to call `kill`/`shutdown`.
+pub const GROVE_SESSION_KEY_ENV: &str = "GROVE_SESSION_KEY";
+/// Env var carrying the daemon control socket path into a pane, so `grove-agent`
+/// can find the endpoint without re-deriving the app data dir.
+pub const GROVE_DAEMON_SOCK_ENV: &str = "GROVE_DAEMON_SOCK";
+/// Env var carrying the daemon-minted claim id into the AGENT's env (and thus,
+/// by inheritance, into its hook subprocesses). This is the capability that
+/// authorizes `agentEvent` — a hook has no controlling terminal and often no
+/// readable peer pid, so the claim id is the only thing it can prove.
+pub const GROVE_CLAIM_ID_ENV: &str = "GROVE_CLAIM_ID";
+
+/// The claim RPC: sent ONCE by `grove-agent launch`, before it execs the real
+/// agent. Method name for [`RpcRequest::method`].
+pub const METHOD_AGENT_CLAIM: &str = "agentClaim";
+/// The per-hook-fire event RPC. Method name for [`RpcRequest::method`].
+pub const METHOD_AGENT_EVENT: &str = "agentEvent";
+
+/// Derive a pane's agent key from the daemon token and the session id.
+///
+/// The key is DERIVED, never stored and never rotated: it authorizes exactly two
+/// methods ([`METHOD_AGENT_CLAIM`], [`METHOD_AGENT_EVENT`]) on exactly one session.
+/// Leaking it yields no daemon token (SHA-256 preimage), so a pane's env can carry
+/// it safely while the daemon token stays out of every pane.
+///
+/// ONE impl, shared by grove-core (which exports the key into the child env) and
+/// grove-daemon (which recomputes it to authorize a call) — they can never drift.
+pub fn derive_session_key(daemon_token: &str, session_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("grove-agent-v1:{daemon_token}:{session_id}").as_bytes());
+    hex_lower(&digest[..16]) // 32 hex chars
+}
+
+/// Mint a fresh, unguessable claim id (128 bits, 32 hex chars). Daemon-side only;
+/// it is handed back in [`AgentClaimResult`] and exported as [`GROVE_CLAIM_ID_ENV`].
+pub fn new_claim_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    hex_lower(&bytes)
+}
+
+/// `agentClaim` params. There is deliberately **no `pid` field**: the daemon reads
+/// the peer pid from the kernel (`getsockopt(SOL_LOCAL, LOCAL_PEERPID)`), and
+/// because `grove-agent launch` **execs** the real agent, that pid IS the agent's
+/// pid. A claimant cannot lie about who it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentClaimParams {
+    pub session_id: String,
+    /// `"claude"` | `"codex"` — the tool half of the frozen `"<tool>:<status>"`
+    /// renderer contract.
+    pub tool: String,
+}
+
+/// `agentClaim` result: the capability a hook later presents on `agentEvent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentClaimResult {
+    pub claim_id: String,
+}
+
+/// `agentEvent` params — one per hook fire. Only `event` and `tool_name` cross the
+/// wire: `cwd`, `tool_input` and `transcript_path` do NOT (no PII on the socket).
+///
+/// `event` is the agent's own `hook_event_name`, verbatim. Both Claude Code and
+/// Codex emit CamelCase (`PreToolUse`, `PermissionRequest`, `Stop`, …) — verified
+/// on the wire for both — so ONE mapping table serves both agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEventParams {
+    pub session_id: String,
+    pub claim_id: String,
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// `CLOCK_MONOTONIC` nanos at hook time. The daemon drops any event whose
+    /// `at_ns` is not strictly greater than the claim's last accepted one — five
+    /// lines that kill the whole reordering class.
+    pub at_ns: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +576,149 @@ mod tests {
             let back: ControlMessage = decode_ndjson_line(&line).unwrap();
             assert_eq!(back, m);
         }
+    }
+
+    #[test]
+    fn agent_hello_round_trips_as_role_agent() {
+        // The agent role is ADDITIVE at protocol version 1 (no bump — a bump would
+        // orphan every running shell). It must serialize as the plain "agent" role.
+        let hello = Hello {
+            version: GROVE_DAEMON_PROTOCOL_VERSION,
+            token: derive_session_key("daemon-tok", "grove-ab12-p1"),
+            client_id: "agent".into(),
+            kind: ClientKind::Agent,
+        };
+        let line = encode_ndjson_line(&hello).unwrap();
+        assert!(line.contains("\"role\":\"agent\""));
+        assert_eq!(decode_ndjson_line::<Hello>(&line).unwrap(), hello);
+    }
+
+    #[test]
+    fn an_old_daemon_cannot_parse_the_agent_role() {
+        // The degrade-gracefully contract, pinned. An ALREADY-RUNNING older daemon
+        // (adopted by the supervisor across an app update) has a ClientKind with only
+        // Control|Stream. Its `Hello` decode MUST fail on role:"agent" — that is what
+        // makes it answer HelloAck{ok:false} instead of misrouting the connection.
+        // `grove-agent` sees the rejection, gives up silently, and execs the agent.
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum LegacyClientKind {
+            #[allow(dead_code)]
+            Control,
+            #[allow(dead_code)]
+            Stream,
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacyHello {
+            #[allow(dead_code)]
+            version: u32,
+            #[serde(rename = "role")]
+            #[allow(dead_code)]
+            kind: LegacyClientKind,
+        }
+        let line = encode_ndjson_line(&Hello {
+            version: GROVE_DAEMON_PROTOCOL_VERSION,
+            token: "k".into(),
+            client_id: "agent".into(),
+            kind: ClientKind::Agent,
+        })
+        .unwrap();
+        assert!(
+            decode_ndjson_line::<LegacyHello>(&line).is_err(),
+            "an old daemon must REJECT role:\"agent\", not silently accept it"
+        );
+        // …while the control/stream roles it does know keep decoding unchanged, so
+        // adding the variant breaks no existing client.
+        for kind in [ClientKind::Control, ClientKind::Stream] {
+            let line = encode_ndjson_line(&Hello {
+                version: GROVE_DAEMON_PROTOCOL_VERSION,
+                token: "k".into(),
+                client_id: "c".into(),
+                kind,
+            })
+            .unwrap();
+            assert!(decode_ndjson_line::<LegacyHello>(&line).is_ok());
+        }
+    }
+
+    #[test]
+    fn derive_session_key_is_stable_scoped_and_32_hex() {
+        let key = derive_session_key("daemon-tok", "grove-ab12-p1");
+        assert_eq!(key.len(), 32, "32 hex chars");
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        // Stable: the daemon recomputes it on every call to authorize; a drift here
+        // would silently kill every badge.
+        assert_eq!(key, derive_session_key("daemon-tok", "grove-ab12-p1"));
+        // Scoped to ONE session (pane A cannot compute pane B's key)…
+        assert_ne!(key, derive_session_key("daemon-tok", "grove-ab12-p2"));
+        // …and to ONE daemon token (a key from a previous daemon is worthless).
+        assert_ne!(key, derive_session_key("other-tok", "grove-ab12-p1"));
+        // And it is NOT the token: leaking it yields no daemon token (preimage).
+        assert_ne!(key, "daemon-tok");
+    }
+
+    #[test]
+    fn claim_ids_are_unguessable_and_unique() {
+        let a = new_claim_id();
+        let b = new_claim_id();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "a claim id is a capability — it must not repeat");
+    }
+
+    #[test]
+    fn agent_claim_and_event_round_trip_over_the_rpc_envelope() {
+        // The agent channel rides the EXISTING RpcRequest/RpcReply envelope, so it
+        // inherits correlation, the 16MB line cap, and NDJSON framing for free.
+        let claim = AgentClaimParams {
+            session_id: "grove-ab12-p1".into(),
+            tool: "claude".into(),
+        };
+        let req = RpcRequest {
+            id: 1,
+            method: METHOD_AGENT_CLAIM.into(),
+            params: serde_json::to_value(&claim).unwrap(),
+        };
+        let line = encode_ndjson_line(&ControlMessage::Request(req.clone())).unwrap();
+        assert!(line.contains("\"sessionId\":\"grove-ab12-p1\""));
+        let back: ControlMessage = decode_ndjson_line(&line).unwrap();
+        assert_eq!(back, ControlMessage::Request(req));
+
+        let ack = AgentClaimResult {
+            claim_id: "a".repeat(32),
+        };
+        let reply = RpcReply::ok(1, serde_json::to_value(&ack).unwrap());
+        let line = encode_ndjson_line(&reply).unwrap();
+        assert!(line.contains("\"claimId\""));
+        let back: RpcReply = decode_ndjson_line(&line).unwrap();
+        let ack_back: AgentClaimResult =
+            serde_json::from_value(back.result.unwrap()).expect("claim result decodes");
+        assert_eq!(ack_back, ack);
+
+        let event = AgentEventParams {
+            session_id: "grove-ab12-p1".into(),
+            claim_id: "a".repeat(32),
+            event: "PermissionRequest".into(),
+            tool_name: Some("Bash".into()),
+            at_ns: 19_384_712_345_678,
+        };
+        let line = encode_ndjson_line(&event).unwrap();
+        assert!(line.contains("\"toolName\":\"Bash\""));
+        assert!(line.contains("\"atNs\":19384712345678"));
+        assert_eq!(decode_ndjson_line::<AgentEventParams>(&line).unwrap(), event);
+
+        // toolName is absent for non-tool events (Stop, SessionStart, …).
+        let stop = AgentEventParams {
+            session_id: "grove-ab12-p1".into(),
+            claim_id: "a".repeat(32),
+            event: "Stop".into(),
+            tool_name: None,
+            at_ns: 2,
+        };
+        let line = encode_ndjson_line(&stop).unwrap();
+        assert!(!line.contains("toolName"), "absent, not null: {line}");
+        assert_eq!(decode_ndjson_line::<AgentEventParams>(&line).unwrap(), stop);
     }
 
     #[test]

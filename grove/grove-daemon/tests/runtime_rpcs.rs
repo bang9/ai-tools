@@ -184,52 +184,51 @@ async fn get_cwd_reflects_osc7_from_a_real_shell() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn poll_bells_reports_bell_and_ai_status() {
-    // Design G9: a real terminal BEL rings the bell flag (drained on poll); an
-    // injected AI status rides poll_bells and transitions idle→running on Enter.
+async fn poll_bells_reports_the_bell_and_a_plain_shell_never_badges() {
+    // Design G9 + agent-status design §3.6 rung D. A real terminal BEL rings the bell
+    // flag (drained on poll). The AI status half of this test is GONE on purpose: the
+    // app is no longer a writer of status (`setAiStatus` is deleted — one writer, one
+    // owner), and Enter-detection is deleted with it, because "the user pressed Enter,
+    // therefore an agent is working" is a guess that fired for `ls`.
+    //
+    // What remains is the property that matters here: a PLAIN SHELL — typing, pressing
+    // Enter, printing escape sequences, ringing the bell — produces NO badge, ever.
+    // That is structural: a badge requires a claim, and a claim requires the agentClaim
+    // RPC (see tests/agent_socket.rs). Bytes on a terminal cannot produce one.
     let (_proc, client, _base) = boot().await;
     client.create_or_attach(attach("bl")).await.expect("attach");
 
-    // Inject an idle hookless status (the P9 hook path does this via setAiStatus).
+    // Ring a real bell from the shell, and print an OSC 2 title that looks exactly
+    // like Claude's idle title (U+2733) — oh-my-zsh really does set OSC 2 to the
+    // command line, which is why the title is not a status source.
     client
-        .set_ai_status("bl", Some("codex:idle"))
-        .await
-        .expect("set ai status");
-
-    // Ring a real bell from the shell.
-    client
-        .write("bl", b"printf '\\007'\r")
+        .write("bl", b"printf '\\033]2;\\342\\234\\263 claude --version\\007\\007'\r")
         .await
         .expect("write bell");
 
-    // The Enter that submitted the printf also transitions the status to running.
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut saw_bell = false;
     loop {
         let events = client.poll_bells().await.expect("poll bells");
-        let entry = events.iter().find(|e| e.pty_id == "bl");
-        if let Some(e) = entry {
+        if let Some(e) = events.iter().find(|e| e.pty_id == "bl") {
+            assert_eq!(
+                e.ai_status, None,
+                "a plain shell must NEVER badge, whatever it prints or types"
+            );
             if e.bell {
-                saw_bell = true;
-            }
-            if saw_bell && e.ai_status.as_deref() == Some("codex:running") {
                 break;
             }
         }
-        assert!(
-            Instant::now() < deadline,
-            "poll_bells never reported bell + running status (saw_bell={saw_bell})"
-        );
+        assert!(Instant::now() < deadline, "the BEL never reached the daemon");
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
-    // The bell drained on the poll that observed it: a fresh poll reports no bell
-    // (the shell is idle now, emitting nothing more).
+    // The bell drained on the poll that observed it (it is an event); the absent
+    // status is not an event, and stays absent.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let events = client.poll_bells().await.expect("poll bells again");
     let entry = events.iter().find(|e| e.pty_id == "bl").expect("bl present");
     assert!(!entry.bell, "bell must have drained on the earlier poll");
-    assert_eq!(entry.ai_status.as_deref(), Some("codex:running"), "status persists");
+    assert_eq!(entry.ai_status, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

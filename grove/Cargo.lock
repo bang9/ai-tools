@@ -1345,6 +1345,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "grove-agent"
+version = "0.1.0"
+dependencies = [
+ "dirs 5.0.1",
+ "grove-core",
+ "libc",
+ "portable-pty",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "grove-core"
 version = "0.1.0"
 dependencies = [

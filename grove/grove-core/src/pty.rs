@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fmt::Write as _;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::sleep;
@@ -51,8 +51,6 @@ const MAX_PENDING_BYTES: usize = OUTPUT_FLUSH_SIZE * 64;
 const WORKTREE_HASH_LEN: usize = 12;
 const PANE_PREFIX_LEN: usize = 8;
 const PANE_HASH_LEN: usize = 4;
-const CODEX_OUTPUT_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-const HOOKLESS_ATTENTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const TERMINAL_GC_PROCESS_EXIT_GRACE: Duration = Duration::from_millis(250);
 
 pub trait PtyEventSink: Send + Sync + 'static {
@@ -85,16 +83,11 @@ struct PtyRuntimeState {
     /// `terminal-session-snapshots.json` content it always has.
     scrollback: VecDeque<u8>,
     scrollback_truncated: bool,
-    /// The last status grove EMITTED for this pane. Purely the delta filter for
-    /// `poll_bell_events` (an event fires only when this changes) — the authoritative
-    /// store is the daemon's per-session `ai_status`.
+    /// The last status grove EMITTED for this pane. PURELY the delta filter for
+    /// `poll_bell_events` (an event fires only when this changes) — the status itself is
+    /// DERIVED by the daemon at read time from (agent claim × live kernel) and is never
+    /// stored anywhere, by anyone, including here.
     last_ai_status: Option<String>,
-    /// Stamped by the daemon stream sink on every output frame. After the cutover
-    /// this is the ONLY feed for the AI-status idle clock — without it the hookless
-    /// idle/attention state machine in `poll_bell_events` freezes forever.
-    last_output_at: Option<Instant>,
-    /// Set when a hookless tool transitions running→idle. Used for attention timeout.
-    idle_since: Option<Instant>,
     /// Set by the stream sink when the daemon reports the child exited. The entry is
     /// removed from the registry on the same event, so terminal GC observes this only
     /// through a still-held `tracked` handle.
@@ -121,8 +114,6 @@ impl PtyRuntimeState {
             scrollback: VecDeque::new(),
             scrollback_truncated: false,
             last_ai_status: None,
-            last_output_at: None,
-            idle_since: None,
             reader_exited: false,
         };
 
@@ -277,15 +268,14 @@ impl DaemonSinkAdapter {
         }
     }
 
-    /// Record a chunk against the pane's runtime state, then hand it to the
-    /// transport. The `last_output_at` stamp is load-bearing: it is the only
-    /// remaining feed for the hookless AI-status idle clock (`poll_bell_events`).
+    /// Record a chunk against the pane's local scrollback mirror (what
+    /// `save_terminal_session_snapshot` persists), then hand it to the transport.
+    ///
+    /// Output is NOT a status input. It never was a good one: a *blocked* codex repaints
+    /// its spinner continuously, so the output-silence timer this used to feed said
+    /// "working" precisely when the human was being waited on.
     fn ingest(&self, data: &[u8]) {
-        {
-            let mut state = lock_recover(&self.tracked);
-            state.append_scrollback(data);
-            state.last_output_at = Some(Instant::now());
-        }
+        lock_recover(&self.tracked).append_scrollback(data);
         self.sink.on_output(&self.pty_id, data);
     }
 
@@ -610,14 +600,12 @@ pub struct PtyWriter {
 impl PtyWriter {
     /// Spawn an ordered FIFO writer for a PTY master.
     ///
-    /// "Input only" = no side effects beyond the bytes. Enter-detection used to run
-    /// HERE, on the writer thread, because that was the last place grove saw the input
-    /// before it reached the shell. grove owns no PTY master any more: input crosses
-    /// the socket as a `write` notify and the DAEMON does Enter-detection on the same
-    /// bytes (`Session::enqueue_write` → `detect_enter`, design G9), writing the
-    /// daemon's own AI-status store. So this writer is purely an ordered byte pump,
-    /// and its only consumer is the daemon (one per session, so paste-body-then-CR
-    /// ordering holds across the socket).
+    /// "Input only" = no side effects beyond the bytes, and there are none left to have:
+    /// Enter-detection used to run HERE, on the writer thread, inferring "an agent is
+    /// working" from a keystroke. It is DELETED (it fired for `ls`), and nothing replaced
+    /// it — status comes from the agent's own hook events, and keystrokes are not status.
+    /// So this writer is purely an ordered byte pump, and its only consumer is the daemon
+    /// (one per session, so paste-body-then-CR ordering holds across the socket).
     pub fn spawn_input_only(writer: Box<dyn Write + Send>, deadline: Duration) -> Arc<Self> {
         let shared = Arc::new(WriterShared {
             inner: Mutex::new(WriterInner {
@@ -903,82 +891,117 @@ fn validate_pty_cwd(cwd: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Per-session env the daemon-spawned shell needs beyond the portable terminal set.
-/// `GROVE_SESSION_ID` is the daemon session id; `GROVE_AI_STATUS_FILE` is the
-/// per-session path a tool hook writes its status into (the daemon-native
-/// replacement for `tmux set-option @grove_ai_status`; stage 2 consumes it).
+/// The full env the daemon spawns this pane's shell with (design G1/S11, agent-status
+/// design §3.3).
 ///
-/// Convention: `<daemon base dir>/ai-status/<session id>` — i.e. `~/.grove/daemon/
-/// ai-status/grove-<worktree hash>-<pane>` for the default base dir. Session ids are
-/// already filesystem-safe (`grove-[0-9a-f]+-[a-z0-9]+`), so no escaping is needed.
-fn ai_status_file_path(session_id: &str) -> Option<PathBuf> {
-    let dir = daemon::runtime_base_dir()
-        .or_else(|| config::daemon_runtime_dir().ok())?
-        .join("ai-status");
-    if let Err(error) = std::fs::create_dir_all(&dir) {
-        crate::logger::emit_log(
-            "warn",
-            "pty",
-            &format!("failed to create the AI-status dir {}: {error}", dir.display()),
-        );
-        return None;
-    }
-    Some(dir.join(session_id))
-}
-
-/// A status published by a tool hook since the last poll (design G9 hook channel).
-/// `Some(status)` = set; `None` = explicit clear (an EMPTY file — the daemon-native
-/// equivalent of the old `tmux set-option -u @grove_ai_status`).
-type AiStatusSignal = Option<String>;
-
-/// Take-and-consume the pane's AI-status file: `rename` it aside, read it, delete it.
-/// Returns `None` when no hook wrote anything since the last tick.
+/// ## The agent-status channel's three vars
 ///
-/// Why rename-then-read rather than read-then-delete: a hook publishes ATOMICALLY
-/// (write tmp + `mv`), so a `mv` landing between our read and our unlink would have
-/// its brand-new status deleted unread. Renaming first is a single atomic take — a
-/// hook that publishes afterwards simply creates a fresh file we pick up next tick.
-fn consume_ai_status_file(session_id: &str) -> Option<AiStatusSignal> {
-    let path = ai_status_file_path(session_id)?;
-    // Append (never `with_extension`, which would REPLACE a dotted suffix and could
-    // collide with the live file for an id containing a dot).
-    let taken = {
-        let mut name = path.clone().into_os_string();
-        name.push(".taken");
-        PathBuf::from(name)
-    };
-    // ENOENT (the common case: no hook fired this tick) is not an error.
-    std::fs::rename(&path, &taken).ok()?;
-    let contents = std::fs::read_to_string(&taken).ok();
-    let _ = std::fs::remove_file(&taken);
-
-    let status = contents?.trim().to_string();
-    if status.is_empty() {
-        // An empty payload is the hook's explicit "clear" (SessionEnd / exit trap).
-        return Some(None);
-    }
-    Some(Some(status))
-}
-
-/// The full env the daemon spawns this pane's shell with (design G1/S11). tmux's
-/// session-environment indirection is gone, but the ZDOTDIR overlay is NOT: it is how
-/// grove gets `~/.grove/bin` onto PATH after all user config, which in turn delivers the
-/// `open` link-interception wrapper and the `claude`/`codex`/`grove-hook` shims that the
-/// AI-status channel depends on. Dropping it silently disables both features.
+/// * **`PATH`** — `~/.grove/bin` FIRST. This is what delivers the `claude`/`codex` shims
+///   and the `open` link-interception wrapper to EVERY shell, not just zsh: a bash / fish
+///   / nu user got neither, silently, forever, because they rode only on the ZDOTDIR
+///   overlay. `GROVE_BIN_DIR` names the same dir explicitly, so `grove-agent` never has
+///   to INFER it (inferring it from `current_exe` is what produced an infinite exec loop).
+/// * **`GROVE_DAEMON_SOCK`** — the control socket. The agent channel is a socket, not a
+///   file: a file is exactly the "script that cats a file" spoofing surface, it cannot be
+///   fenced, and its exit trap cannot survive `SIGKILL` (the badge wedged at
+///   `claude:running` forever, across app restart AND reboot).
+/// * **`GROVE_SESSION_KEY`** — a DERIVED per-session capability, worth exactly two
+///   methods (`agentClaim`/`agentEvent`) on exactly one session. **The daemon token must
+///   NEVER enter a pane's env** — a shell in a pane must not be able to call `kill` or
+///   `shutdown`. Leaking the key yields no token (SHA-256 preimage).
+///
+/// ## The ZDOTDIR landmine (unchanged, and load-bearing)
+///
+/// The overlay STAYS. `PATH` above is the shell-agnostic layer; the overlay is what
+/// re-prepends `~/.grove/bin` *after* a login zsh rc has had its say and possibly reset
+/// PATH. A previous rewrite dropped ZDOTDIR from this env and silently broke `open` link
+/// interception. `daemon_child_env_carries_the_zdotdir_overlay_when_installed` fails if it
+/// is ever dropped again.
+///
+/// `GROVE_AI_STATUS_FILE` is GONE (agent-status design §4).
 fn daemon_child_env(session_id: &str) -> Vec<(String, String)> {
     let mut env = portable_terminal_env_pairs();
     env.push(("GROVE_SESSION_ID".to_string(), session_id.to_string()));
-    if let Some(path) = ai_status_file_path(session_id) {
-        env.push((
-            "GROVE_AI_STATUS_FILE".to_string(),
-            path.to_string_lossy().into_owned(),
-        ));
+
+    if let Some(bin_dir) = tool_hooks::grove_bin_dir() {
+        let bin_dir = bin_dir.to_string_lossy().into_owned();
+        let path = env
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        env.retain(|(key, _)| key != "PATH");
+        env.push(("PATH".to_string(), prepend_path_entry(&bin_dir, &path)));
+        env.push((resolve_bin_dir_env().to_string(), bin_dir));
     }
+
+    if let Some(socket) = daemon_socket_for_env() {
+        env.push((daemon::GROVE_DAEMON_SOCK_ENV.to_string(), socket));
+    }
+    if let Some(key) = session_key_for_env(session_id) {
+        env.push((daemon::GROVE_SESSION_KEY_ENV.to_string(), key));
+    }
+
     if let Some(zdotdir) = tool_hooks::grove_zdotdir() {
         env.push(("GROVE_REAL_ZDOTDIR".to_string(), grove_real_zdotdir()));
         env.push(("ZDOTDIR".to_string(), zdotdir));
     }
     env
+}
+
+/// The env var naming `~/.grove/bin` for `grove-agent`'s resolver. Kept as a function so
+/// the name lives next to the writer; the reader is `grove-agent::resolve::BIN_DIR_ENV`.
+fn resolve_bin_dir_env() -> &'static str {
+    "GROVE_BIN_DIR"
+}
+
+/// Sweep the status-file era's `<daemon base>/ai-status/` directory off disk, once.
+///
+/// Nothing reads it any more — but an upgrading user has one file per pane they ever ran
+/// an agent in, and any of them may still hold a wedged `claude:running` left by an agent
+/// that was SIGKILLed (which the `trap` could not catch — the very reason the file channel
+/// is gone). Leaving stale status on disk after declaring the channel dead is exactly the
+/// debris this rewrite exists to remove. Best-effort: a dir that will not delete is inert.
+fn sweep_legacy_ai_status_dir() {
+    static SWEPT: OnceLock<()> = OnceLock::new();
+    SWEPT.get_or_init(|| {
+        if let Some(base) = daemon::runtime_base_dir().or_else(|| config::daemon_runtime_dir().ok())
+        {
+            let _ = std::fs::remove_dir_all(base.join("ai-status"));
+        }
+    });
+}
+
+/// `dir` first, then everything else — with any existing copy of `dir` removed, so a
+/// re-attach cannot grow the PATH by one entry per attach.
+fn prepend_path_entry(dir: &str, path: &str) -> String {
+    let mut entries = vec![dir.to_string()];
+    entries.extend(
+        path.split(':')
+            .filter(|entry| !entry.is_empty() && *entry != dir)
+            .map(str::to_string),
+    );
+    entries.join(":")
+}
+
+/// The daemon control socket path, for the pane's env.
+fn daemon_socket_for_env() -> Option<String> {
+    let base = daemon::runtime_base_dir().or_else(|| config::daemon_runtime_dir().ok())?;
+    daemon::daemon_socket_path(&base)
+        .as_path()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// This pane's derived agent key. Reads the daemon token (0600, daemon-owned) and hashes
+/// it with the session id — the token itself never leaves this process.
+fn session_key_for_env(session_id: &str) -> Option<String> {
+    let base = daemon::runtime_base_dir().or_else(|| config::daemon_runtime_dir().ok())?;
+    let token = std::fs::read_to_string(daemon::daemon_token_path(&base)).ok()?;
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(daemon::derive_session_key(token, session_id))
 }
 
 /// The user's own ZDOTDIR, so grove's overlay rc files can source the real ones.
@@ -1006,6 +1029,7 @@ pub async fn create(
     sink: Arc<dyn PtyEventSink>,
 ) -> Result<CreatePtyResult, String> {
     tool_hooks::ensure_installed();
+    sweep_legacy_ai_status_dir();
 
     let CreatePtyRequest {
         pty_id,
@@ -2079,54 +2103,12 @@ fn command_output_message(output: &Output) -> String {
     format!("kill exited with status {}", output.status)
 }
 
-fn reconcile_hookless_ai_status(
-    current_ai_status: Option<&str>,
-    live_tool: Option<&str>,
-    last_ai_status: Option<&str>,
-    last_output_at: Option<Instant>,
-) -> Option<String> {
-    let Some(live_tool) = live_tool else {
-        return current_ai_status.map(str::to_string);
-    };
-
-    let current_tool = current_ai_status.and_then(|status| status.split(':').next());
-    if current_tool == Some(live_tool) {
-        return current_ai_status.map(str::to_string);
-    }
-
-    Some(recover_hookless_ai_status(
-        live_tool,
-        last_ai_status,
-        last_output_at,
-    ))
-}
-
-fn recover_hookless_ai_status(
-    tool: &str,
-    last_ai_status: Option<&str>,
-    last_output_at: Option<Instant>,
-) -> String {
-    if let Some(previous) = last_ai_status {
-        let previous_tool = previous.split(':').next().unwrap_or_default();
-        if previous_tool == tool && !previous.ends_with(":attention") {
-            return previous.to_string();
-        }
-    }
-
-    if last_output_at.is_some_and(|t| t.elapsed() < CODEX_OUTPUT_IDLE_TIMEOUT) {
-        format!("{tool}:running")
-    } else {
-        format!("{tool}:idle")
-    }
-}
-
-fn detect_live_hookless_tool_in_session_from_processes(
-    pane_pid: Option<u32>,
-    processes: &[ProcessSnapshot],
-) -> Option<&'static str> {
-    detect_hookless_tool_from_process_tree(pane_pid?, processes)
-}
-
+/// The machine's process table, for TERMINAL GC only (the leftover-process sweep after a
+/// session kill). It is emphatically NOT a status source: the `ps` tree walk that used to
+/// infer "an agent is running here" from a command line basename-matched `codex` — and
+/// phantom-badged on `vim /tmp/codex`, and was forgeable in one line with `exec -a` — is
+/// DELETED (agent-status design §1.3). Identity is DECLARED by grove's own launcher and
+/// VERIFIED by the kernel; it is never guessed from the process table.
 fn list_process_snapshots() -> Result<Vec<ProcessSnapshot>, String> {
     let output = Command::new("ps")
         .args(["-Ao", "pid=,ppid=,command="])
@@ -2170,76 +2152,26 @@ fn parse_process_snapshots(output: &str) -> Vec<ProcessSnapshot> {
         .collect()
 }
 
-fn detect_hookless_tool_from_process_tree(
-    pane_pid: u32,
-    processes: &[ProcessSnapshot],
-) -> Option<&'static str> {
-    let parent_by_pid: HashMap<u32, u32> = processes
-        .iter()
-        .map(|process| (process.pid, process.ppid))
-        .collect();
-
-    for process in processes {
-        let Some(tool) = ["codex"]
-            .into_iter()
-            .find(|tool| process_line_mentions_tool(&process.command_line, tool))
-            .filter(|tool| tool_hooks::is_hookless_tool(tool))
-        else {
-            continue;
-        };
-
-        let mut current = Some(process.pid);
-        while let Some(pid) = current {
-            if pid == pane_pid {
-                return Some(tool);
-            }
-            current = parent_by_pid
-                .get(&pid)
-                .copied()
-                .filter(|parent| *parent > 1 && *parent != pid);
-        }
-    }
-
-    None
-}
-
-fn process_line_mentions_tool(command_line: &str, tool: &str) -> bool {
-    command_line.split_whitespace().any(|token| {
-        let token = token.trim_matches(|ch| matches!(ch, '"' | '\'' | '`'));
-        let basename = token.rsplit('/').next().unwrap_or(token);
-        basename == tool
-    })
-}
-
-/// One row of the daemon's `pollBells` reply, re-keyed from the daemon SESSION id
-/// to the pane's grove PTY id by the caller. The daemon returns a row per LIVE
-/// session on every poll — bells DRAINED, ai_status READ — so the delta machine
-/// below is what turns that into the sparse `PtyBellEvent` stream the renderer
-/// contract expects (an event only when a bell fired or the status CHANGED).
+/// One row of the daemon's `pollBells` reply, re-keyed from the daemon SESSION id to the
+/// pane's grove PTY id by the caller.
 struct DaemonBellRow {
     bell: bool,
     ai_status: Option<String>,
 }
 
-/// Poll every attached pane for a terminal bell + its AI-tool status (design G9).
+/// Poll every attached pane for a terminal bell + its agent status.
 ///
-/// The daemon replaced only the SOURCES here, not the machine. It stores status; it
-/// does not run the idle/attention state machine — a hookless tool (codex) never
-/// reports anything, so a wholesale swap to "just return `pollBells`" would freeze
-/// such a pane at `running` forever. So the full client-side machine is preserved:
+/// This is now a PURE DELTA EMITTER, and that is the whole function. The daemon owns the
+/// status end to end: it is DERIVED at read time from (the agent's own hook events × the
+/// live kernel), so there is nothing left here to reconcile, recover, time out, or write
+/// back. What used to live in this function — the status file, the `ps` tree walk, the 3s
+/// output-idle timer, the 30s attention timer, the Enter detector, the `setAiStatus`
+/// write-back — is DELETED (agent-status design §4). Every one of them inferred a status;
+/// none of them could be right.
 ///
-///   1. HOOK CHANNEL — the per-session status file (`GROVE_AI_STATUS_FILE`) is
-///      consumed FIRST and WINS over whatever the daemon holds. Daemon-side
-///      Enter-detection (`Session::detect_enter`) is the other writer of that store,
-///      and it loses to a fresh hook write: last writer wins, and the hook wrote last.
-///   2. HOOKLESS RECONCILE — when nothing claims a hookless tool, walk the child
-///      process tree (rooted at the daemon-reported child pid) to discover a live one
-///      and recover its status.
-///   3. IDLE/ATTENTION CLOCK — running →(no output for 3s)→ idle →(30s)→ attention,
-///      driven by `last_output_at`, which the daemon stream sink stamps on output.
-///
-/// The single write-back at the end pushes the resolved status into the daemon's
-/// store (`setAiStatus`) whenever it differs from what the daemon reported.
+/// The daemon hands us one row per LIVE session on every tick. grove emits a
+/// `PtyBellEvent` only when a bell fired or the status CHANGED — never a row-per-tick
+/// stream. The renderer contract (`PtyBellEvent{ptyId, bell, aiStatus}`) is unchanged.
 pub async fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
     let tracked_sessions = {
         let reg = lock_recover(registry());
@@ -2278,172 +2210,42 @@ pub async fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
         .collect();
 
     let mut events = Vec::new();
-    let mut process_probe: Option<HooklessProbe> = None;
-
     for (pty_id, session_name, tracked) in tracked_sessions {
-        // A session the daemon no longer lists (killed/exited) reads as no bell and
-        // no status.
-        let (bell, daemon_status) = match rows.get(&session_name) {
+        // A session the daemon no longer lists (killed/exited) reads as no bell and no
+        // status — so a pane whose agent died emits its badge-clearing event exactly once.
+        let (bell, ai_status) = match rows.get(&session_name) {
             Some(row) => (row.bell, row.ai_status.clone()),
             None => (false, None),
         };
-
-        // (1) The hook channel WINS: a status published since the last tick overrides
-        // the daemon's store (which Enter-detection may also have touched).
-        let ai_status = match consume_ai_status_file(&session_name) {
-            Some(signal) => signal,
-            None => daemon_status.clone(),
-        };
-
-        // (2) Hookless reconcile — unchanged logic, daemon-fed pid.
-        let current_tool = ai_status
-            .as_deref()
-            .and_then(|status| status.split(':').next());
-        let should_probe_live_hookless_tool = ai_status.is_none()
-            || current_tool.is_some_and(|tool| !tool_hooks::is_hookless_tool(tool));
-
-        let ai_status = if should_probe_live_hookless_tool {
-            // Lazily — and at most once per tick — take one `ps` snapshot plus one
-            // `listSessions` (for child pids). A pane that needs no probe pays nothing.
-            if process_probe.is_none() {
-                process_probe = Some(HooklessProbe::collect(client).await);
-            }
-            let live_tool = process_probe
-                .as_ref()
-                .and_then(|probe| probe.live_hookless_tool(&session_name));
-            let (last_ai_status, last_output_at) = {
-                let state = lock_recover(&tracked);
-                (state.last_ai_status.clone(), state.last_output_at)
-            };
-
-            reconcile_hookless_ai_status(
-                ai_status.as_deref(),
-                live_tool,
-                last_ai_status.as_deref(),
-                last_output_at,
-            )
-        } else {
-            ai_status
-        };
-
-        // (3) Hookless tool idle/attention state machine:
-        // running → [output idle > 3s] → idle → [30s elapsed] → attention
-        // TUI apps produce periodic screen refreshes so we don't revalidate
-        // after transitions — the next Enter re-asserts running.
-        let ai_ref = ai_status.as_deref();
-        let is_hookless = tool_hooks::needs_idle_detection(ai_ref);
-
-        let ai_status = if is_hookless && tool_hooks::is_running(ai_ref) {
-            let should_idle = match lock_recover(&tracked).last_output_at {
-                Some(t) => t.elapsed() >= CODEX_OUTPUT_IDLE_TIMEOUT,
-                None => true, // no output tracked (e.g. after app restart)
-            };
-            if should_idle {
-                Some(tool_hooks::to_idle(ai_ref.unwrap()))
-            } else {
-                ai_status
-            }
-        } else if is_hookless && tool_hooks::is_idle(ai_ref) {
-            let should_attention = lock_recover(&tracked)
-                .idle_since
-                .is_some_and(|t| t.elapsed() >= HOOKLESS_ATTENTION_TIMEOUT);
-            if should_attention {
-                Some(format!(
-                    "{}:attention",
-                    ai_ref.unwrap().split(':').next().unwrap()
-                ))
-            } else {
-                ai_status
-            }
-        } else {
-            ai_status
-        };
-
-        // Write the resolved status back to the daemon's store whenever it differs
-        // from what the daemon reported. One store, last writer wins, so a single
-        // deduped push at the end of the tick is equivalent to the separate write-backs
-        // the reconcile / idle / attention branches each used to perform — and skipping
-        // it when nothing changed keeps a steady-state poll free of socket traffic.
-        if ai_status != daemon_status {
-            if let Err(error) = client
-                .set_ai_status(&session_name, ai_status.as_deref())
-                .await
-            {
-                crate::logger::emit_log(
-                    "warn",
-                    "pty",
-                    &format!("failed to publish AI status for {session_name}: {error}"),
-                );
-            }
-        }
-
         let mut state = lock_recover(&tracked);
-        let ai_changed = ai_status != state.last_ai_status;
-        if ai_changed {
-            // Track running→idle transition for attention timeout.
-            let prev = state.last_ai_status.as_deref();
-            let next = ai_status.as_deref();
-            if tool_hooks::needs_idle_detection(next)
-                && tool_hooks::is_idle(next)
-                && tool_hooks::is_running(prev)
-            {
-                state.idle_since = Some(Instant::now());
-            } else {
-                state.idle_since = None;
-            }
-            state.last_ai_status = ai_status.clone();
-        }
-        // DELTA EMISSION (unchanged contract): the daemon hands us one row per live
-        // session per poll, but grove emits an event ONLY on a bell or a CHANGED
-        // status — never a row-per-tick stream. The bell needs no local edge detector:
-        // the daemon DRAINS it, so `true` is already "a bell since the last poll" (and
-        // two bells on two consecutive ticks both report, which a rising-edge filter
-        // over a latched flag would have swallowed).
-        if bell || ai_changed {
-            events.push(PtyBellEvent {
-                pty_id,
-                bell,
-                ai_status,
-            });
+        if let Some(event) = bell_delta(&pty_id, bell, ai_status, &mut state.last_ai_status) {
+            events.push(event);
         }
     }
 
     Ok(events)
 }
 
-/// One tick's worth of hookless-tool probing inputs: the machine's process table plus
-/// each daemon session's child pid. Collected at most once per poll, and only when a
-/// pane actually needs a probe (the common steady state — every pane claimed by a
-/// hooked tool, or no AI tool at all — pays nothing).
-struct HooklessProbe {
-    processes: Vec<ProcessSnapshot>,
-    /// Daemon session id → child-shell pid (the root of the pane's process tree).
-    pids: HashMap<String, u32>,
-}
-
-impl HooklessProbe {
-    async fn collect(client: &daemon::DaemonClient) -> Self {
-        let processes = list_process_snapshots().unwrap_or_default();
-        // A failed `listSessions` degrades to "no pids" → no live-tool detection.
-        let pids = client
-            .list_sessions()
-            .await
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter_map(|session| Some((session.session_id, session.pid?)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self { processes, pids }
+/// The delta rule, in one place: emit on a bell OR a CHANGED status; otherwise stay quiet.
+///
+/// The bell needs no local edge detector — the daemon DRAINS it on read, so `true` already
+/// means "a bell since the last poll" (and two bells on two consecutive ticks both report,
+/// which a rising-edge filter over a latched flag would have swallowed).
+fn bell_delta(
+    pty_id: &str,
+    bell: bool,
+    ai_status: Option<String>,
+    last_ai_status: &mut Option<String>,
+) -> Option<PtyBellEvent> {
+    let ai_changed = ai_status != *last_ai_status;
+    if ai_changed {
+        last_ai_status.clone_from(&ai_status);
     }
-
-    fn live_hookless_tool(&self, session_id: &str) -> Option<&'static str> {
-        detect_live_hookless_tool_in_session_from_processes(
-            self.pids.get(session_id).copied(),
-            &self.processes,
-        )
-    }
+    (bell || ai_changed).then(|| PtyBellEvent {
+        pty_id: pty_id.to_string(),
+        bell,
+        ai_status,
+    })
 }
 
 pub struct PtySessionResource;
@@ -3076,12 +2878,13 @@ mod tests {
         assert_eq!(sink.calls.lock().unwrap().concat(), b"tail");
     }
 
-    /// The sink adapter is the ONLY remaining feed for `last_output_at` (the hookless
-    /// AI-status idle clock) and for the local scrollback mirror that
-    /// `save_terminal_session_snapshot` persists. A regression here freezes the status
-    /// machine silently, so assert both stamps plus the transport hand-off.
+    /// The sink adapter feeds the local scrollback mirror that
+    /// `save_terminal_session_snapshot` persists, and hands the bytes to the transport.
+    /// It no longer stamps a clock: output is NOT a status input (a blocked codex
+    /// repaints its spinner forever, so the timer it used to feed said "working" exactly
+    /// when the human was needed).
     #[test]
-    fn stream_sink_stamps_runtime_state_before_forwarding_output() {
+    fn stream_sink_mirrors_scrollback_before_forwarding_output() {
         let sink = Arc::new(CollectingSink::default());
         let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
             "/tmp/grove/worktree".into(),
@@ -3105,10 +2908,6 @@ mod tests {
         assert_eq!(sink.calls.lock().unwrap().concat(), b"hello");
         let state = tracked.lock().unwrap();
         assert_eq!(Vec::from(state.scrollback.clone()), b"hello");
-        assert!(
-            state.last_output_at.is_some(),
-            "last_output_at must be stamped — it is the only idle-clock feed left"
-        );
     }
 
     /// Frames that land between `subscribe` and the `createOrAttach` reply are held by
@@ -3554,7 +3353,7 @@ mod tests {
     }
 
     /// The env the daemon spawns the pane's shell with keeps advertising Grove exactly
-    /// as it always has, and adds the two daemon-era session vars.
+    /// as it always has, and adds the daemon-era session vars.
     #[test]
     fn daemon_child_env_advertises_term_program_and_session_vars() {
         let env = daemon_child_env("grove-abc-pane1");
@@ -3571,14 +3370,115 @@ mod tests {
         assert!(!version.is_empty());
         assert_eq!(version, crate::app_version());
         assert_eq!(get("GROVE_SESSION_ID"), "grove-abc-pane1");
-        // The AI-status file is per-session and lives under the daemon runtime dir.
-        let status_file = env
-            .iter()
-            .find(|(k, _)| k == "GROVE_AI_STATUS_FILE")
-            .map(|(_, v)| v.clone());
-        if let Some(status_file) = status_file {
-            assert!(status_file.ends_with("/ai-status/grove-abc-pane1"), "{status_file}");
+
+        // The status FILE is gone. It was the "script that cats a file" spoofing surface,
+        // it was last-writer-wins with no fence, and its exit trap could not survive
+        // SIGKILL — the badge wedged at `claude:running` forever, across app restart AND
+        // reboot. Nothing in a pane's env may ever point at a status file again.
+        assert!(
+            !env.iter().any(|(k, _)| k == "GROVE_AI_STATUS_FILE"),
+            "the AI-status file channel is DELETED"
+        );
+        // And the daemon TOKEN must never reach a pane: a shell that holds it could call
+        // `kill` or `shutdown`. Only the DERIVED per-session key ever ships.
+        for (key, value) in &env {
+            assert!(
+                !key.contains("TOKEN"),
+                "no token may enter a pane's env ({key}={value})"
+            );
         }
+    }
+
+    /// The agent channel's env, and the PATH prepend that makes the shims reachable from
+    /// EVERY shell — not just zsh. (bash/fish/nu users had no `claude` shim and no `open`
+    /// wrapper at all, silently, because both rode only on the ZDOTDIR overlay.)
+    #[test]
+    fn daemon_child_env_puts_grove_bin_first_on_path_and_carries_the_agent_channel() {
+        let env = daemon_child_env("grove-abc-pane1");
+        let lookup = |key: &str| {
+            env.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+
+        let Some(grove_bin) = tool_hooks::grove_bin_dir() else {
+            return; // no home in this environment — nothing to install, nothing to assert
+        };
+        let grove_bin = grove_bin.to_string_lossy().into_owned();
+
+        let path = lookup("PATH").expect("PATH is always exported");
+        assert_eq!(
+            path.split(':').next(),
+            Some(grove_bin.as_str()),
+            "~/.grove/bin must be the FIRST PATH entry: {path}"
+        );
+        assert_eq!(
+            path.split(':').filter(|e| *e == grove_bin).count(),
+            1,
+            "re-attaching must not grow PATH by one entry per attach: {path}"
+        );
+        // `grove-agent` must never INFER its own bin dir (inferring it from `current_exe`
+        // produced an infinite exec loop: the wrapper re-found itself, forever, at 100%
+        // CPU). It is named explicitly, right here.
+        assert_eq!(lookup("GROVE_BIN_DIR").as_deref(), Some(grove_bin.as_str()));
+
+        // The socket + the derived key are the whole agent channel. They are only present
+        // once the daemon runtime dir is known (it always is by the time a pane spawns);
+        // when it is not, the pane simply gets no badge — never a broken shell.
+        if let Some(sock) = lookup("GROVE_DAEMON_SOCK") {
+            assert!(sock.ends_with(".sock"), "{sock}");
+        }
+        if let Some(key) = lookup("GROVE_SESSION_KEY") {
+            assert_eq!(key.len(), 32, "the derived session key is 32 hex chars");
+            assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn prepend_path_entry_dedupes_and_leads() {
+        assert_eq!(prepend_path_entry("/g/bin", "/usr/bin:/bin"), "/g/bin:/usr/bin:/bin");
+        // Already present (a re-attach, or a shell that exported it) — moved to the front,
+        // never duplicated.
+        assert_eq!(
+            prepend_path_entry("/g/bin", "/usr/bin:/g/bin:/bin"),
+            "/g/bin:/usr/bin:/bin"
+        );
+        assert_eq!(prepend_path_entry("/g/bin", ""), "/g/bin");
+    }
+
+    /// The delta rule the renderer contract depends on: an event ONLY on a bell or a
+    /// CHANGED status. The daemon returns a row per live session on every 500ms tick, so
+    /// without this a quiet pane would emit an event twice a second, forever.
+    #[test]
+    fn bell_delta_emits_only_on_a_bell_or_a_changed_status() {
+        let mut last: Option<String> = None;
+
+        // Quiet pane, no claim: nothing.
+        assert!(bell_delta("pty-1", false, None, &mut last).is_none());
+
+        // An agent claims and starts working → one event.
+        let event = bell_delta("pty-1", false, Some("claude:running".into()), &mut last)
+            .expect("a changed status emits");
+        assert_eq!(event.pty_id, "pty-1");
+        assert!(!event.bell);
+        assert_eq!(event.ai_status.as_deref(), Some("claude:running"));
+
+        // The SAME status on the next tick — and every tick after — is silent.
+        assert!(bell_delta("pty-1", false, Some("claude:running".into()), &mut last).is_none());
+        assert!(bell_delta("pty-1", false, Some("claude:running".into()), &mut last).is_none());
+
+        // A bell always emits, even when the status did not move (and it carries the
+        // current status along, unchanged).
+        let event = bell_delta("pty-1", true, Some("claude:running".into()), &mut last).unwrap();
+        assert!(event.bell);
+        assert_eq!(event.ai_status.as_deref(), Some("claude:running"));
+
+        // The agent blocks → attention. Then it dies: the daemon stops listing a status,
+        // and the badge-clearing event fires exactly ONCE.
+        assert!(bell_delta("pty-1", false, Some("claude:attention".into()), &mut last).is_some());
+        let cleared = bell_delta("pty-1", false, None, &mut last).expect("the clear emits");
+        assert_eq!(cleared.ai_status, None);
+        assert!(bell_delta("pty-1", false, None, &mut last).is_none());
     }
 
     /// Regression: the daemon rewrite dropped ZDOTDIR from the child env, which silently
@@ -3621,103 +3521,6 @@ mod tests {
         // First-write-wins: a second set is a no-op.
         crate::set_app_version("99.0.0-ignored");
         assert_eq!(crate::app_version(), "42.0.0-grove-test");
-    }
-
-    #[test]
-    fn detect_hookless_tool_from_process_tree_matches_wrapper_descendants() {
-        let processes = vec![
-            ProcessSnapshot {
-                pid: 100,
-                ppid: 1,
-                command_line: "-zsh".into(),
-            },
-            ProcessSnapshot {
-                pid: 110,
-                ppid: 100,
-                command_line: "bash /Users/airenkang/.grove/bin/codex --yolo".into(),
-            },
-            ProcessSnapshot {
-                pid: 120,
-                ppid: 110,
-                command_line: "node /Users/airenkang/.nvm/versions/node/v23.7.0/bin/codex --yolo"
-                    .into(),
-            },
-            ProcessSnapshot {
-                pid: 130,
-                ppid: 120,
-                command_line:
-                    "/Users/airenkang/.nvm/.../vendor/aarch64-apple-darwin/codex/codex --yolo"
-                        .into(),
-            },
-        ];
-
-        assert_eq!(
-            detect_hookless_tool_from_process_tree(100, &processes),
-            Some("codex")
-        );
-    }
-
-    #[test]
-    fn recover_hookless_ai_status_uses_recent_output_when_previous_status_is_missing() {
-        assert_eq!(
-            recover_hookless_ai_status("codex", None, Some(Instant::now())),
-            "codex:running"
-        );
-        assert_eq!(
-            recover_hookless_ai_status("codex", None, None),
-            "codex:idle"
-        );
-    }
-
-    #[test]
-    fn recover_hookless_ai_status_drops_stale_attention_to_idle() {
-        assert_eq!(
-            recover_hookless_ai_status("codex", Some("codex:attention"), None),
-            "codex:idle"
-        );
-        assert_eq!(
-            recover_hookless_ai_status("codex", Some("codex:idle"), None),
-            "codex:idle"
-        );
-    }
-
-    #[test]
-    fn reconcile_hookless_ai_status_recovers_stale_non_hookless_provider() {
-        assert_eq!(
-            reconcile_hookless_ai_status(
-                Some("claude:running"),
-                Some("codex"),
-                Some("claude:running"),
-                Some(Instant::now()),
-            ),
-            Some("codex:running".into())
-        );
-    }
-
-    #[test]
-    fn reconcile_hookless_ai_status_preserves_matching_hookless_status() {
-        assert_eq!(
-            reconcile_hookless_ai_status(
-                Some("codex:attention"),
-                Some("codex"),
-                Some("codex:attention"),
-                None,
-            ),
-            Some("codex:attention".into())
-        );
-    }
-
-    #[test]
-    fn reconcile_hookless_ai_status_keeps_existing_status_without_live_hookless_tool() {
-        assert_eq!(
-            reconcile_hookless_ai_status(
-                Some("claude:running"),
-                None,
-                Some("claude:running"),
-                Some(Instant::now()),
-            ),
-            Some("claude:running".into())
-        );
     }
 
     #[test]
@@ -3840,41 +3643,6 @@ mod tests {
         assert!(state.scrollback_truncated);
     }
 
-    /// The hook channel: a status published into the pane's file is READ and CONSUMED
-    /// on the next poll, and an EMPTY payload is the explicit clear (the daemon-native
-    /// `tmux set-option -u`). Consuming is what stops a stale hook write from
-    /// re-asserting itself over the state machine on every subsequent tick.
-    #[test]
-    fn ai_status_file_is_consumed_on_read_and_empty_means_clear() {
-        let _env = env_lock();
-        let _home = TestHome::new();
-        let session_id = format!("grove-test-{}", Uuid::new_v4().simple());
-
-        // No hook wrote anything → no signal at all (leave the daemon's store alone).
-        assert_eq!(consume_ai_status_file(&session_id), None);
-
-        let path = ai_status_file_path(&session_id).expect("the AI-status path resolves");
-        fs::write(&path, "claude:running\n").unwrap();
-        assert_eq!(
-            consume_ai_status_file(&session_id),
-            Some(Some("claude:running".to_string())),
-            "a published status is read (and trimmed)"
-        );
-        assert!(!path.exists(), "reading the file must CONSUME it");
-        assert_eq!(
-            consume_ai_status_file(&session_id),
-            None,
-            "a consumed status must not re-assert on the next tick"
-        );
-
-        fs::write(&path, "").unwrap();
-        assert_eq!(
-            consume_ai_status_file(&session_id),
-            Some(None),
-            "an EMPTY payload is the hook's explicit clear"
-        );
-    }
-
     /// GC attributes a daemon session to a worktree by the worktree-hash prefix its id
     /// carries (the daemon stores no worktree path). A session whose prefix matches no
     /// known worktree is skipped — grove cannot prove whose it is, so it must not kill
@@ -3948,24 +3716,6 @@ mod tests {
             "the encoder and decoder are inverses"
         );
         assert_eq!(percent_decode_session_id("bad%"), None);
-    }
-
-    #[test]
-    fn detect_live_hookless_tool_returns_none_without_pane_pid() {
-        let processes = vec![ProcessSnapshot {
-            pid: 100,
-            ppid: 1,
-            command_line: "codex --yolo".into(),
-        }];
-
-        assert_eq!(
-            detect_live_hookless_tool_in_session_from_processes(None, &processes),
-            None
-        );
-        assert_eq!(
-            detect_live_hookless_tool_in_session_from_processes(Some(100), &processes),
-            Some("codex")
-        );
     }
 
     #[test]

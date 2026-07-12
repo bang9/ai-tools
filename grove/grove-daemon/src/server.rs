@@ -16,8 +16,10 @@ use std::time::Duration;
 
 use base64::Engine;
 use grove_core::daemon::protocol::{
-    decode_ndjson_line, encode_ndjson_line, ClientKind, ControlMessage, Hello, HelloAck, Notify,
-    RpcError, RpcReply, RpcRequest, GROVE_DAEMON_PROTOCOL_VERSION,
+    decode_ndjson_line, derive_session_key, encode_ndjson_line, new_claim_id, AgentClaimParams,
+    AgentClaimResult, AgentEventParams, ClientKind, ControlMessage, Hello, HelloAck, Notify,
+    RpcError, RpcReply, RpcRequest, GROVE_DAEMON_PROTOCOL_VERSION, METHOD_AGENT_CLAIM,
+    METHOD_AGENT_EVENT,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -26,9 +28,11 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Notify as TokioNotify};
 
+use crate::agent::{AgentClaim, Phase};
 use crate::checkpointer::{CheckpointSource, Checkpointer};
 use crate::emulator::SnapshotOptions;
 use crate::history::{session_dir, ColdRestore, HistoryReader, OwnerLock, SessionMeta};
+use crate::kernel::{peer_pid, system_kernel, Kernel};
 use crate::lock;
 use crate::session::Session;
 
@@ -195,10 +199,23 @@ pub struct Daemon {
     /// Stops the checkpointer tick loop on shutdown (separate from `shutdown`,
     /// which the accept loop waits on).
     checkpointer_shutdown: Arc<TokioNotify>,
+    /// The kernel liveness oracle (agent-status design S3). Injected so the whole
+    /// agent socket path — admission checks included — is testable with a
+    /// `FakeKernel` and zero PTYs.
+    kernel: Arc<dyn Kernel>,
 }
 
 impl Daemon {
     pub fn new(token: String, history_root: PathBuf) -> Arc<Self> {
+        Self::with_kernel(token, history_root, system_kernel())
+    }
+
+    /// A daemon whose kernel oracle is injected (tests).
+    pub fn with_kernel(
+        token: String,
+        history_root: PathBuf,
+        kernel: Arc<dyn Kernel>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             version: GROVE_DAEMON_PROTOCOL_VERSION,
             token,
@@ -211,6 +228,7 @@ impl Daemon {
             checkpointer: Checkpointer::new(history_root.clone()),
             history_root,
             checkpointer_shutdown: Arc::new(TokioNotify::new()),
+            kernel,
         })
     }
 
@@ -245,8 +263,17 @@ impl Daemon {
                 _ = self.shutdown.notified() => break,
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _addr)) => {
+                        // The peer pid MUST be read HERE — synchronously, on the
+                        // accepting task, before any `.await` (agent-status spike R4).
+                        // `getsockopt(LOCAL_PEERPID)` returns ENOTCONN the moment the
+                        // peer closes its socket end — the peer does not even have to
+                        // exit — and the pid is NOT cached for a later read. A lazy
+                        // read at dispatch time is a genuine, measured race against a
+                        // fire-and-exit `grove-agent`. Unreadable ⇒ `None` ⇒ a claim is
+                        // REJECTED. It is never unwrapped and never assumed.
+                        let peer = peer_pid(std::os::fd::AsRawFd::as_raw_fd(&stream));
                         let daemon = Arc::clone(&self);
-                        tokio::spawn(async move { daemon.handle_connection(stream).await; });
+                        tokio::spawn(async move { daemon.handle_connection(stream, peer).await; });
                     }
                     Err(_) => break,
                 },
@@ -303,7 +330,7 @@ impl Daemon {
         }
     }
 
-    async fn handle_connection(self: Arc<Self>, stream: UnixStream) {
+    async fn handle_connection(self: Arc<Self>, stream: UnixStream, peer: Option<i32>) {
         let (read_half, write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         let mut write_half = write_half;
@@ -326,15 +353,28 @@ impl Daemon {
             let _ = write_line(&mut write_half, &HelloAck::reject("version mismatch")).await;
             return;
         }
-        // Fix #5: reject an empty token outright (defense in depth — main.rs also
-        // refuses to start with one), and compare in constant time so the auth
-        // path leaks no timing signal about how many leading bytes matched.
-        if hello.token.is_empty()
-            || self.token.is_empty()
-            || !constant_time_eq(hello.token.as_bytes(), self.token.as_bytes())
-        {
-            let _ = write_line(&mut write_half, &HelloAck::reject("token mismatch")).await;
-            return;
+        // An AGENT hello does NOT carry the daemon token — it carries a per-session
+        // key (agent-status design §3.3), and WHICH session it belongs to is not known
+        // until the method call names one. So the daemon-token compare is skipped here
+        // and the key is verified, in constant time, on EVERY agentClaim/agentEvent
+        // against `derive_session_key(daemon_token, params.sessionId)`. The connection
+        // gains nothing from the handshake: it is method-restricted to those two calls
+        // (never write/kill/resize/shutdown), and both authorize independently.
+        //
+        // The daemon token must NEVER enter a pane's env — otherwise a shell in a pane
+        // could call `kill` or `shutdown`. That is the entire reason the key exists.
+        let agent_role = matches!(hello.kind, ClientKind::Agent);
+        if !agent_role {
+            // Fix #5: reject an empty token outright (defense in depth — main.rs also
+            // refuses to start with one), and compare in constant time so the auth
+            // path leaks no timing signal about how many leading bytes matched.
+            if hello.token.is_empty()
+                || self.token.is_empty()
+                || !constant_time_eq(hello.token.as_bytes(), self.token.as_bytes())
+            {
+                let _ = write_line(&mut write_half, &HelloAck::reject("token mismatch")).await;
+                return;
+            }
         }
         if write_line(&mut write_half, &HelloAck::ok()).await.is_err() {
             return;
@@ -353,7 +393,202 @@ impl Daemon {
                 gauge.connected_controls.fetch_sub(1, Ordering::SeqCst);
             }
             ClientKind::Stream => self.run_stream(reader, write_half).await,
+            // Deliberately NOT gated on a control client (unlike Stream): the app
+            // being closed must not break the status channel. Events keep arriving
+            // into the live daemon while grove is quit, and the first `pollBells`
+            // after it reopens resolves them against the live kernel — correct, with
+            // no catch-up and no replay.
+            ClientKind::Agent => {
+                self.run_agent(reader, write_half, hello.token, peer).await;
+            }
         }
+    }
+
+    /// The agent-status channel (agent-status design §3.2). Method-restricted to
+    /// `agentClaim`/`agentEvent`: this connection can never `write`, `kill`, `resize`,
+    /// `getSnapshot` or `shutdown`, so the capability a pane's env carries is worth
+    /// exactly two calls on exactly one session.
+    ///
+    /// Nothing here may hang or block: `grove-agent` is on the AGENT's critical path
+    /// (Claude awaits each hook to completion), so every path answers promptly —
+    /// an unknown method gets a clean `-32601`, a bad key a clean error, and a
+    /// dropped event a plain ack. Notifies are ignored outright.
+    async fn run_agent(
+        self: Arc<Self>,
+        mut reader: BufReader<OwnedReadHalf>,
+        mut write_half: OwnedWriteHalf,
+        session_key: String,
+        peer: Option<i32>,
+    ) {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = tokio::select! {
+                _ = self.shutdown.notified() => break,
+                r = reader.read_line(&mut line) => r,
+            };
+            match read {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let Ok(ControlMessage::Request(RpcRequest { id, method, params })) =
+                decode_ndjson_line::<ControlMessage>(&line)
+            else {
+                // Not a request (or malformed): ignore rather than desync. An agent
+                // connection has no notify surface at all.
+                continue;
+            };
+            let reply = match self.dispatch_agent_rpc(&method, params, &session_key, peer) {
+                Ok(result) => RpcReply::ok(id, result),
+                Err(error) => RpcReply::err(id, error),
+            };
+            if write_line(&mut write_half, &ControlMessage::Reply(reply))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    /// The ONLY two methods an agent connection may call.
+    fn dispatch_agent_rpc(
+        &self,
+        method: &str,
+        params: Value,
+        session_key: &str,
+        peer: Option<i32>,
+    ) -> Result<Value, RpcError> {
+        match method {
+            METHOD_AGENT_CLAIM => {
+                let p: AgentClaimParams = parse_params(params)?;
+                self.agent_claim(p, session_key, peer)
+            }
+            METHOD_AGENT_EVENT => {
+                let p: AgentEventParams = parse_params(params)?;
+                self.agent_event(p, session_key)
+            }
+            // Everything else — including `write`, `kill`, `resize`, `shutdown` — is
+            // simply not reachable from this role.
+            other => Err(RpcError {
+                code: -32601,
+                message: format!("unknown method: {other}"),
+            }),
+        }
+    }
+
+    /// `agentClaim` (agent-status design §3.3/§5). Three checks, only one of which is
+    /// a secret:
+    ///
+    /// 1. **The session key** — a derived per-session capability present in the pane's
+    ///    env. Scopes a writer to ITS OWN session; stops pane A writing pane B's badge.
+    /// 2. **The kernel peer pid** — read at `accept()`. The claimant cannot lie about
+    ///    who it is, and because `grove-agent launch` EXECS, that pid IS the agent's.
+    /// 3. **The controlling terminal** — the claimant's `e_tdev` must equal the
+    ///    `e_tdev` of THIS session's shell. This is the load-bearing check, and it
+    ///    closes three holes at once:
+    ///    - the **nested-tmux env-inheritance hole**: a tmux server started in pane A
+    ///      hands pane A's `GROVE_SESSION_KEY` to every shell it later spawns,
+    ///      including one the user opens from pane B. Under any env-carried design
+    ///      (today's status file included) that agent would badge pane A with a VALID
+    ///      key. Here it cannot: a process inside nested tmux has tmux's pty as its
+    ///      ctty, not grove's slave. Consequence, stated plainly: an agent inside
+    ///      nested tmux gets NO badge. Correct — we cannot know which pane it is in,
+    ///      so we say nothing.
+    ///    - **ssh**: a remote agent cannot reach a local unix socket at all.
+    ///    - a detached / hook-shaped process (no ctty) can never claim.
+    ///
+    /// Together with the fact that the PTY byte stream is not a status channel at all,
+    /// this is the security theorem: **no sequence of bytes emitted on a terminal can
+    /// produce, modify, or clear an agent badge.**
+    fn agent_claim(
+        &self,
+        p: AgentClaimParams,
+        session_key: &str,
+        peer: Option<i32>,
+    ) -> Result<Value, RpcError> {
+        // (1) The key FIRST, before the session map is even consulted: an unauthorized
+        // caller must not be able to probe which sessions exist by reading error codes.
+        self.verify_session_key(&p.session_id, session_key)?;
+        let session = self.get(&p.session_id).ok_or_else(session_not_found)?;
+
+        // (2) The peer pid. `None` (ENOTCONN — the peer closed or exited) ⇒ REJECT.
+        // Never unwrap: a claim we cannot attribute to a process is a claim we cannot
+        // ever fence, and an unfenceable claim is a badge that could wedge forever.
+        let peer = peer.ok_or_else(|| unauthorized("peer pid unreadable"))?;
+        let peer_facts = self
+            .kernel
+            .facts(peer)
+            .filter(|f| f.alive())
+            .ok_or_else(|| unauthorized("claimant is gone"))?;
+
+        // (3) The ctty check. The session's shell owns the pane's tty; a legitimate
+        // `grove-agent launch` is its direct child and inherits exactly that ctty.
+        let shell_pid = session
+            .pid()
+            .ok_or_else(|| unauthorized("session has no pid"))? as i32;
+        let shell_facts = self
+            .kernel
+            .facts(shell_pid)
+            .ok_or_else(|| unauthorized("session shell is gone"))?;
+        if !peer_facts.has_ctty() || peer_facts.tdev != shell_facts.tdev {
+            return Err(unauthorized("claimant is not on this pane's terminal"));
+        }
+
+        let claim_id = new_claim_id();
+        session.record_agent_claim(
+            AgentClaim {
+                claim_id: claim_id.clone(),
+                tool: p.tool,
+                pid: peer,
+                // The PID-reuse fence, captured now and re-verified on EVERY read.
+                start_us: peer_facts.start_us,
+                // A claim with no events yet is an agent that has not started working.
+                phase: Phase::Idle,
+                last_at_ns: 0,
+            },
+            self.kernel.as_ref(),
+        );
+        Ok(serde_json::to_value(AgentClaimResult { claim_id }).unwrap_or(Value::Null))
+    }
+
+    /// `agentEvent` — from a HOOK SUBPROCESS.
+    ///
+    /// **No ctty check. No peer-pid check.** Measured: every Claude hook subprocess
+    /// calls `setsid()`, so it has `e_tdev == NODEV`, `open("/dev/tty")` → `ENXIO`,
+    /// and no tty on any fd. Applying the claim-side ctty check here would reject
+    /// **100% of events** — the badge would never change. And a fire-and-exit hook may
+    /// have closed its socket before we could read its pid at all.
+    ///
+    /// Events are authorized by CAPABILITY instead: the session key (which scopes them
+    /// to one pane) plus the daemon-minted `claimId`. The security theorem survives
+    /// intact — `GROVE_CLAIM_ID` is minted here and exported only into the agent's env,
+    /// so passive bytes on a terminal still cannot forge, modify, or clear a badge.
+    /// The nested-tmux hole also stays closed: a tmux server inherits
+    /// `GROVE_SESSION_KEY` but NOT `GROVE_CLAIM_ID`, its agent's *claim* is
+    /// ctty-rejected, it never receives a claim id, and so it can emit no events.
+    fn agent_event(&self, p: AgentEventParams, session_key: &str) -> Result<Value, RpcError> {
+        self.verify_session_key(&p.session_id, session_key)?;
+        let session = self.get(&p.session_id).ok_or_else(session_not_found)?;
+        // An unknown claim id, or an event that lost the monotonic race, is DROPPED —
+        // and still ACKED. Dropping a status event is harmless by design (liveness
+        // comes from the kernel; the next event self-corrects); returning an error to
+        // something on the agent's critical path is not.
+        session.apply_agent_event(&p.claim_id, &p.event, p.tool_name.as_deref(), p.at_ns);
+        Ok(json!({}))
+    }
+
+    /// Constant-time check that the caller holds THIS session's derived key. The key
+    /// is recomputed from the daemon token, never stored — nothing to leak, nothing to
+    /// rotate, nothing to GC.
+    fn verify_session_key(&self, session_id: &str, presented: &str) -> Result<(), RpcError> {
+        let expected = derive_session_key(&self.token, session_id);
+        if presented.is_empty()
+            || !constant_time_eq(presented.as_bytes(), expected.as_bytes())
+        {
+            return Err(unauthorized("bad session key"));
+        }
+        Ok(())
     }
 
     async fn run_control(
@@ -824,7 +1059,17 @@ impl Daemon {
     }
 
     /// Build the `pollBells` reply (design G9): one `PtyBellEvent`-shaped entry per
-    /// LIVE session. The bell is drained (swap-false) here; ai_status is read.
+    /// LIVE session. The bell is drained (swap-false) here.
+    ///
+    /// `aiStatus` is **DERIVED, right here, right now** (agent-status design §3.5):
+    /// `resolve(claims, kernel)` re-asks the kernel whether each claiming agent still
+    /// exists, on every single poll. No status is stored, so no status can go stale —
+    /// a SIGKILLed agent's badge clears on the very next tick with no TTL, no timer,
+    /// and nothing to garbage-collect. `None` ⇒ no badge, which is what a plain shell,
+    /// a `vim /tmp/codex`, and an agent grove could not hook all correctly get.
+    ///
+    /// The renderer contract (`PtyBellEvent{ptyId,bell,aiStatus}` and the
+    /// `"<tool>:<status>"` string) is unchanged.
     fn rpc_poll_bells(&self) -> Value {
         let sessions: Vec<Arc<Session>> = lock(&self.sessions)
             .values()
@@ -839,7 +1084,7 @@ impl Daemon {
                 json!({
                     "ptyId": session.id,
                     "bell": session.take_bell(),
-                    "aiStatus": session.ai_status(),
+                    "aiStatus": session.agent_status(self.kernel.as_ref()),
                 })
             })
             .collect();
@@ -937,20 +1182,12 @@ impl Daemon {
                     }
                 }
             }
-            // AI status injection (design G9): the daemon-native replacement for a
-            // hook's `tmux set-option @grove_ai_status`. `aiStatus` absent/null
-            // clears the status. Read back via `pollBells`.
-            "setAiStatus" => {
-                if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
-                    let status = params
-                        .get("aiStatus")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    if let Some(session) = self.get(id) {
-                        session.set_ai_status(status);
-                    }
-                }
-            }
+            // `setAiStatus` is DELETED (agent-status design §4). The app is no longer a
+            // writer of status: ONE writer (the daemon, from the agent's own hook
+            // events), ONE owner (the daemon session). An unknown notify is ignored
+            // here, so an older grove that still sends it degrades to a silent no-op
+            // rather than an error.
+            //
             // P16 sticky cold-restore scaffold: the client clears its per-session
             // cache locally and sends this so the daemon can drop any retained
             // cold-restore payload. Accepted no-op until the checkpointer wires
@@ -1099,10 +1336,28 @@ fn str_param(params: &Value, key: &str) -> Result<String, RpcError> {
         })
 }
 
+/// Decode a typed params struct, mapping a schema mismatch to a clean invalid-params
+/// error. Never panics: a malformed agent call must answer, not wedge.
+fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {
+    serde_json::from_value(params).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("invalid params: {e}"),
+    })
+}
+
 fn session_not_found() -> RpcError {
     RpcError {
         code: -32004,
         message: "SessionNotFound".to_string(),
+    }
+}
+
+/// A failed agent admission check. The message is deliberately coarse — a caller that
+/// cannot claim gets no information about WHICH check it failed.
+fn unauthorized(message: &str) -> RpcError {
+    RpcError {
+        code: -32001,
+        message: message.to_string(),
     }
 }
 
@@ -1117,6 +1372,7 @@ fn internal(message: String) -> RpcError {
 mod tests {
     use super::*;
     use crate::history::{Checkpoint, HistoryWriter};
+    use crate::kernel::FakeKernel;
     use std::path::Path;
     use std::sync::atomic::AtomicU64;
 
@@ -1197,44 +1453,65 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn poll_bells_drains_bell_and_reports_ai_status() {
-        // Design G9: pollBells returns one entry per live session with its pending
-        // bell (drained) and current ai_status (read). setAiStatus injects status.
+    async fn poll_bells_drains_the_bell_and_derives_status_from_the_kernel() {
+        // Design G9 + agent-status §3.5: pollBells returns one entry per live session
+        // with its pending bell (DRAINED on read — it is an event) and its aiStatus
+        // (DERIVED on read — it is not stored anywhere at all).
         let root = temp_root();
-        let daemon = Daemon::new("tok".to_string(), root.clone());
+        let kernel = FakeKernel::new();
+        let daemon = Daemon::with_kernel(
+            "tok".to_string(),
+            root.clone(),
+            Arc::new(kernel.clone()) as Arc<dyn Kernel>,
+        );
         daemon
             .rpc_create_or_attach(json!({ "sessionId": "b1", "cwd": "/tmp", "cols": 80, "rows": 24 }))
             .await
             .expect("createOrAttach ok");
         let session = daemon.get("b1").expect("session b1 live");
 
-        // Inject an AI status via the notify, and ring a bell via a teed BEL.
-        daemon.dispatch_notify(
-            "setAiStatus",
-            json!({ "sessionId": "b1", "aiStatus": "codex:running" }),
-        );
+        let entry = |d: &Arc<Daemon>| -> Value {
+            d.rpc_poll_bells()
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["ptyId"] == json!("b1"))
+                .cloned()
+                .expect("b1 present in pollBells")
+        };
+
+        // A pane with no claim has NO badge — nothing it prints can create one.
         session.test_tee(b"beep\x07");
+        let e = entry(&daemon);
+        assert_eq!(e["bell"], json!(true), "a teed BEL must report a bell");
+        assert_eq!(e["aiStatus"], json!(null), "no claim ⇒ no badge");
+        assert_eq!(entry(&daemon)["bell"], json!(false), "the bell drains on poll");
 
-        let events = daemon.rpc_poll_bells();
-        let entry = events
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|e| e["ptyId"] == json!("b1"))
-            .expect("b1 present in pollBells");
-        assert_eq!(entry["bell"], json!(true), "teed BEL must report a bell");
-        assert_eq!(entry["aiStatus"], json!("codex:running"), "ai_status reported");
+        // An agent claims the pane and reports it is working.
+        kernel.insert(5150, 42, 3);
+        session.record_agent_claim(
+            AgentClaim {
+                claim_id: "cid".into(),
+                tool: "codex".into(),
+                pid: 5150,
+                start_us: 42,
+                phase: Phase::Idle,
+                last_at_ns: 0,
+            },
+            &kernel,
+        );
+        session.apply_agent_event("cid", "UserPromptSubmit", None, 1);
+        assert_eq!(entry(&daemon)["aiStatus"], json!("codex:running"));
+        assert_eq!(
+            entry(&daemon)["aiStatus"],
+            json!("codex:running"),
+            "status is state, not an event — it does not drain"
+        );
 
-        // The bell drained on read; ai_status persists (state, not event).
-        let events = daemon.rpc_poll_bells();
-        let entry = events
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|e| e["ptyId"] == json!("b1"))
-            .unwrap();
-        assert_eq!(entry["bell"], json!(false), "bell must drain on poll");
-        assert_eq!(entry["aiStatus"], json!("codex:running"), "ai_status persists");
+        // SIGKILL the agent. The badge clears on the NEXT POLL, with no TTL: nothing
+        // ever wrote it down, so there is nothing to expire.
+        kernel.remove(5150);
+        assert_eq!(entry(&daemon)["aiStatus"], json!(null));
 
         daemon.kill_all_sessions();
         let _ = std::fs::remove_dir_all(&root);

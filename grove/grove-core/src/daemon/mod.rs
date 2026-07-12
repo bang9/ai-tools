@@ -45,10 +45,12 @@ pub use framing::{
 };
 pub use protocol::{
     daemon_bin_path, daemon_log_path, daemon_pid_path, daemon_socket_path, daemon_token_path,
-    decode_ndjson_line, encode_ndjson_line, history_root, parse_pid_file, serialize_pid_file,
-    write_secret_file, ClientKind, ControlMessage, DaemonPidFile, DaemonSocket, Hello, HelloAck,
-    Notify, ProtocolError, RpcError, RpcReply, RpcRequest, GROVE_DAEMON_PROTOCOL_VERSION,
-    MAX_CONTROL_LINE_BYTES,
+    decode_ndjson_line, derive_session_key, encode_ndjson_line, history_root, new_claim_id,
+    parse_pid_file, serialize_pid_file, write_secret_file, AgentClaimParams, AgentClaimResult,
+    AgentEventParams, ClientKind, ControlMessage, DaemonPidFile, DaemonSocket, Hello, HelloAck,
+    Notify, ProtocolError, RpcError, RpcReply, RpcRequest, GROVE_CLAIM_ID_ENV,
+    GROVE_DAEMON_PROTOCOL_VERSION, GROVE_DAEMON_SOCK_ENV, GROVE_SESSION_KEY_ENV,
+    MAX_CONTROL_LINE_BYTES, METHOD_AGENT_CLAIM, METHOD_AGENT_EVENT,
 };
 
 #[cfg(unix)]
