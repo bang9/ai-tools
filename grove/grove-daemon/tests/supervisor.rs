@@ -378,17 +378,25 @@ async fn restart_daemon_kills_sessions_and_respawns_fresh() {
 
 // --- L5 preservation-branch tests (stale code vs live sessions) -----------
 //
-// The launch-identity staleness check (L4) alone would replace a daemon whose
-// bundle `app_version` differs from the current one. The preservation guard (L5)
-// must veto that replacement whenever the stale daemon still owns live sessions —
-// killing it would destroy the user's terminals. These three tests exercise the
-// full matrix against the REAL daemon: stale+live→adopt, stale+wedged+live→adopt-
-// unresponsive, stale+empty→replace.
+// A daemon whose recorded `app_version` differs from the current one is running a
+// DIFFERENT build. A version change is a clean-cut migration: the old daemon may
+// not speak the new app's protocol/features (the agent-status role is additive —
+// an old daemon rejects it), so it is retired and replaced even when it owns live
+// sessions (scrollback is cold-restorable from disk; the processes are not). A
+// WEDGED (SIGSTOP) stale daemon is the exception: we cannot RPC it to migrate
+// cleanly, and its socket still accepts connects, so it is adopted-unresponsive and
+// the client reconnect-drains it (L3e). These tests exercise the matrix against the
+// REAL daemon: stale+live→replace, stale+wedged+live→adopt-unresponsive,
+// stale+empty→replace.
 
-/// (a) A stale daemon (newer app_version) that owns a LIVE session must be
-/// ADOPTED, not replaced — same pid, session survives (design L4/L5).
+/// (a) A stale daemon (different app_version) that owns a LIVE session must be
+/// REPLACED — a version change is a clean-cut migration: the old build may not
+/// speak the new app's protocol/features, so adopting it would silently break
+/// them. A fresh daemon (new pid) takes over and the old session is gone (its
+/// scrollback is cold-restorable from disk, but the process does not survive).
+/// An UNCHANGED version still warm-adopts — see `spawn_then_adopt_same_pid`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stale_daemon_with_live_session_is_adopted() {
+async fn stale_daemon_with_live_session_is_replaced() {
     let base = unique_base();
     let cfg = cfg_for(&base);
 
@@ -408,24 +416,33 @@ async fn stale_daemon_with_live_session_is_adopted() {
         "the created session should be alive"
     );
 
-    // A NEWER app version makes the running daemon's code stale (L4). Because it
-    // owns a live session, the preservation guard (L5) must ADOPT it — never kill
-    // the terminals to swap code.
+    // A DIFFERENT app version makes the running daemon's code stale. A major
+    // update retires it and respawns fresh even though it owns a live session:
+    // the visible feature break of running old code outweighs saving the shells.
     let mut stale_cfg = cfg_for(&base);
     stale_cfg.app_version = "2.0.0-test".to_string();
     let second = ensure_running(&stale_cfg)
         .await
-        .expect("adopt stale-but-live daemon");
+        .expect("replace stale daemon");
     assert_eq!(
         second.outcome,
-        EnsureOutcome::Adopted,
-        "a stale daemon owning a live session must be preserved (L5)"
+        EnsureOutcome::Replaced,
+        "a stale daemon must be replaced on a version change, even with a live session"
     );
-    assert_eq!(read_pid(&base), pid, "preservation must reuse the same daemon pid");
     assert!(
-        session_alive(&client, "live-a").await,
-        "the live session must survive the adoption"
+        wait_pid_dead(pid, Duration::from_secs(5)).await,
+        "the stale daemon process must be killed"
     );
+    assert_ne!(read_pid(&base), pid, "a fresh daemon (new pid) must take over");
+
+    // The old session did not survive the swap — the fresh daemon has no record
+    // of it (its scrollback lives on disk for cold restore, but the process is gone).
+    let fresh = client_for(&second);
+    assert!(
+        wait_session_gone(&fresh, "live-a", Duration::from_secs(5)).await,
+        "the old session must not survive the daemon replacement"
+    );
+    let _killer2 = DaemonKiller(read_pid(&base));
 
     cleanup(&base);
 }

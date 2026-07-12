@@ -226,21 +226,19 @@ pub async fn ensure_running(cfg: &EnsureRunningConfig) -> Result<EnsureResult, S
     match health {
         DaemonHealth::Healthy => {
             // A protocol-healthy daemon can outlive the bundle that launched it
-            // (dev rebuild / packaged update). Replace only when the code is
-            // stale AND no live session would be lost (design L4/L5).
+            // (dev rebuild / packaged update). A version change is a CLEAN-CUT
+            // migration: the running daemon is a different build that may not
+            // speak this app's protocol/features — e.g. the agent-status role is
+            // additive, and an older daemon rejects it, silently breaking the
+            // badge. Adopting stale code to save the shells trades a visible
+            // feature break for invisible session survival, so a major update
+            // instead retires the old daemon and respawns fresh. The killed
+            // sessions stay cold-restorable on disk (their checkpoints outlive
+            // the SIGKILL), so scrollback returns even though the processes do
+            // not — the same contract as any app the user quits to update.
+            // (An unchanged version — app quit/reopen with no update — is NOT
+            // stale, so it still warm-adopts and the shells survive.)
             if is_stale_for_current(&pid_path, &socket_path, &cfg.app_version) {
-                let preserve = match alive_session_count(&socket_path, &token_path).await {
-                    Some(count) => count > 0, // live sessions → preserve stale code
-                    None => true,             // unverifiable ⇒ preserve (invariant #1)
-                };
-                if preserve {
-                    return Ok(make_result(
-                        EnsureOutcome::Adopted,
-                        socket_path,
-                        token_path,
-                    ));
-                }
-                // Session-free + stale: gracefully retire it, then replace.
                 request_shutdown(&socket_path, &token_path).await;
                 kill_stale_blocking(&cfg.base_dir, &socket_path, &token_path).await;
                 spawn_daemon(cfg, &socket_path, &token_path, &pid_path, false).await?;
