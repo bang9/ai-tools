@@ -357,14 +357,10 @@ async fn a_claim_and_its_events_drive_the_badge_through_poll_bells() {
         "the daemon mints the capability, not the agent"
     );
     assert_eq!(
-        h.badge().await,
-        None,
-        "a fresh claim has no event yet ⇒ no badge (the agent has not announced itself)"
+        h.badge().await.as_deref(),
+        Some("claude:idle"),
+        "a fresh claim is idle — the agent has not started working"
     );
-
-    // SessionStart is that announcement; it lands within ms of launch and yields idle.
-    h.event(&claim_id, "SessionStart", None, 5).await;
-    assert_eq!(h.badge().await.as_deref(), Some("claude:idle"));
 
     // The captured Claude sequence, over the real socket.
     h.event(&claim_id, "UserPromptSubmit", None, 10).await;
@@ -424,11 +420,8 @@ async fn a_wrong_session_key_is_rejected() {
         assert_eq!(h.badge().await, None, "a rejected claim draws no badge");
     }
 
-    // …and an event with a bad key cannot touch a legitimate claim either. Establish a
-    // known phase first (idle) so we can prove the forged event does not move it.
+    // …and an event with a bad key cannot touch a legitimate claim either.
     let claim_id = h.claim("claude").await.expect("the real claim is accepted");
-    h.event(&claim_id, "SessionStart", None, 1).await;
-    assert_eq!(h.badge().await.as_deref(), Some("claude:idle"));
     let mut conn = hello(&h.sock, &"f".repeat(32), ClientKind::Agent)
         .await
         .unwrap();

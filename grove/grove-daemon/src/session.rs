@@ -971,6 +971,7 @@ fn run_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Phase;
     use crate::emulator::SnapshotOptions;
     use crate::kernel::FakeKernel;
     use crate::server::{SessionReaper, StreamHub};
@@ -1150,17 +1151,11 @@ mod tests {
                 tool: "claude".into(),
                 pid: 777,
                 start_us: 12_345,
-                phase: None,
+                phase: Phase::Idle,
                 last_at_ns: 0,
             },
             &kernel,
         );
-        // A live claim with no event yet earns NO badge — identity is declared, but the
-        // agent has not announced itself.
-        assert_eq!(session.agent_status(&kernel), None);
-
-        // SessionStart is that announcement; it lands within ms and yields idle.
-        assert!(session.apply_agent_event("cid", "SessionStart", None, 5));
         assert_eq!(session.agent_status(&kernel).as_deref(), Some("claude:idle"));
 
         assert!(session.apply_agent_event("cid", "UserPromptSubmit", None, 10));
@@ -1193,7 +1188,7 @@ mod tests {
                 tool: "codex".into(),
                 pid: 888,
                 start_us: 999,
-                phase: None,
+                phase: Phase::Idle,
                 last_at_ns: 0,
             },
             &kernel,

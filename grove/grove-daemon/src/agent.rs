@@ -50,13 +50,9 @@ pub struct AgentClaim {
     pub pid: i32,
     /// `p_starttime` at claim time — the PID-reuse fence, re-verified on every read.
     pub start_us: u64,
-    /// The last mapped event, or `None` until the agent reports one. A claim with no
-    /// event yet earns NO badge (design rung B): grove declares the identity at launch,
-    /// but a real agent announces itself with `SessionStart` within milliseconds, so a
-    /// claim that stays `None` is one whose hook channel never came up (e.g. a codex the
-    /// user has not yet granted hook-trust). Showing `idle` there would be a badge that
-    /// means nothing; the thesis is no badge over a wrong one.
-    pub phase: Option<Phase>,
+    /// The last mapped event. Starts [`Phase::Idle`]: a claim with no events yet is
+    /// an agent that has not started working.
+    pub phase: Phase,
     /// The monotonic fence: an event whose `at_ns` is not strictly greater is
     /// dropped, which kills the whole reordering class in five lines.
     pub last_at_ns: u64,
@@ -116,12 +112,9 @@ pub fn map_event(event: &str, tool_name: Option<&str>) -> Option<Phase> {
 ///    matches (PID reuse).
 /// 2. Of the live claims, take the MOST RECENT (a pane may host several agents over
 ///    its life; the one that is still running and claimed last is the one on screen).
-/// 3. If that claim has reported NO event yet (`phase == None`), there is no badge —
-///    and we do NOT fall back to an older claim, which would resurrect a finished
-///    agent's status under the one now on screen.
-/// 4. A SUSPENDED agent (Ctrl-Z) is `idle` — never `working`, never `attention`.
-/// 5. Otherwise map the phase the agent itself last reported.
-/// 6. No live claim ⇒ `None` ⇒ no badge.
+/// 3. A SUSPENDED agent (Ctrl-Z) is `idle` — never `working`, never `attention`.
+/// 4. Otherwise map the phase the agent itself last reported.
+/// 5. No live claim ⇒ `None` ⇒ no badge.
 ///
 /// This single function is the answer to the SIGKILL wedge, the TTL question and the
 /// reattach question, simultaneously — and it has no timer, no timeout, and no
@@ -146,15 +139,10 @@ pub fn resolve(agents: &[AgentClaim], kernel: &dyn Kernel) -> Option<String> {
         if facts.start_us != claim.start_us {
             continue; // PID reuse → this is somebody else's process
         }
-        // The most-recent live claim owns the pane. If it has never reported a phase,
-        // there is no honest badge to draw — and we do NOT fall back to an older claim's
-        // phase (the `?` returns from the function, not `continue`), which would
-        // resurrect a finished agent's status under the current one.
-        let phase = claim.phase?;
         let status = if facts.stopped() {
-            "idle" // Ctrl-Z'd: a suspended agent is never working and never attention.
+            "idle"
         } else {
-            match phase {
+            match claim.phase {
                 Phase::Working => "running",
                 Phase::Waiting => "attention",
                 Phase::Idle => "idle",
@@ -200,7 +188,7 @@ pub fn apply_event(
     claim.last_at_ns = at_ns;
     // Unknown event ⇒ phase UNCHANGED. Never a guess.
     if let Some(phase) = map_event(event, tool_name) {
-        claim.phase = Some(phase);
+        claim.phase = phase;
     }
     true
 }
@@ -219,19 +207,7 @@ mod tests {
             tool: "claude".into(),
             pid: PID,
             start_us: START,
-            phase: Some(phase),
-            last_at_ns: 0,
-        }
-    }
-
-    /// A claim that has been recorded but has never received a hook event.
-    fn eventless_claim() -> AgentClaim {
-        AgentClaim {
-            claim_id: "c1".into(),
-            tool: "codex".into(),
-            pid: PID,
-            start_us: START,
-            phase: None,
+            phase,
             last_at_ns: 0,
         }
     }
@@ -243,48 +219,6 @@ mod tests {
     }
 
     // ---- map_event ---------------------------------------------------------
-
-    #[test]
-    fn a_live_claim_with_no_event_yet_shows_no_badge() {
-        // A codex whose one-time hook-trust the user has not granted claims the pane
-        // (grove-agent execs it either way) but never sends an event. It is a live
-        // process, but there is no honest status to show — design rung B: no badge
-        // beats a wrong `idle`. The moment any event lands, it earns its badge.
-        let agents = vec![eventless_claim()];
-        let k = live_kernel();
-        assert_eq!(resolve(&agents, &k), None);
-
-        let mut agents = agents;
-        assert!(apply_event(&mut agents, "c1", "SessionStart", None, 1));
-        assert_eq!(resolve(&agents, &k).as_deref(), Some("codex:idle"));
-    }
-
-    #[test]
-    fn an_eventless_current_claim_does_not_resurrect_an_older_agents_status() {
-        // Agent A finished (idle), then agent B launched in the same pane but has not
-        // reported. B is the current agent → no badge, NOT A's stale idle.
-        let k = FakeKernel::new();
-        k.insert(10, 100, 7).insert(20, 200, 7);
-        let agents = vec![
-            AgentClaim {
-                claim_id: "a".into(),
-                tool: "claude".into(),
-                pid: 10,
-                start_us: 100,
-                phase: Some(Phase::Idle),
-                last_at_ns: 1,
-            },
-            AgentClaim {
-                claim_id: "b".into(),
-                tool: "codex".into(),
-                pid: 20,
-                start_us: 200,
-                phase: None,
-                last_at_ns: 0,
-            },
-        ];
-        assert_eq!(resolve(&agents, &k), None);
-    }
 
     #[test]
     fn the_captured_claude_sequence_drives_idle_working_waiting() {
@@ -406,9 +340,9 @@ mod tests {
             !apply_event(&mut agents, "c1", "Stop", None, 100),
             "not strictly greater"
         );
-        assert_eq!(agents[0].phase, Some(Phase::Working));
+        assert_eq!(agents[0].phase, Phase::Working);
         assert!(apply_event(&mut agents, "c1", "Stop", None, 101));
-        assert_eq!(agents[0].phase, Some(Phase::Idle));
+        assert_eq!(agents[0].phase, Phase::Idle);
     }
 
     #[test]
@@ -421,7 +355,7 @@ mod tests {
             None,
             9
         ));
-        assert_eq!(agents[0].phase, Some(Phase::Idle), "no claim, no badge change");
+        assert_eq!(agents[0].phase, Phase::Idle, "no claim, no badge change");
     }
 
     // ---- resolve, against the kernel ---------------------------------------
@@ -513,7 +447,7 @@ mod tests {
                 tool: "claude".into(),
                 pid: 10,
                 start_us: 100,
-                phase: Some(Phase::Working),
+                phase: Phase::Working,
                 last_at_ns: 1,
             },
             AgentClaim {
@@ -521,7 +455,7 @@ mod tests {
                 tool: "codex".into(),
                 pid: 20,
                 start_us: 200,
-                phase: Some(Phase::Waiting),
+                phase: Phase::Waiting,
                 last_at_ns: 1,
             },
         ];
@@ -545,7 +479,7 @@ mod tests {
                 tool: "claude".into(),
                 pid: 10,
                 start_us: 100,
-                phase: Some(Phase::Idle),
+                phase: Phase::Idle,
                 last_at_ns: 0,
             },
             AgentClaim {
@@ -553,7 +487,7 @@ mod tests {
                 tool: "claude".into(),
                 pid: 20,
                 start_us: 200,
-                phase: Some(Phase::Idle),
+                phase: Phase::Idle,
                 last_at_ns: 0,
             },
             AgentClaim {
@@ -561,7 +495,7 @@ mod tests {
                 tool: "codex".into(),
                 pid: 30,
                 start_us: 300,
-                phase: Some(Phase::Idle),
+                phase: Phase::Idle,
                 last_at_ns: 0,
             },
         ];
