@@ -871,6 +871,7 @@ impl Daemon {
 
             match action {
                 Action::Attach => {
+                    eprintln!("grove-daemon: createOrAttach {session_id} -> ATTACH (warm reattach)");
                     // Warm reattach (design P9/S15): return the live VT snapshot so
                     // the renderer rehydrates the current screen + modes. The
                     // atomic live-vs-cold decision (D12) has already resolved to
@@ -935,6 +936,10 @@ impl Daemon {
                         .flatten()
                     };
 
+                    eprintln!(
+                        "grove-daemon: createOrAttach {session_id} -> SPAWN ({})",
+                        if cold_restore.is_some() { "cold-restore" } else { "fresh" }
+                    );
                     // Recovered cwd/cols/rows OVERRIDE the requested geometry (D12).
                     let (spawn_cwd, spawn_cols, spawn_rows) = match &cold_restore {
                         Some(cr) => (
