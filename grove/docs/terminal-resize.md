@@ -87,13 +87,28 @@ which is the accepted behavior.
   div tracks the container a frame ahead of the canvas repaint, and the strip
   it exposes must show the theme background, not black.
 
-## Applied-size verification (what tmux actually applied)
+## Applied-size verification (what the daemon actually applied)
 
-`shouldSendResize` dedupes against what grove **sent**. But a resize can be
-dropped or **clamped** by tmux — the window-size policy, or a second attached
-client (the broadcast Mirror) coercing the pane to a smaller grid. Two
-mechanisms in `src/lib/terminal-pty-reassert.ts` close the loop on what tmux
-**applied** (read back via the `applied_pty_size` command):
+`shouldSendResize` dedupes against what grove **sent**. But the grid the child
+actually runs at can still diverge from what grove sent, for two reasons:
+
+- **A resize can be silently dropped.** The daemon applies a resize to the PTY
+  master *first* and advances its own applied dims only once that succeeds
+  (`Session::resize`). A resize aimed at a session that is dead, or whose master
+  is mid-teardown, returns **success** while the applied dims stay at their
+  previous value — deliberately, so a readback never reports a size the child
+  never took.
+- **Someone else may own the size.** While a pane is Mirrored, the mirror runtime
+  — not the source pane — is the session's resize owner, so the source pane reads
+  back a grid it did not choose (see `docs/terminal-broadcast.md`).
+
+There is no *clamping*: a daemon session has exactly one PTY and one writer of its
+size, so nothing coerces it to a smaller grid the way tmux's window-size policy
+coerced a session shared by two attached clients.
+
+Two mechanisms in `src/lib/terminal-pty-reassert.ts` close the loop on what the
+daemon **applied** — read back via the `applied_pty_size` command, which is the
+daemon emulator's applied dims over the `getAppliedSize` RPC (no shell-out):
 
 - **Reassertion** (`createPtySizeReassertion`) — after a fit settles (in
   `scheduleLayoutSync`'s fit branch) and on reveal (its no-fit reveal branch),
@@ -110,13 +125,13 @@ mechanisms in `src/lib/terminal-pty-reassert.ts` close the loop on what tmux
   never fights the hold or the fit-stability loop, and runs once per ptyId. grove
   deliberately omits orca's 0x0 white-screen fallback (80x24 is already usable).
 
-**Non-convergence guard** (`decideDriftReassert`): if tmux returns the SAME
-clamped size twice in a row for the same request, the clamp is **adopted as
-authoritative and the loop STOPS** — no re-fit oscillation, no flicker loop.
-Exactly one corrective resize is emitted per target; a persistent clamp
-(window-size policy, or the Mirror's second client) is accepted rather than
-fought. xterm's grid is never resized to the clamp (that would just re-propose
-the container grid and oscillate).
+**Non-convergence guard** (`decideDriftReassert`): if the readback returns the SAME
+size twice in a row for the same request, that size is **adopted as authoritative
+and the loop STOPS** — no re-fit oscillation, no flicker loop. Exactly one
+corrective resize is emitted per target; a readback that persistently disagrees
+(the resize was dropped, or the Mirror's runtime owns the size) is accepted rather
+than fought. xterm's grid is never resized to the adopted value (that would just
+re-propose the container grid and oscillate).
 
 ## Regression checklist
 
@@ -149,7 +164,7 @@ long scrollback):
 9. Open a new worktree whose layout mounts with a split/side panel already on,
    so a pane spawns hidden/wide — the TUI must end up sized to the settled pane
    grid, not stranded at the 80x24 spawn or the wide mount width.
-10. Mirror a pane (broadcast), which attaches a second tmux client that resizes
-    the session — the source pane must not enter a re-fit oscillation/flicker
-    loop; a persistent Mirror-induced clamp is adopted and settles (see
+10. Mirror a pane (broadcast), which hands the session's resize ownership to the
+    mirror runtime — the source pane must not enter a re-fit oscillation/flicker
+    loop; the mirror-owned grid it reads back is adopted and settles (see
     `docs/terminal-broadcast.md`).

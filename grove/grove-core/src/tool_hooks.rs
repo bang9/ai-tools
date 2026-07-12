@@ -1,7 +1,16 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-pub const TMUX_GROVE_AI_STATUS_OPTION: &str = "@grove_ai_status";
+/// The env var carrying a pane's AI-status file path into its shell (design G9).
+/// `pty::create` exports it (`<daemon base dir>/ai-status/<session id>`); the hook
+/// scripts below write `tool:status` into it ATOMICALLY (tmp + `mv`), and
+/// `pty::poll_bell_events` consumes the file each tick and forwards the value to the
+/// daemon (`setAiStatus`). This file IS the hook channel — the daemon-native
+/// replacement for `tmux set-option @grove_ai_status`, which the shell could reach
+/// only because tmux happened to be the PTY backend.
+///
+/// An EMPTY file means "clear the status" (the old `set-option -u` unset).
+pub const GROVE_AI_STATUS_FILE_ENV: &str = "GROVE_AI_STATUS_FILE";
 
 /// Tools that lack a hook system and need PTY idle timeout detection.
 /// Tools with hooks (e.g. Claude Code via `--settings`) report status directly.
@@ -58,7 +67,7 @@ fn install() -> Result<(), String> {
         .map_err(|error| format!("failed to create {}: {error}", bin_dir.display()))?;
 
     let grove_hook = bin_dir.join("grove-hook");
-    write_executable(&grove_hook, grove_hook_script())?;
+    write_executable(&grove_hook, &grove_hook_script())?;
 
     let grove_app = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
@@ -109,13 +118,26 @@ source "${GROVE_REAL_ZDOTDIR:-$HOME}/.zprofile" 2>/dev/null; true
     )
     .map_err(|e| format!("failed to write .zprofile: {e}"))?;
 
-    // .zshrc — interactive shells; prepends ~/.grove/bin AFTER all user config
+    // .zshrc — interactive shells; prepends ~/.grove/bin AFTER all user config, then
+    // installs the prompt-time TUI-state reset (see grove_reset_tui_state below).
     std::fs::write(
         zsh_dir.join(".zshrc"),
         format!(
             r#"# Grove-managed — sources real .zshrc then ensures Grove PATH.
 source "${{GROVE_REAL_ZDOTDIR:-$HOME}}/.zshrc" 2>/dev/null; true
 export PATH="{grove_bin_str}:$PATH"
+
+# Grove-managed — clear terminal state a TUI leaked when it died without restoring it.
+# Grove's PTY is a raw terminal now (tmux used to absorb mouse events for us), so an
+# agent killed while mouse reporting was armed would turn every later click at the shell
+# prompt into escape-sequence garbage on the command line. Reset at each prompt: mouse
+# reporting (1000/1002/1003 + the 1006/1015/1016 encodings), focus reporting (1004),
+# cursor visibility, and cursor shape. Deliberately NOT reset: bracketed paste (zsh owns
+# it) and the alternate screen (a live TUI's subshell must not be yanked out of it).
+grove_reset_tui_state() {{
+  printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l\e[?1015l\e[?1016l\e[?1004l\e[?25h\e[0 q'
+}}
+autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd grove_reset_tui_state
 "#
         ),
     )
@@ -156,14 +178,24 @@ fn write_executable(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn grove_hook_script() -> &'static str {
-    r#"#!/usr/bin/env bash
+/// The shared shell function every hook path uses to publish status: write the
+/// value to a temp file next to the target, then `mv` it into place. The rename is
+/// atomic, so grove's poller never reads a half-written status, and an EMPTY payload
+/// is the explicit "clear" signal (the old `tmux set-option -u`). The temp name is
+/// pid-suffixed so two concurrent tools in the same pane can't clobber each other's
+/// tmp file mid-write.
+const GROVE_AI_WRITE_FN: &str = r#"grove_ai_write() { _t="$GROVE_AI_STATUS_FILE.$$.tmp"; printf '%s' "$1" > "$_t" 2>/dev/null && mv -f "$_t" "$GROVE_AI_STATUS_FILE" 2>/dev/null; rm -f "$_t" 2>/dev/null; }"#;
+
+fn grove_hook_script() -> String {
+    format!(
+        r#"#!/usr/bin/env bash
 # Grove hook dispatcher. Usage: grove-hook <tool> <event>
-# Sets tmux @grove_ai_status in "tool:status" format.
+# Publishes "tool:status" into the pane's GROVE_AI_STATUS_FILE (atomic write+mv).
 TOOL="$1"; EVENT="$2"
-[ -z "$GROVE_TMUX_SESSION" ] && exit 0
-grove_ai() { tmux set-option -q -t "$GROVE_TMUX_SESSION" @grove_ai_status "$1" 2>/dev/null; }
-grove_ai_clear() { tmux set-option -qu -t "$GROVE_TMUX_SESSION" @grove_ai_status 2>/dev/null; }
+[ -z "$GROVE_AI_STATUS_FILE" ] && exit 0
+{GROVE_AI_WRITE_FN}
+grove_ai() {{ grove_ai_write "$1"; }}
+grove_ai_clear() {{ grove_ai_write ""; }}
 case "$TOOL" in
   claude)
     case "$EVENT" in
@@ -175,6 +207,7 @@ case "$TOOL" in
     esac ;;
 esac
 "#
+    )
 }
 
 /// Common shell helper: find real binary by scanning PATH, skipping our own bin dir.
@@ -190,12 +223,15 @@ fn find_real_binary_fn(tool: &str) -> String {
     )
 }
 
-/// Common lifecycle: set @grove_ai_status on start, clear on exit.
+/// Common lifecycle: publish `{tool}:idle` into the pane's status file on start and
+/// clear it on exit (design G9). Same semantics the tmux `@grove_ai_status`
+/// set/unset pair had, over the file channel.
 fn grove_lifecycle_trap(tool: &str) -> String {
     format!(
-        r#"grove_ai_cleanup() {{ tmux set-option -qu -t "$GROVE_TMUX_SESSION" @grove_ai_status 2>/dev/null; }}
+        r#"{GROVE_AI_WRITE_FN}
+grove_ai_cleanup() {{ grove_ai_write ""; }}
 trap grove_ai_cleanup EXIT INT TERM HUP
-tmux set-option -q -t "$GROVE_TMUX_SESSION" @grove_ai_status "{tool}:idle" 2>/dev/null"#
+grove_ai_write "{tool}:idle""#
     )
 }
 
@@ -208,7 +244,7 @@ fn claude_wrapper_script(grove_hook_path: &Path, _grove_app_path: &Path) -> Stri
 # Grove-managed Claude Code wrapper — lifecycle tracking + hooks for fine-grained status.
 {find_fn}
 REAL_CLAUDE="$(find_real_claude)" || {{ echo "claude: not found" >&2; exit 127; }}
-[ -z "$GROVE_TMUX_SESSION" ] && exec "$REAL_CLAUDE" "$@"
+[ -z "$GROVE_AI_STATUS_FILE" ] && exec "$REAL_CLAUDE" "$@"
 {lifecycle}
 GROVE_HOOK="{grove_hook_path}"
 HOOKS_JSON='{{"hooks":{{"SessionStart":[{{"matcher":"","hooks":[{{"type":"command","command":"'"'"'{grove_hook_path}'"'"' claude SessionStart","timeout":5}}]}}],"Stop":[{{"matcher":"","hooks":[{{"type":"command","command":"'"'"'{grove_hook_path}'"'"' claude Stop","timeout":5}}]}}],"StopFailure":[{{"matcher":"","hooks":[{{"type":"command","command":"'"'"'{grove_hook_path}'"'"' claude StopFailure","timeout":5}}]}}],"Notification":[{{"matcher":"","hooks":[{{"type":"command","command":"'"'"'{grove_hook_path}'"'"' claude Notification","timeout":5}}]}}],"UserPromptSubmit":[{{"matcher":"","hooks":[{{"type":"command","command":"'"'"'{grove_hook_path}'"'"' claude UserPromptSubmit","timeout":5}}]}}],"SessionEnd":[{{"matcher":"","hooks":[{{"type":"command","command":"'"'"'{grove_hook_path}'"'"' claude SessionEnd","timeout":1}}]}}]}}}}'
@@ -225,7 +261,7 @@ fn codex_wrapper_script() -> String {
 # Grove-managed Codex wrapper — lifecycle tracking.
 {find_fn}
 REAL_CODEX="$(find_real_codex)" || {{ echo "codex: not found" >&2; exit 127; }}
-[ -z "$GROVE_TMUX_SESSION" ] && exec "$REAL_CODEX" "$@"
+[ -z "$GROVE_AI_STATUS_FILE" ] && exec "$REAL_CODEX" "$@"
 {lifecycle}
 "$REAL_CODEX" "$@"
 "#
@@ -255,7 +291,7 @@ exec /usr/bin/open "$@"
 mod tests {
     use super::{
         claude_wrapper_script, codex_wrapper_script, ensure_installed, grove_hook_script,
-        grove_zdotdir, TMUX_GROVE_AI_STATUS_OPTION,
+        grove_zdotdir, GROVE_AI_STATUS_FILE_ENV,
     };
     use std::env;
     use std::fs;
@@ -317,15 +353,58 @@ mod tests {
     }
 
     #[test]
-    fn grove_hook_script_updates_ai_status_option() {
+    fn grove_hook_script_writes_ai_status_file_atomically() {
         let script = grove_hook_script();
 
-        assert!(script.contains(TMUX_GROVE_AI_STATUS_OPTION));
+        // The hook channel is the per-session status FILE, never tmux (design G9).
+        assert!(script.contains(GROVE_AI_STATUS_FILE_ENV));
+        assert!(!script.contains("tmux"));
+        assert!(!script.contains("GROVE_TMUX_SESSION"));
+        // Atomic publish: write a tmp file, then rename it into place.
+        assert!(script.contains(r#"printf '%s' "$1" > "$_t""#));
+        assert!(script.contains(r#"mv -f "$_t" "$GROVE_AI_STATUS_FILE""#));
+        // An empty payload is the explicit clear (the old `set-option -u`).
+        assert!(script.contains(r#"grove_ai_clear() { grove_ai_write ""; }"#));
         assert!(script.contains("claude:idle"));
         assert!(script.contains("claude:running"));
         assert!(script.contains("claude:attention"));
         assert!(script.contains("StopFailure|Notification"));
         assert!(script.contains("SessionEnd|cleanup"));
+    }
+
+    /// The hook script must be a runnable bash program that publishes exactly the
+    /// status the event maps to — asserted by RUNNING it against a scratch file.
+    #[test]
+    fn grove_hook_script_publishes_status_into_the_file() {
+        let dir = unique_test_dir("grove-hook-status-file");
+        fs::create_dir_all(&dir).unwrap();
+        let script_path = dir.join("grove-hook");
+        fs::write(&script_path, grove_hook_script()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let status_file = dir.join("grove-abc-pane1");
+
+        let run = |event: &str| {
+            let output = std::process::Command::new(&script_path)
+                .args(["claude", event])
+                .env(GROVE_AI_STATUS_FILE_ENV, &status_file)
+                .output()
+                .unwrap();
+            assert_subprocess_success(&output, &format!("grove-hook claude {event}"));
+            fs::read_to_string(&status_file).unwrap()
+        };
+
+        assert_eq!(run("UserPromptSubmit"), "claude:running");
+        assert_eq!(run("Stop"), "claude:idle");
+        assert_eq!(run("Notification"), "claude:attention");
+        // SessionEnd clears: an EMPTY file, not a deleted one (the poller reads an
+        // empty payload as "clear the status").
+        assert_eq!(run("SessionEnd"), "");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -337,6 +416,8 @@ mod tests {
         assert!(script.contains("GROVE_HOOK=\"/tmp/grove-hook\""));
         assert!(script.contains("grove_ai_cleanup"));
         assert!(script.contains("trap grove_ai_cleanup EXIT INT TERM HUP"));
+        assert!(!script.contains("tmux"));
+        assert!(script.contains(r#"[ -z "$GROVE_AI_STATUS_FILE" ] && exec "$REAL_CLAUDE""#));
         assert!(script.contains("claude:idle"));
         assert!(script.contains("claude UserPromptSubmit"));
         assert!(script.contains("claude Notification"));
@@ -352,6 +433,8 @@ mod tests {
         assert!(script.contains("find_real_codex"));
         assert!(script.contains("grove_ai_cleanup"));
         assert!(script.contains("trap grove_ai_cleanup EXIT INT TERM HUP"));
+        assert!(!script.contains("tmux"));
+        assert!(script.contains(r#"[ -z "$GROVE_AI_STATUS_FILE" ] && exec "$REAL_CODEX""#));
         assert!(script.contains("codex:idle"));
         // Should NOT use exec when in Grove session
         assert!(!script.contains("exec \"$REAL_CODEX\" \"$@\"\n\"#"));
@@ -377,6 +460,24 @@ mod tests {
             let zshrc = fs::read_to_string(zsh_dir.join(".zshrc")).unwrap();
             assert!(zshrc.contains("source \"${GROVE_REAL_ZDOTDIR:-$HOME}/.zshrc\""));
             assert!(zshrc.contains(&format!("export PATH=\"{}:$PATH\"", grove_bin.display())));
+
+            // The PTY is a raw terminal now (tmux used to absorb mouse events), so an
+            // agent killed with mouse reporting armed would turn every later click at
+            // the prompt into escape-sequence garbage on the command line. The prompt
+            // hook is the only thing that clears it — assert each disarm ships.
+            assert!(zshrc.contains("add-zsh-hook precmd grove_reset_tui_state"));
+            for disarm in [
+                "\\e[?1000l", "\\e[?1002l", "\\e[?1003l", // mouse reporting
+                "\\e[?1006l", "\\e[?1015l", "\\e[?1016l", // mouse encodings
+                "\\e[?1004l", // focus reporting
+                "\\e[?25h",   // cursor visibility
+            ] {
+                assert!(zshrc.contains(disarm), "prompt reset missing {disarm}");
+            }
+            // zsh owns bracketed paste, and yanking a live TUI's subshell out of the
+            // alternate screen would corrupt it — neither may be reset here.
+            assert!(!zshrc.contains("2004l"), "must not disable bracketed paste");
+            assert!(!zshrc.contains("1049l"), "must not leave the alternate screen");
             return;
         }
 

@@ -66,6 +66,16 @@ pub struct IdeMenuItem {
 
 pub const DEFAULT_PROJECT_CATEGORY_ID: &str = "default";
 
+/// Default daemon scrollback ring cap (design D10/§8.X: grove-owned, configurable
+/// history depth). 2 MiB approximates a generous tmux `history-limit` while
+/// bounding a long-lived daemon's per-session memory. Config-file-only for now —
+/// no settings UI (UI frozen). Overridden per session via `daemonScrollbackBytes`.
+pub const DEFAULT_DAEMON_SCROLLBACK_BYTES: u64 = 2 * 1024 * 1024;
+
+fn default_daemon_scrollback_bytes() -> u64 {
+    DEFAULT_DAEMON_SCROLLBACK_BYTES
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCategory {
@@ -97,6 +107,10 @@ pub struct GrovePreferences {
     pub ide_menu_items: Vec<IdeMenuItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub project_categories: Vec<ProjectCategory>,
+    /// Daemon scrollback ring cap in bytes (design D10/§8.X). Config-file-only;
+    /// serde default keeps old configs (that predate the field) loading unchanged.
+    #[serde(default = "default_daemon_scrollback_bytes")]
+    pub daemon_scrollback_bytes: u64,
     #[serde(rename = "preferredIde", default, skip_serializing)]
     legacy_preferred_ide: Option<IdeMenuItem>,
 }
@@ -110,6 +124,7 @@ impl PartialEq for GrovePreferences {
             && self.git_gui_menu_items == other.git_gui_menu_items
             && self.ide_menu_items == other.ide_menu_items
             && self.project_categories == other.project_categories
+            && self.daemon_scrollback_bytes == other.daemon_scrollback_bytes
     }
 }
 
@@ -154,6 +169,7 @@ impl Default for GrovePreferences {
                 open_command: None,
             }],
             project_categories: Vec::new(),
+            daemon_scrollback_bytes: DEFAULT_DAEMON_SCROLLBACK_BYTES,
             legacy_preferred_ide: None,
         }
     }
@@ -213,6 +229,16 @@ pub(crate) fn grove_data_path(filename: &str) -> Result<PathBuf, String> {
         .ok_or("No home dir")?
         .join(".grove")
         .join(filename))
+}
+
+/// The daemon runtime directory (design §1.3): `~/.grove/daemon`, holding the
+/// versioned socket/pid/token, the copied signed binary, the daemon log, and the
+/// version-namespaced `terminal-history/` tree. This is grove's fixed app-data
+/// dir joined with `daemon` — deliberately NOT the user-configurable worktrees
+/// `baseDir`, so the daemon's IPC endpoint never lands on a network/removable
+/// volume. Both shells pass this to `daemon::configure` at startup.
+pub fn daemon_runtime_dir() -> Result<PathBuf, String> {
+    grove_data_path("daemon")
 }
 
 pub(crate) fn load_json_file_or_default<T>(path: &Path) -> Result<T, String>
@@ -826,6 +852,7 @@ mod tests {
                 color: "#4f7cff".into(),
                 icon: ProjectCategoryIcon::Lucide("wrench".into()),
             }],
+            daemon_scrollback_bytes: DEFAULT_DAEMON_SCROLLBACK_BYTES,
             legacy_preferred_ide: None,
         }
     }
@@ -1091,6 +1118,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["sourcetree", "fork"]
         );
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn old_preferences_without_daemon_scrollback_bytes_default() {
+        // An on-disk config that predates the daemonScrollbackBytes field must load
+        // with the 2 MiB default instead of failing to parse.
+        let path = temp_config_path();
+        write_fixture(
+            &path,
+            r#"{
+  "preferences": {
+    "terminalLinkOpenMode": "internal"
+  }
+}"#,
+        );
+
+        let app_config = load_app_config_from_path(&path);
+
+        assert_eq!(
+            app_config.preferences.daemon_scrollback_bytes,
+            DEFAULT_DAEMON_SCROLLBACK_BYTES
+        );
+        assert_eq!(app_config.preferences.daemon_scrollback_bytes, 2 * 1024 * 1024);
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn daemon_scrollback_bytes_round_trips() {
+        let path = temp_config_path();
+        let mut prefs = sample_preferences();
+        prefs.daemon_scrollback_bytes = 8 * 1024 * 1024;
+        save_grove_preferences_to_path(&path, &prefs).unwrap();
+
+        let loaded = load_app_config_from_path(&path).preferences;
+
+        assert_eq!(loaded.daemon_scrollback_bytes, 8 * 1024 * 1024);
+        assert_eq!(loaded, prefs);
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

@@ -769,12 +769,33 @@ async fn get_cwd_and_title_read_from_mode_state() {
     // TERM=dumb keeps shell rc files from repainting the title at every prompt
     // (Ubuntu's default bashrc PS1 emits OSC 0 under TERM=xterm*, which would
     // overwrite the printf'd title before the poll below observes it).
+    //
+    // The same hazard exists for zsh, the daemon's `$SHELL` on a dev mac, and it fires
+    // through TWO rc paths that both emit OSC 7 in `precmd` — after which the test would
+    // read the shell's own cwd (`/private/tmp`) instead of the escape it just wrote:
+    //   * `/etc/zshrc_Apple_Terminal`'s `update_terminal_cwd`, active whenever
+    //     TERM_PROGRAM==Apple_Terminal is inherited from the terminal running `cargo test`
+    //     (grove itself always sets TERM_PROGRAM=Grove, so this is a test-env artifact);
+    //   * a user `~/.zshrc` with a cwd/title hook.
+    // Blank TERM_PROGRAM disarms the first; an empty ZDOTDIR gives zsh no user rc.
+    let empty_zdotdir = std::env::temp_dir().join(format!("grove-osc-zdotdir-{}", std::process::id()));
+    std::fs::create_dir_all(&empty_zdotdir).unwrap();
     rpc(
         &mut creader,
         &mut cwriter,
         1,
         "createOrAttach",
-        json!({ "sessionId": "o1", "cwd": "/tmp", "cols": 80, "rows": 24, "env": { "TERM": "dumb" } }),
+        json!({
+            "sessionId": "o1",
+            "cwd": "/tmp",
+            "cols": 80,
+            "rows": 24,
+            "env": {
+                "TERM": "dumb",
+                "TERM_PROGRAM": "",
+                "ZDOTDIR": empty_zdotdir.to_string_lossy(),
+            },
+        }),
     )
     .await;
 

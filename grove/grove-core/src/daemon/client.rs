@@ -237,6 +237,11 @@ pub struct CreateOrAttach {
     pub cols: u16,
     pub rows: u16,
     pub env: Vec<(String, String)>,
+    /// Per-session scrollback ring cap in bytes (design D10/§8.X), sourced from
+    /// `GrovePreferences::daemon_scrollback_bytes`. `None` leaves the daemon on its
+    /// built-in default. Ignored by the daemon on a warm adopt (the live session
+    /// keeps the cap it was spawned with).
+    pub scrollback_bytes: Option<u64>,
 }
 
 /// The warm-reattach payload the daemon returns when `createOrAttach` adopts a
@@ -300,6 +305,13 @@ pub struct SessionInfo {
     pub cols: u16,
     #[serde(default)]
     pub rows: u16,
+    /// The session's child-shell pid (design G9). The hookless AI-status reconcile
+    /// (`pty::poll_bell_events`) roots its process-tree walk here — the daemon
+    /// replacement for tmux's `#{pane_pid}`. `default` so an older daemon that does
+    /// not send it degrades to "no live-tool detection", exactly as a missing tmux
+    /// pane pid did.
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -729,13 +741,16 @@ impl DaemonClient {
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))
             .collect();
-        let params = json!({
+        let mut params = json!({
             "sessionId": req.session_id,
             "cwd": req.cwd.clone().unwrap_or_else(|| ".".to_string()),
             "cols": req.cols,
             "rows": req.rows,
             "env": env_obj,
         });
+        if let Some(bytes) = req.scrollback_bytes {
+            params["scrollbackBytes"] = json!(bytes);
+        }
 
         let result = self.request("createOrAttach", params).await?;
         let is_new = result.get("isNew").and_then(Value::as_bool).unwrap_or(false);
@@ -802,6 +817,17 @@ impl DaemonClient {
             .get("cwd")
             .and_then(Value::as_str)
             .map(str::to_string))
+    }
+
+    /// Clear a session's scrollback history (design item 4) — the daemon-native
+    /// replacement for the tmux `clear-history` shell-out `pty::clear_scrollback`
+    /// used to run. Drops the daemon's byte-exact ring + emulator scrollback and logs
+    /// a Clear frame. RPC: awaits the daemon ack so the caller can then clear its own
+    /// local mirror in order.
+    pub async fn clear_history(&self, session_id: &str) -> Result<(), ClientError> {
+        self.request("clearHistory", json!({ "sessionId": session_id }))
+            .await?;
+        Ok(())
     }
 
     /// Poll pending bell + current AI-status events, one per live session (design
@@ -1263,6 +1289,10 @@ impl ClientHandle {
 
     pub fn cwd_blocking(&self, session_id: &str) -> Result<Option<String>, BridgeError> {
         self.block(self.client.cwd(session_id))
+    }
+
+    pub fn clear_history_blocking(&self, session_id: &str) -> Result<(), BridgeError> {
+        self.block(self.client.clear_history(session_id))
     }
 
     pub fn poll_bells_blocking(&self) -> Result<Vec<crate::PtyBellEvent>, BridgeError> {

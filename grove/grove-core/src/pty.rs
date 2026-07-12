@@ -1,7 +1,12 @@
 use crate::{
     config,
-    process_env::{enriched_path, preferred_ssh_auth_sock, subprocess_env_pairs},
-    tool_hooks::{self, TMUX_GROVE_AI_STATUS_OPTION},
+    daemon::{
+        self,
+        client::{ColdRestorePayload, CreateOrAttach, StreamSubscriber, WarmReattach},
+        ExitStatus,
+    },
+    process_env::subprocess_env_pairs,
+    tool_hooks,
     worktree_lifecycle::WorktreeResource,
     AppliedPtySize, CreatePtyInitialHydration, CreatePtyInitialHydrationSource, CreatePtyRequest,
     CreatePtyRestore, CreatePtyResult, CreatePtySessionState, PtyBellEvent,
@@ -9,14 +14,13 @@ use crate::{
     TerminalGcReport, TerminalPaneSnapshot, TerminalPaneSnapshotInput, TerminalRestoreCwdSource,
     TerminalSessionSnapshot,
 };
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fmt::Write as _;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::sleep;
@@ -38,18 +42,12 @@ const OUTPUT_FLUSH_SIZE: usize = 64 * 1024;
 /// (keep-tail) so a runaway producer can't OOM the process. Sized off
 /// OUTPUT_FLUSH_SIZE so it tracks the flush window if that constant changes.
 const MAX_PENDING_BYTES: usize = OUTPUT_FLUSH_SIZE * 64;
-const TMUX_NOT_FOUND_ERROR: &str = "tmux is required but was not found in PATH";
-const TMUX_GROVE_MANAGED_OPTION: &str = "@grove_managed";
-const TMUX_GROVE_WORKTREE_OPTION: &str = "@grove_worktree";
-const TMUX_GROVE_PANE_ID_OPTION: &str = "@grove_pane_id";
-const TMUX_STATUS_OPTION: &str = "status";
-const TMUX_STATUS_OFF_VALUE: &str = "off";
-const TMUX_MOUSE_OPTION: &str = "mouse";
-const TMUX_MOUSE_ON_VALUE: &str = "on";
-const TMUX_MONITOR_BELL_OPTION: &str = "monitor-bell";
-const TMUX_MONITOR_BELL_ON_VALUE: &str = "on";
-const TMUX_ESCAPE_TIME_OPTION: &str = "escape-time";
-const TMUX_ESCAPE_TIME_VALUE: &str = "100";
+// --- session identity ----------------------------------------------------------
+// The PTY backend is the daemon (design P9 cutover). grove no longer shells out to
+// tmux anywhere in this module; the only thing that survives the old backend is the
+// SESSION ID SHAPE — `grove-{hash(worktree)}-{pane}` — which is the reattach identity
+// (design G6) and must stay byte-identical forever: changing it orphans every pane a
+// user already has on disk. `grove_session_name_is_stable_and_namespaced` pins it.
 const WORKTREE_HASH_LEN: usize = 12;
 const PANE_PREFIX_LEN: usize = 8;
 const PANE_HASH_LEN: usize = 4;
@@ -61,22 +59,45 @@ pub trait PtyEventSink: Send + Sync + 'static {
     fn on_output(&self, pty_id: &str, data: &[u8]);
 }
 
+/// Bytes to seed a pane's local scrollback mirror with on attach, plus whether the
+/// producer already dropped older content. Fed by the daemon's warm/cold VT snapshot.
+#[derive(Clone, Copy, Debug)]
+struct HydrationSeed<'a> {
+    bytes: &'a [u8],
+    truncated: bool,
+}
+
 #[derive(Clone, Debug)]
 struct PtyRuntimeState {
     launch_cwd: String,
     process_id: Option<u32>,
+    /// The daemon session id for this pane (the `grove_session_name` worktree+pane
+    /// hash — a stable id across relaunches is what makes reattach work; design G6).
     session_name: String,
     last_known_cwd: Option<String>,
+    /// Last geometry grove asked the daemon to apply. Local mirror only — the
+    /// authoritative applied size is read back over RPC (`applied_pty_size`, G8).
+    cols: u16,
+    rows: u16,
+    /// Local mirror of the pane's raw output, fed by the daemon stream sink. The
+    /// daemon owns the byte-exact ring that backs cold restore (G4); this copy
+    /// exists so `save_terminal_session_snapshot` keeps producing the exact same
+    /// `terminal-session-snapshots.json` content it always has.
     scrollback: VecDeque<u8>,
     scrollback_truncated: bool,
-    last_bell_flag: bool,
+    /// The last status grove EMITTED for this pane. Purely the delta filter for
+    /// `poll_bell_events` (an event fires only when this changes) — the authoritative
+    /// store is the daemon's per-session `ai_status`.
     last_ai_status: Option<String>,
+    /// Stamped by the daemon stream sink on every output frame. After the cutover
+    /// this is the ONLY feed for the AI-status idle clock — without it the hookless
+    /// idle/attention state machine in `poll_bell_events` freezes forever.
     last_output_at: Option<Instant>,
     /// Set when a hookless tool transitions running→idle. Used for attention timeout.
     idle_since: Option<Instant>,
-    /// Set by read_pty_output on exit (EOF, read error, or contained panic).
-    /// A live session with an exited reader gets no output until re-attach;
-    /// terminal GC reports these instead of silently leaving a frozen pane.
+    /// Set by the stream sink when the daemon reports the child exited. The entry is
+    /// removed from the registry on the same event, so terminal GC observes this only
+    /// through a still-held `tracked` handle.
     reader_exited: bool,
 }
 
@@ -85,17 +106,20 @@ impl PtyRuntimeState {
         launch_cwd: String,
         process_id: Option<u32>,
         session_name: String,
+        cols: u16,
+        rows: u16,
         restore: Option<&CreatePtyRestore>,
-        initial_hydration: Option<&TmuxCapturedContent>,
+        initial_hydration: Option<HydrationSeed<'_>>,
     ) -> Self {
         let mut state = Self {
             launch_cwd,
             process_id,
             session_name,
             last_known_cwd: None,
+            cols,
+            rows,
             scrollback: VecDeque::new(),
             scrollback_truncated: false,
-            last_bell_flag: false,
             last_ai_status: None,
             last_output_at: None,
             idle_since: None,
@@ -117,7 +141,7 @@ impl PtyRuntimeState {
 
         if let Some(initial_hydration) = initial_hydration {
             state.scrollback_truncated = initial_hydration.truncated;
-            state.append_scrollback(&initial_hydration.bytes);
+            state.append_scrollback(initial_hydration.bytes);
         }
 
         state
@@ -136,6 +160,7 @@ impl PtyRuntimeState {
 #[derive(Clone, Debug)]
 struct PtyRuntimeSnapshot {
     launch_cwd: String,
+    #[allow(dead_code)]
     process_id: Option<u32>,
     session_name: String,
     last_known_cwd: Option<String>,
@@ -166,31 +191,196 @@ struct TerminalGcPlan {
     skipped_attached_worktree_paths: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TmuxCaptureScope {
-    History,
-    AlternateScreen,
-    ModeScreen,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TmuxCapturedContent {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
+/// A pane grove has attached to the daemon. The daemon owns the PTY master, the
+/// child, the ordered writer and the byte-exact scrollback ring (design G6/G4);
+/// grove keeps only the routing identity, the transport sink, and the per-pane
+/// runtime state the frontend contract still depends on.
 struct PtyInstance {
+    /// Daemon session id (worktree+pane hash — stable across relaunches).
     session_name: String,
     worktree_path: String,
-    /// One dedicated, ordered writer thread per PTY (see PtyWriter). Enqueue is
-    /// strict FIFO across every caller, so two concurrent writePty calls for this
-    /// PTY can never interleave or reorder whole batches (paste body vs trailing
-    /// `\r`); a stalled `write_all` only blocks THIS pty's queue, never the
-    /// registry or any unrelated pty.
-    writer: Arc<PtyWriter>,
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// The transport sink (`TauriEventSink` / `NapiEventSink`) this pane's output
+    /// goes to. Retained so a future re-subscribe (reconnect) can rebuild the
+    /// adapter without a round trip to the frontend.
+    #[allow(dead_code)]
+    sink: Arc<dyn PtyEventSink>,
+    /// The stream subscriber registered with the daemon client for this session.
+    /// Held so the adapter (and its gate) outlives `create`, and so tests can drive
+    /// it directly.
+    #[allow(dead_code)]
+    subscriber: Arc<DaemonSinkAdapter>,
     tracked: Arc<Mutex<PtyRuntimeState>>,
+}
+
+/// Bridges one daemon session's stream frames onto grove's `PtyEventSink` seam
+/// (design G1) — the single adapter that replaces the local PTY reader thread.
+///
+/// It also owns a REPLAY GATE. `create` subscribes BEFORE it sends `createOrAttach`
+/// (otherwise a fresh shell's prompt, emitted between spawn and the RPC reply, is
+/// dropped on the floor — the client drops frames for unknown sessions). Frames that
+/// land during that window are buffered here; once the reply is in, `open_gate`
+/// releases them, dropping/trimming any bytes the warm snapshot already contains
+/// (byte-exact, per design S3/P12: a `Data` frame's `seq` is the cumulative byte
+/// total AFTER its payload, and the snapshot's `output_sequence` counts the same
+/// stream, so `seq <= snapshot_seq` ⇒ fully contained).
+struct DaemonSinkAdapter {
+    pty_id: String,
+    session_id: String,
+    sink: Arc<dyn PtyEventSink>,
+    tracked: Arc<Mutex<PtyRuntimeState>>,
+    gate: Mutex<ReplayGate>,
+}
+
+/// Frames held while the create-time replay gate is closed: `(absolute byte seq, bytes)`.
+type GatedFrames = Vec<(u64, Vec<u8>)>;
+
+/// The create-time replay gate. `on_data` / `on_exit` run on the client's stream task,
+/// `open_gate` runs on the `create` task, so EVERY transition happens under the gate
+/// mutex — including the drain and the registry insert. Two invariants ride on that:
+///
+/// * ORDERING: a frame that lands while the buffer is draining must not overtake it.
+///   The drain holds the lock for its whole run, so a concurrent `on_data` blocks and
+///   is ingested strictly after the last buffered byte. Releasing the lock first and
+///   draining after (which reads as harmless) reorders the byte stream and garbles
+///   xterm — never do that.
+/// * EARLY EXIT: the daemon's `Exit` frame rides the STREAM socket while the
+///   `createOrAttach` reply rides the CONTROL socket, so an instantly-dying shell can
+///   report its exit before `create` has registered anything. That exit is recorded
+///   here and honored by `open_gate`, which then skips registration entirely.
+enum ReplayGate {
+    /// `create` is still in flight.
+    Closed {
+        frames: GatedFrames,
+        /// The session's child exited before `create` finished registering it.
+        exited: bool,
+    },
+    /// `create` finished: frames go straight to the sink.
+    Open,
+}
+
+impl DaemonSinkAdapter {
+    fn new(
+        pty_id: String,
+        session_id: String,
+        sink: Arc<dyn PtyEventSink>,
+        tracked: Arc<Mutex<PtyRuntimeState>>,
+    ) -> Self {
+        Self {
+            pty_id,
+            session_id,
+            sink,
+            tracked,
+            gate: Mutex::new(ReplayGate::Closed {
+                frames: GatedFrames::new(),
+                exited: false,
+            }),
+        }
+    }
+
+    /// Record a chunk against the pane's runtime state, then hand it to the
+    /// transport. The `last_output_at` stamp is load-bearing: it is the only
+    /// remaining feed for the hookless AI-status idle clock (`poll_bell_events`).
+    fn ingest(&self, data: &[u8]) {
+        {
+            let mut state = lock_recover(&self.tracked);
+            state.append_scrollback(data);
+            state.last_output_at = Some(Instant::now());
+        }
+        self.sink.on_output(&self.pty_id, data);
+    }
+
+    /// Release the create-time gate and register the pane in the SAME critical section.
+    ///
+    /// `snapshot_seq` is the warm snapshot's `output_sequence`; buffered bytes at or
+    /// below it are already on screen via the hydration payload and are dropped (a
+    /// straddling frame is trimmed to its post-snapshot tail). `None` (fresh spawn /
+    /// cold restore — the session's seq starts at 0) forwards everything.
+    ///
+    /// `register` publishes the pane to the registry. It runs under the gate lock, and
+    /// ONLY when no exit was recorded while `create` was in flight: registering a
+    /// session the daemon already reported dead would leave a subscriber-less entry
+    /// marked alive, and re-creating that pane would fail with "PTY already exists"
+    /// until GC reaped it. Returns whether that early exit happened.
+    fn open_gate(&self, snapshot_seq: Option<u64>, register: impl FnOnce()) -> bool {
+        let exited = {
+            let mut gate = lock_recover(&self.gate);
+            let (frames, exited) = match std::mem::replace(&mut *gate, ReplayGate::Open) {
+                ReplayGate::Closed { frames, exited } => (frames, exited),
+                ReplayGate::Open => (GatedFrames::new(), false),
+            };
+            if !exited {
+                register();
+            }
+            // Held across the drain on purpose — see `ReplayGate` (ORDERING).
+            for (seq, data) in frames {
+                match snapshot_seq {
+                    Some(snapshot_seq) => {
+                        let len = data.len() as u64;
+                        let start = seq.saturating_sub(len);
+                        if seq <= snapshot_seq {
+                            continue;
+                        }
+                        if start < snapshot_seq {
+                            let skip = (snapshot_seq - start) as usize;
+                            self.ingest(&data[skip.min(data.len())..]);
+                        } else {
+                            self.ingest(&data);
+                        }
+                    }
+                    None => self.ingest(&data),
+                }
+            }
+            exited
+        };
+
+        if exited {
+            // The dying shell's output has now been replayed; finish the teardown the
+            // deferred `on_exit` skipped.
+            self.teardown();
+        }
+        exited
+    }
+
+    /// Mark the pane dead and drop it: the same cleanup the GC reap performs, minus the
+    /// child reap (the daemon owns the child and has already reaped it). Idempotent.
+    fn teardown(&self) {
+        lock_recover(&self.tracked).reader_exited = true;
+        lock_recover(registry()).remove(&self.pty_id);
+        if let Some(handle) = daemon::global_client() {
+            handle.client().unsubscribe(&self.session_id);
+        }
+    }
+}
+
+impl StreamSubscriber for DaemonSinkAdapter {
+    fn on_data(&self, seq: u64, data: &[u8]) {
+        {
+            let mut gate = lock_recover(&self.gate);
+            if let ReplayGate::Closed { frames, .. } = &mut *gate {
+                frames.push((seq, data.to_vec()));
+                return;
+            }
+        }
+        self.ingest(data);
+    }
+
+    fn on_exit(&self, _status: ExitStatus) {
+        // Why no renderer event: exit stays discovered exactly as it always has been —
+        // the shell's own EOF/output and the frontend's own lifecycle drive teardown,
+        // and terminal GC reaps whatever is left. Emitting a new event here would
+        // change the frozen renderer contract.
+        {
+            let mut gate = lock_recover(&self.gate);
+            if let ReplayGate::Closed { exited, .. } = &mut *gate {
+                // Exit beat the `createOrAttach` reply (separate sockets). Record it and
+                // let `open_gate` finish the teardown — tearing down here would race
+                // `create`, which would then re-register the dead pane as alive.
+                *exited = true;
+                return;
+            }
+        }
+        self.teardown();
+    }
 }
 
 struct CoalescerInner {
@@ -215,15 +405,15 @@ struct CoalescerShared {
 /// dedicated flusher thread is the SOLE emitter, so bytes always reach the sink
 /// in read order with no cross-thread interleaving. Emits happen off the lock.
 ///
-/// Why pub: this is a SHARED grove-core library (design §1.1/§6/G2). The tmux
-/// path constructs it directly; the daemon crate (`grove-daemon`) constructs the
-/// SAME type between its PTY read loop and the stream socket. Visibility is the
-/// only change — behavior is byte-identical for the tmux path.
+/// Why pub: this is a SHARED grove-core library (design §1.1/§6/G2). grove-core no
+/// longer owns a PTY master, so its ONLY consumer now is the daemon crate
+/// (`grove-daemon`), which constructs it between its PTY read loop and the stream
+/// socket. Behavior is unchanged from when grove drove it in-process.
 pub struct OutputCoalescer {
     shared: Arc<CoalescerShared>,
     /// Join handle for the sole flusher thread. Retained so a consumer can block
-    /// until the final tail has been emitted (see `close_and_join`). The tmux
-    /// path never joins and detaches on drop exactly as before.
+    /// until the final tail has been emitted (see `close_and_join`); a consumer that
+    /// never joins simply detaches it on drop.
     flusher: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -291,7 +481,7 @@ impl OutputCoalescer {
     /// final tail and exited. Why: the daemon must order a session's `Exit`
     /// frame strictly AFTER its last `Data` frame (design P13); joining the sole
     /// emitter is that ordering barrier — no `Exit` can overtake buffered output.
-    /// Consumes self. Only the daemon needs this; the tmux path uses `close`.
+    /// Consumes self. A consumer that does not need the barrier uses `close`.
     pub fn close_and_join(mut self) {
         self.close();
         if let Some(handle) = self.flusher.take() {
@@ -353,13 +543,19 @@ fn run_output_flusher(shared: Arc<CoalescerShared>) {
 }
 
 /// Max bytes allowed to queue for a single PTY before the SEND side blocks.
-/// Why: bound memory so a frozen consumer (tmux mid-write_all) can't let an
-/// unbounded paste backlog grow until it OOMs the process. 1 MiB is far above
-/// any real keystroke or paste burst, so healthy writes never block on it.
+/// Why: bound memory so a wedged consumer (a PTY master whose `write_all` is not
+/// draining) can't let an unbounded paste backlog grow until it OOMs the process.
+/// 1 MiB is far above any real keystroke or paste burst, so healthy writes never
+/// block on it.
 const MAX_WRITE_QUEUE_BYTES: usize = 1024 * 1024;
 /// End-to-end deadline for one write() (enqueue wait + the writer thread's
-/// write_all). Why: a frozen tmux blocks write_all indefinitely; without this
+/// write_all). Why: a wedged PTY master blocks write_all indefinitely; without this
 /// the caller's pool thread would hang forever. 30s never trips on a healthy pty.
+///
+/// grove-core itself no longer writes to a PTY — the deadline is a `PtyWriter::spawn_
+/// input_only` PARAMETER, and the daemon passes its own (`grove-daemon` session.rs).
+/// This copy is the value the writer's own tests drive it with.
+#[cfg(test)]
 const WRITE_DEADLINE: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT_MSG: &str = "terminal input write timed out; the terminal may be unresponsive";
 const WRITER_CLOSED_MSG: &str = "terminal input writer is shutting down";
@@ -389,9 +585,9 @@ struct WriterShared {
 }
 
 /// Per-write completion slot. The writer thread stores the write_all Result here
-/// AFTER the bytes land (and after Enter-detection), then notifies; the calling
-/// thread blocks on it. Storing the outcome in the slot (not just signalling)
-/// means a writer that finishes before the caller waits is never a lost wakeup.
+/// AFTER the bytes land, then notifies; the calling thread blocks on it. Storing
+/// the outcome in the slot (not just signalling) means a writer that finishes
+/// before the caller waits is never a lost wakeup.
 struct WriteCompletion {
     result: Mutex<Option<Result<(), String>>>,
     done: Condvar,
@@ -405,20 +601,24 @@ struct WriteCompletion {
 /// concurrent writePty calls can never interleave or reorder whole batches.
 ///
 /// Why pub: SHARED grove-core library (design §1.1/§6/G3). The daemon constructs
-/// one per session so paste-body-then-CR ordering holds across the socket. It
-/// consumes it via [`PtyWriter::spawn_input_only`], not `spawn`, so it drags in
-/// no tmux Enter-detection.
+/// one per session so paste-body-then-CR ordering holds across the socket.
 pub struct PtyWriter {
     shared: Arc<WriterShared>,
     deadline: Duration,
 }
 
 impl PtyWriter {
-    fn spawn(
-        writer: Box<dyn Write + Send>,
-        tracked: Arc<Mutex<PtyRuntimeState>>,
-        deadline: Duration,
-    ) -> Arc<Self> {
+    /// Spawn an ordered FIFO writer for a PTY master.
+    ///
+    /// "Input only" = no side effects beyond the bytes. Enter-detection used to run
+    /// HERE, on the writer thread, because that was the last place grove saw the input
+    /// before it reached the shell. grove owns no PTY master any more: input crosses
+    /// the socket as a `write` notify and the DAEMON does Enter-detection on the same
+    /// bytes (`Session::enqueue_write` → `detect_enter`, design G9), writing the
+    /// daemon's own AI-status store. So this writer is purely an ordered byte pump,
+    /// and its only consumer is the daemon (one per session, so paste-body-then-CR
+    /// ordering holds across the socket).
+    pub fn spawn_input_only(writer: Box<dyn Write + Send>, deadline: Duration) -> Arc<Self> {
         let shared = Arc::new(WriterShared {
             inner: Mutex::new(WriterInner {
                 queue: VecDeque::new(),
@@ -430,32 +630,8 @@ impl PtyWriter {
             space_free: Condvar::new(),
         });
         let writer_shared = Arc::clone(&shared);
-        std::thread::spawn(move || run_pty_writer(writer, writer_shared, tracked));
+        std::thread::spawn(move || run_pty_writer(writer, writer_shared));
         Arc::new(Self { shared, deadline })
-    }
-
-    /// Spawn an ordered FIFO writer with NO tmux Enter-detection side effect.
-    /// Why: the daemon reuses the exact FIFO + 30s-deadline + backpressure
-    /// machinery, but has no tmux session to flip AI status on. It hands the
-    /// writer a throwaway tracked state whose `last_ai_status` is `None`, so
-    /// `run_enter_detection` short-circuits (`needs_idle_detection(None)==false`)
-    /// and no tmux `set-option` ever fires. Purely additive — the tmux `spawn`
-    /// path and `run_pty_writer` are untouched.
-    pub fn spawn_input_only(writer: Box<dyn Write + Send>, deadline: Duration) -> Arc<Self> {
-        let tracked = Arc::new(Mutex::new(PtyRuntimeState {
-            launch_cwd: String::new(),
-            process_id: None,
-            session_name: String::new(),
-            last_known_cwd: None,
-            scrollback: VecDeque::new(),
-            scrollback_truncated: false,
-            last_bell_flag: false,
-            last_ai_status: None,
-            last_output_at: None,
-            idle_since: None,
-            reader_exited: false,
-        }));
-        Self::spawn(writer, tracked, deadline)
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
@@ -556,10 +732,10 @@ impl PtyWriter {
 
 impl Drop for PtyWriter {
     fn drop(&mut self) {
-        // Why: when the instance leaves the registry (close/teardown) the last
-        // handle drops here. Signal the writer thread to exit: if idle it wakes
-        // and returns; if blocked in write_all on a frozen tmux it returns once
-        // write_all finally errors (EPIPE after the master fd is dropped).
+        // Why: when the session tears down, the last handle drops here. Signal the
+        // writer thread to exit: if idle it wakes and returns; if blocked in write_all
+        // on a wedged master it returns once write_all finally errors (EPIPE after the
+        // master fd is dropped).
         let mut inner = lock_recover(&self.shared.inner);
         inner.closed = true;
         self.shared.job_ready.notify_all();
@@ -572,11 +748,7 @@ impl Drop for PtyWriter {
 /// bytes land — runs Enter-detection and signals the job's completion. Exits
 /// once `closed` is set and the queue is drained, or once a write fails after
 /// close (EPIPE on a torn-down master fd).
-fn run_pty_writer(
-    mut writer: Box<dyn Write + Send>,
-    shared: Arc<WriterShared>,
-    tracked: Arc<Mutex<PtyRuntimeState>>,
-) {
+fn run_pty_writer(mut writer: Box<dyn Write + Send>, shared: Arc<WriterShared>) {
     loop {
         let job = {
             let mut inner = lock_recover(&shared.inner);
@@ -604,14 +776,6 @@ fn run_pty_writer(
         let result = writer.write_all(&job.bytes).map_err(|error| error.to_string());
         let write_ok = result.is_ok();
 
-        // Why: run Enter-detection BEFORE signalling completion so the caller
-        // stays blocked through the idle→running transition exactly as it did
-        // when this ran inline on the caller thread pre-queue (once per batch
-        // containing `\r`).
-        if write_ok && job.bytes.contains(&b'\r') {
-            run_enter_detection(&tracked);
-        }
-
         {
             let mut slot = lock_recover(&job.completion.result);
             *slot = Some(result);
@@ -626,34 +790,6 @@ fn run_pty_writer(
                 return;
             }
         }
-    }
-}
-
-/// Enter-detection for hookless tools: on a write batch containing `\r`, if the
-/// tool is idle, reset its idle clock and flip its tmux status to running. Runs
-/// on the writer thread after the byte lands; the tmux shell-out happens off the
-/// tracked lock, matching the pre-queue inline behavior.
-fn run_enter_detection(tracked: &Arc<Mutex<PtyRuntimeState>>) {
-    let transition_session = {
-        let mut state = lock_recover(tracked);
-        let status = state.last_ai_status.clone();
-        let s = status.as_deref();
-        if tool_hooks::needs_idle_detection(s) && !tool_hooks::is_running(s) {
-            state.last_output_at = Some(Instant::now());
-            let running_status = tool_hooks::to_running(s.unwrap());
-            // Why: a chunked paste delivers many \r-bearing writes in one burst;
-            // caching the transition here makes later chunks no-ops so the tmux
-            // shell-out fires once per transition, not once per chunk. If
-            // set-option fails, the status poller re-reads tmux and self-heals.
-            state.last_ai_status = Some(running_status.clone());
-            Some((state.session_name.clone(), running_status))
-        } else {
-            None
-        }
-    };
-
-    if let Some((session_name, running_status)) = transition_session {
-        let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, &running_status);
     }
 }
 
@@ -727,21 +863,19 @@ fn preferred_utf8_locale() -> String {
 }
 
 /// Bare "UTF-8" / "UTF8" are not valid POSIX locale names and cause tools
-/// like zsh and tmux to mishandle multi-byte input. Require a proper locale
-/// prefix (e.g. "en_US.UTF-8", "C.UTF-8").
+/// like zsh to mishandle multi-byte input. Require a proper locale prefix
+/// (e.g. "en_US.UTF-8", "C.UTF-8").
 fn is_usable_locale(locale: &str) -> bool {
     let upper = locale.to_ascii_uppercase();
     upper != "UTF-8" && upper != "UTF8"
 }
 
-/// Reject a working directory that would make tmux fail opaquely: empty, missing,
+/// Reject a working directory the backend would fail on opaquely: empty, missing,
 /// not a directory, or a filesystem root. Why: a root-like cwd (its own parent) is
 /// where the unbounded file discovery this guard exists to prevent begins, and a
 /// missing/non-dir path can only be a caller bug. Mirrors orca pty-path-safety.ts.
-/// Missing/non-dir paths already fail today (raw tmux error); rejecting a
-/// filesystem root is a deliberate new guard — tmux accepts `/`, but no grove
-/// flow passes it. Runs before ensure_grove_tmux_session so the caller gets a
-/// descriptive error instead of a raw tmux failure.
+/// Runs BEFORE `createOrAttach` so the caller gets a descriptive error instead of a
+/// raw spawn failure from the daemon.
 fn validate_pty_cwd(cwd: &str) -> Result<(), String> {
     let trimmed = cwd.trim();
     if trimmed.is_empty() {
@@ -769,7 +903,105 @@ fn validate_pty_cwd(cwd: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn create(
+/// Per-session env the daemon-spawned shell needs beyond the portable terminal set.
+/// `GROVE_SESSION_ID` is the daemon session id; `GROVE_AI_STATUS_FILE` is the
+/// per-session path a tool hook writes its status into (the daemon-native
+/// replacement for `tmux set-option @grove_ai_status`; stage 2 consumes it).
+///
+/// Convention: `<daemon base dir>/ai-status/<session id>` — i.e. `~/.grove/daemon/
+/// ai-status/grove-<worktree hash>-<pane>` for the default base dir. Session ids are
+/// already filesystem-safe (`grove-[0-9a-f]+-[a-z0-9]+`), so no escaping is needed.
+fn ai_status_file_path(session_id: &str) -> Option<PathBuf> {
+    let dir = daemon::runtime_base_dir()
+        .or_else(|| config::daemon_runtime_dir().ok())?
+        .join("ai-status");
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        crate::logger::emit_log(
+            "warn",
+            "pty",
+            &format!("failed to create the AI-status dir {}: {error}", dir.display()),
+        );
+        return None;
+    }
+    Some(dir.join(session_id))
+}
+
+/// A status published by a tool hook since the last poll (design G9 hook channel).
+/// `Some(status)` = set; `None` = explicit clear (an EMPTY file — the daemon-native
+/// equivalent of the old `tmux set-option -u @grove_ai_status`).
+type AiStatusSignal = Option<String>;
+
+/// Take-and-consume the pane's AI-status file: `rename` it aside, read it, delete it.
+/// Returns `None` when no hook wrote anything since the last tick.
+///
+/// Why rename-then-read rather than read-then-delete: a hook publishes ATOMICALLY
+/// (write tmp + `mv`), so a `mv` landing between our read and our unlink would have
+/// its brand-new status deleted unread. Renaming first is a single atomic take — a
+/// hook that publishes afterwards simply creates a fresh file we pick up next tick.
+fn consume_ai_status_file(session_id: &str) -> Option<AiStatusSignal> {
+    let path = ai_status_file_path(session_id)?;
+    // Append (never `with_extension`, which would REPLACE a dotted suffix and could
+    // collide with the live file for an id containing a dot).
+    let taken = {
+        let mut name = path.clone().into_os_string();
+        name.push(".taken");
+        PathBuf::from(name)
+    };
+    // ENOENT (the common case: no hook fired this tick) is not an error.
+    std::fs::rename(&path, &taken).ok()?;
+    let contents = std::fs::read_to_string(&taken).ok();
+    let _ = std::fs::remove_file(&taken);
+
+    let status = contents?.trim().to_string();
+    if status.is_empty() {
+        // An empty payload is the hook's explicit "clear" (SessionEnd / exit trap).
+        return Some(None);
+    }
+    Some(Some(status))
+}
+
+/// The full env the daemon spawns this pane's shell with (design G1/S11). tmux's
+/// session-environment indirection is gone, but the ZDOTDIR overlay is NOT: it is how
+/// grove gets `~/.grove/bin` onto PATH after all user config, which in turn delivers the
+/// `open` link-interception wrapper and the `claude`/`codex`/`grove-hook` shims that the
+/// AI-status channel depends on. Dropping it silently disables both features.
+fn daemon_child_env(session_id: &str) -> Vec<(String, String)> {
+    let mut env = portable_terminal_env_pairs();
+    env.push(("GROVE_SESSION_ID".to_string(), session_id.to_string()));
+    if let Some(path) = ai_status_file_path(session_id) {
+        env.push((
+            "GROVE_AI_STATUS_FILE".to_string(),
+            path.to_string_lossy().into_owned(),
+        ));
+    }
+    if let Some(zdotdir) = tool_hooks::grove_zdotdir() {
+        env.push(("GROVE_REAL_ZDOTDIR".to_string(), grove_real_zdotdir()));
+        env.push(("ZDOTDIR".to_string(), zdotdir));
+    }
+    env
+}
+
+/// The user's own ZDOTDIR, so grove's overlay rc files can source the real ones.
+fn grove_real_zdotdir() -> String {
+    let real_zdotdir = env::var("ZDOTDIR").unwrap_or_default();
+    let grove_zsh = tool_hooks::grove_zdotdir();
+
+    // If ZDOTDIR is set and it's NOT our own Grove zsh dir, honour it.
+    if !real_zdotdir.is_empty() && grove_zsh.as_deref() != Some(real_zdotdir.as_str()) {
+        return real_zdotdir;
+    }
+
+    dirs::home_dir()
+        .map(|home| home.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Attach a pane to the PTY daemon (design P9 `createOrAttach`), which spawns or
+/// adopts the session and streams its output back through `sink`.
+///
+/// Async because it crosses the daemon socket (design G1). Both shells already
+/// `await` this command, so the signature change is invisible above grove-core.
+pub async fn create(
     request: CreatePtyRequest,
     sink: Arc<dyn PtyEventSink>,
 ) -> Result<CreatePtyResult, String> {
@@ -799,72 +1031,111 @@ pub fn create(
 
     validate_pty_cwd(&cwd)?;
 
-    let session_name = grove_tmux_session_name(&worktree_path, &pane_id);
-    let session_state = ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &cwd)?;
-    let initial_hydration_capture = match session_state {
-        CreatePtySessionState::Attached => Some(capture_tmux_content_with_fallback(
-            &session_name,
-            tmux_capture_scope(
-                tmux_pane_in_mode(&session_name)?,
-                tmux_pane_alternate_on(&session_name)?,
-            ),
-        )?),
-        CreatePtySessionState::Created => None,
-    };
-    let initial_hydration = initial_hydration_capture
-        .as_ref()
-        .map(create_tmux_initial_hydration);
+    // Stable session id across relaunches — the reattach identity (design G6).
+    let session_name = grove_session_name(&worktree_path, &pane_id);
+    let client = daemon::get_or_init_client().await?.client();
 
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())?;
-
-    let mut cmd = CommandBuilder::new("tmux");
-    cmd.arg("-u");
-    cmd.arg("attach-session");
-    cmd.arg("-t");
-    cmd.arg(&session_name);
-    cmd.cwd(&worktree_path);
-    apply_portable_terminal_env(&mut cmd);
-
-    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    let restore_seed = runtime_restore_seed(session_state, restore.as_ref());
     let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
         cwd.clone(),
-        child.process_id(),
+        // The child lives in the daemon; grove holds no pid. `last_known_cwd` +
+        // the daemon's OSC-7 cwd replace the pid-based cwd probe (design S11).
+        None,
         session_name.clone(),
-        restore_seed,
-        initial_hydration_capture.as_ref(),
+        cols,
+        rows,
+        None,
+        None,
     )));
-    drop(pair.slave);
+    let adapter = Arc::new(DaemonSinkAdapter::new(
+        pty_id.clone(),
+        session_name.clone(),
+        Arc::clone(&sink),
+        Arc::clone(&tracked),
+    ));
 
-    let reader_id = pty_id.clone();
-    let tracked_for_reader = Arc::clone(&tracked);
-    let coalescer = OutputCoalescer::new(sink, reader_id);
-    std::thread::spawn(move || {
-        read_pty_output(reader, coalescer, tracked_for_reader);
-    });
+    // Subscribe BEFORE the RPC: a fresh shell's prompt is streamed the moment the
+    // daemon spawns it, which is strictly before the reply lands. Frames that arrive
+    // in that window are held by the adapter's gate and released (snapshot-deduped)
+    // below, so nothing is lost and nothing is double-painted.
+    client.subscribe(session_name.clone(), Arc::clone(&adapter) as Arc<dyn StreamSubscriber>);
 
-    let writer_handle = PtyWriter::spawn(writer, Arc::clone(&tracked), WRITE_DEADLINE);
+    let scrollback_bytes = config::get_grove_preferences_impl().daemon_scrollback_bytes;
+    let outcome = client
+        .create_or_attach(CreateOrAttach {
+            session_id: session_name.clone(),
+            cwd: Some(cwd.clone()),
+            cols,
+            rows,
+            env: daemon_child_env(&session_name),
+            scrollback_bytes: Some(scrollback_bytes),
+        })
+        .await;
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            client.unsubscribe(&session_name);
+            return Err(error.to_string());
+        }
+    };
+
+    // Warm adopt (live session) and cold restore (fresh child seeded from disk) both
+    // hand the renderer a DaemonSnapshot to replay, so both report `Attached`. A
+    // plain fresh spawn reports `Created` with NO hydration — the frontend then seeds
+    // its `snapshotFallback` exactly as it does today.
+    let (session_state, initial_hydration, snapshot_seq) = match (
+        outcome.warm_reattach.as_ref(),
+        outcome.cold_restore.as_ref(),
+    ) {
+        (Some(warm), _) => (
+            CreatePtySessionState::Attached,
+            Some(warm_initial_hydration(warm)),
+            Some(warm.output_sequence),
+        ),
+        (None, Some(cold)) => (
+            CreatePtySessionState::Attached,
+            Some(cold_initial_hydration(cold)),
+            // A cold-restored session is a FRESH child: its stream seq starts at 0 and
+            // the payload came off disk, so no live frame can be inside it.
+            None,
+        ),
+        (None, None) => (CreatePtySessionState::Created, None, None),
+    };
+
+    {
+        let mut state = lock_recover(&tracked);
+        let seed = initial_hydration.as_ref().map(|hydration| HydrationSeed {
+            bytes: hydration.text.as_bytes(),
+            truncated: hydration.truncated,
+        });
+        let restore_seed = runtime_restore_seed(session_state, restore.as_ref());
+        *state = PtyRuntimeState::new(
+            cwd.clone(),
+            None,
+            session_name.clone(),
+            cols,
+            rows,
+            restore_seed,
+            seed,
+        );
+    }
+
     let instance = PtyInstance {
         session_name,
         worktree_path,
-        writer: writer_handle,
-        master: pair.master,
-        child,
+        sink,
+        subscriber: Arc::clone(&adapter),
         tracked,
     };
 
-    lock_recover(registry()).insert(pty_id, instance);
+    // Registry insert + gate release are ONE decision, taken under the gate lock: the
+    // `Exit` frame rides the stream socket and can overtake the control reply, so a
+    // shell that died during the RPC must NOT be published as a live pane (see
+    // `ReplayGate`). Either way the buffered frames are replayed, so the dying shell's
+    // last output still reaches the screen.
+    adapter.open_gate(snapshot_seq, || {
+        lock_recover(registry()).insert(pty_id, instance);
+    });
 
     Ok(CreatePtyResult {
         session_state,
@@ -872,134 +1143,121 @@ pub fn create(
     })
 }
 
-fn read_pty_output(
-    mut reader: Box<dyn Read + Send>,
-    coalescer: OutputCoalescer,
-    tracked: Arc<Mutex<PtyRuntimeState>>,
-) {
-    enum ReadStep {
-        Continue,
-        Stop,
+/// Map a warm-reattach reply onto the (frozen) `CreatePtyInitialHydration` wire shape.
+fn warm_initial_hydration(warm: &WarmReattach) -> CreatePtyInitialHydration {
+    CreatePtyInitialHydration {
+        text: warm.snapshot.clone(),
+        // The daemon serializes a complete screen + scrollback view; nothing was
+        // dropped on the way out (a truncated ring is the daemon's own cap, which the
+        // snapshot already reflects).
+        truncated: false,
+        source: CreatePtyInitialHydrationSource::DaemonSnapshot,
+        snapshot_cols: Some(warm.cols),
+        snapshot_rows: Some(warm.rows),
+        pending_escape_tail_ansi: warm.pending_escape_tail_ansi.clone(),
+        kitty_keyboard_flags: warm.kitty_keyboard_flags,
+        is_alternate_screen: Some(warm.is_alternate_screen),
+        is_cold_restore: None,
     }
+}
 
-    let mut buf = [0u8; 4096];
-    loop {
-        // Why: a panic anywhere in the read path (e.g. scrollback bookkeeping)
-        // must never escape this detached thread. catch_unwind contains it so
-        // the flusher is still torn down cleanly below; the diagnostic goes to
-        // the logger ONLY — emitting through the sink would render the panic
-        // text as visible garbage in xterm.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match reader.read(&mut buf) {
-                Ok(0) => ReadStep::Stop,
-                Ok(n) => {
-                    // Raw-path bookkeeping stays per-read: append_scrollback and
-                    // last_output_at must reflect every read (the hookless idle
-                    // state machine in poll_bell_events depends on per-read
-                    // freshness), independent of when output is coalesced/emitted.
-                    {
-                        let mut state = lock_recover(&tracked);
-                        state.append_scrollback(&buf[..n]);
-                        state.last_output_at = Some(Instant::now());
-                    }
-                    coalescer.push(&buf[..n]);
-                    ReadStep::Continue
-                }
-                Err(_) => ReadStep::Stop,
-            }
-        }));
+/// Map a cold-restore payload onto the same wire shape, flagged so the renderer runs
+/// the cold reset bundle and acks it (design S15 cold variant / P16).
+fn cold_initial_hydration(cold: &ColdRestorePayload) -> CreatePtyInitialHydration {
+    CreatePtyInitialHydration {
+        text: cold.snapshot.clone(),
+        truncated: false,
+        source: CreatePtyInitialHydrationSource::DaemonSnapshot,
+        snapshot_cols: Some(cold.cols),
+        snapshot_rows: Some(cold.rows),
+        pending_escape_tail_ansi: cold.pending_escape_tail_ansi.clone(),
+        kitty_keyboard_flags: None,
+        is_alternate_screen: Some(cold.is_alternate_screen),
+        is_cold_restore: Some(true),
+    }
+}
 
-        match outcome {
-            Ok(ReadStep::Continue) => continue,
-            Ok(ReadStep::Stop) => break,
-            Err(_) => {
-                crate::logger::emit_log(
-                    "error",
-                    "pty",
-                    "read loop panicked; terminating reader thread",
-                );
-                break;
-            }
+/// Resolve a pane's daemon session id, or `None` when the pane is unknown.
+fn session_id_for(id: &str) -> Option<String> {
+    lock_recover(registry())
+        .get(id)
+        .map(|instance| instance.session_name.clone())
+}
+
+fn require_session_id(id: &str) -> Result<String, String> {
+    session_id_for(id).ok_or_else(|| format!("PTY not found: {}", id))
+}
+
+/// Send input to a pane (design P6 notify). NOT gated on a daemon ACK — the notify is
+/// queued on the control channel and returns; keystroke latency never waits on an RPC
+/// round trip. Ordering is preserved by the daemon's per-session FIFO writer.
+pub async fn write(id: &str, data: &[u8]) -> Result<(), String> {
+    let session_id = require_session_id(id)?;
+    let client = daemon::get_or_init_client().await?.client();
+    client
+        .write(&session_id, data)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Resize a pane (design P6 notify). Same non-blocking contract as `write`.
+pub async fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    let session_id = require_session_id(id)?;
+    {
+        let reg = lock_recover(registry());
+        if let Some(instance) = reg.get(id) {
+            let mut state = lock_recover(&instance.tracked);
+            state.cols = cols;
+            state.rows = rows;
         }
     }
-    lock_recover(&tracked).reader_exited = true;
-    // Flush any pending tail and terminate the flusher thread on EOF/Err/panic.
-    coalescer.close();
+    let client = daemon::get_or_init_client().await?.client();
+    client
+        .resize(&session_id, cols, rows)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
-    // Clone the per-instance writer handle under a short registry lock, then
-    // release it before enqueuing so a stalled write only blocks this pty's
-    // ordered queue, not every unrelated write/create/close serializing on the
-    // global registry lock. The handle enqueues FIFO and blocks the caller until
-    // the writer thread's write_all for these exact bytes returns (or deadline).
-    let writer = {
-        let reg = lock_recover(registry());
-        let instance = reg.get(id).ok_or_else(|| format!("PTY not found: {}", id))?;
-        Arc::clone(&instance.writer)
-    };
-
-    writer.write(data)
-}
-
-pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
-    let reg = lock_recover(registry());
-    let instance = reg
-        .get(id)
-        .ok_or_else(|| format!("PTY not found: {}", id))?;
-    instance
-        .master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())
-}
-
-/// tmux format that yields the pane's applied grid as `<cols>x<rows>`.
-const APPLIED_PTY_SIZE_FORMAT: &str = "#{pane_width}x#{pane_height}";
-
-/// Read back the size tmux has actually applied to this pane's session.
-/// Why: the UI reconciles xterm's grid against the size the shell/TUI truly
-/// sees (tmux owns the real PTY), so the resize path can converge on the
+/// Read back the size the daemon emulator has actually applied to this pane
+/// (design G8/P15 `getAppliedSize`) — no shell-out. The UI reconciles xterm's grid
+/// against the size the shell/TUI truly sees, so the resize path converges on the
 /// authoritative grid instead of its own optimistic tracking.
 ///
-/// Returns `None` when the session/pane is gone — a normal race on a live UI
-/// path, not an error we should surface to the renderer.
-pub fn applied_pty_size(id: &str) -> Result<Option<AppliedPtySize>, String> {
-    let session_name = {
-        let reg = lock_recover(registry());
-        match reg.get(id) {
-            Some(instance) => instance.session_name.clone(),
-            // Why: an evicted/unknown pane is the "pane is gone" case, not a fault.
-            None => return Ok(None),
-        }
+/// Returns `None` when the pane/session is gone — a normal race on a live UI path,
+/// not an error we should surface to the renderer.
+pub async fn applied_pty_size(id: &str) -> Result<Option<AppliedPtySize>, String> {
+    // Why: an evicted/unknown pane is the "pane is gone" case, not a fault.
+    let Some(session_id) = session_id_for(id) else {
+        return Ok(None);
     };
 
-    match tmux_display_message_value(&session_name, APPLIED_PTY_SIZE_FORMAT) {
-        Ok(value) => Ok(value.as_deref().and_then(parse_applied_pty_size)),
-        // Why: session killed mid-flight (GC, crash) is expected; don't error.
-        Err(error) if tmux_session_missing(&error) => Ok(None),
-        Err(error) => Err(error),
+    let client = daemon::get_or_init_client().await?.client();
+    match client.applied_size(&session_id).await {
+        Ok((cols, rows)) if cols > 0 && rows > 0 => Ok(Some(AppliedPtySize { cols, rows })),
+        // A zero dimension is a not-yet-sized session — treat it as "no readback yet"
+        // so a bogus grid never reaches the renderer's resize reconcile.
+        Ok(_) => Ok(None),
+        // Session killed mid-flight (GC, crash, exit) is expected; don't error — the
+        // renderer's reassert loop treats None as "skip this round".
+        Err(error) if is_session_missing(&error) => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
 }
 
-/// Parse tmux's `<cols>x<rows>` readback. Any malformed or zero dimension
-/// yields `None` so a bogus grid never reaches the resize reconcile.
-fn parse_applied_pty_size(value: &str) -> Option<AppliedPtySize> {
-    let (cols, rows) = value.trim().split_once('x')?;
-    let cols: u16 = cols.trim().parse().ok()?;
-    let rows: u16 = rows.trim().parse().ok()?;
-    if cols == 0 || rows == 0 {
-        return None;
-    }
-    Some(AppliedPtySize { cols, rows })
+/// Does this client error mean "the daemon no longer has that session"? A vanished
+/// session is a race on a live UI path, not a fault.
+fn is_session_missing(error: &daemon::ClientError) -> bool {
+    matches!(error, daemon::ClientError::Rpc(rpc) if rpc.message == SESSION_NOT_FOUND_MESSAGE)
 }
 
-pub fn clear_scrollback(id: &str) -> Result<(), String> {
-    let (session_name, tracked) = {
+/// The daemon's `SessionNotFound` RPC error message (grove-daemon `server.rs`).
+const SESSION_NOT_FOUND_MESSAGE: &str = "SessionNotFound";
+
+/// Clear a pane's scrollback (design item 4). The daemon drops its byte-exact ring +
+/// emulator scrollback and logs a `Clear` frame; only once it acks do we clear the
+/// local mirror, so the two can never disagree about what the pane still holds.
+pub async fn clear_scrollback(id: &str) -> Result<(), String> {
+    let (session_id, tracked) = {
         let reg = lock_recover(registry());
         let instance = reg
             .get(id)
@@ -1007,7 +1265,11 @@ pub fn clear_scrollback(id: &str) -> Result<(), String> {
         (instance.session_name.clone(), Arc::clone(&instance.tracked))
     };
 
-    clear_tmux_history(&session_name)?;
+    let client = daemon::get_or_init_client().await?.client();
+    client
+        .clear_history(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
 
     let mut state = lock_recover(&tracked);
     state.scrollback.clear();
@@ -1016,85 +1278,165 @@ pub fn clear_scrollback(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn reap_child_after_close(mut child: Box<dyn portable_pty::Child + Send + Sync>) {
-    match child.try_wait() {
-        Ok(Some(_)) => return,
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!("Warning: failed to poll PTY child before close: {error}");
-        }
+/// Close a pane: kill the daemon session (the daemon stamps `ended_at`, making the
+/// pane cold-restore INELIGIBLE — a deliberate close is a clean end, design D2) and
+/// drop the registry entry.
+pub async fn close(id: &str) -> Result<(), String> {
+    let session_id = require_session_id(id)?;
+
+    let client = daemon::get_or_init_client().await?.client();
+    let killed = client.kill(&session_id).await;
+
+    let removed = lock_recover(registry()).remove(id);
+    if removed.is_some() {
+        client.unsubscribe(&session_id);
+        client.clear_sleep_restore(&session_id);
     }
 
-    let kill_error = child.kill().err();
-    if let Err(wait_error) = child.wait() {
-        if let Some(kill_error) = kill_error {
-            eprintln!(
-                "Warning: failed to terminate PTY child during close: {kill_error}; failed to reap child: {wait_error}"
-            );
-        } else {
-            eprintln!("Warning: failed to reap PTY child during close: {wait_error}");
-        }
-    }
+    // The registry entry is gone either way — a pane the daemon already reaped must
+    // not be left behind on a transport hiccup.
+    killed.map_err(|error| error.to_string())
 }
 
-pub fn close(id: &str) -> Result<(), String> {
-    let session_name = {
-        let reg = lock_recover(registry());
-        reg.get(id)
-            .map(|instance| instance.session_name.clone())
-            .ok_or_else(|| format!("PTY not found: {}", id))?
-    };
-
-    kill_tmux_session_if_exists(&session_name)?;
-
-    let mut reg = lock_recover(registry());
-    if let Some(instance) = reg.remove(id) {
-        std::thread::spawn(move || {
-            reap_child_after_close(instance.child);
-        });
+/// Close every pane grove has open for a worktree. No orphan sweep is needed: the
+/// daemon owns the sessions, and a session grove never attached to in this process is
+/// still reachable by id (worktree removal also drops its history via terminal GC).
+pub async fn close_ptys_for_worktree(worktree_path: &str) -> Result<(), String> {
+    for id in ids_for_worktree(worktree_path) {
+        if let Err(error) = close(&id).await {
+            eprintln!("Warning: failed to close PTY {id} for worktree {worktree_path}: {error}");
+        }
     }
 
     Ok(())
 }
 
-pub fn close_ptys_for_worktree(worktree_path: &str) -> Result<(), String> {
-    let matching_ids: Vec<String> = {
-        let reg = lock_recover(registry());
-        reg.iter()
-            .filter(|(_, instance)| instance.worktree_path == worktree_path)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
+fn ids_for_worktree(worktree_path: &str) -> Vec<String> {
+    let reg = lock_recover(registry());
+    reg.iter()
+        .filter(|(_, instance)| instance.worktree_path == worktree_path)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
 
-    for id in &matching_ids {
-        if let Err(e) = close(id) {
-            eprintln!("Warning: failed to close PTY {id} for worktree {worktree_path}: {e}");
+/// Sync bridge for [`WorktreeResource::on_remove`], which is a sync trait called from
+/// inside `spawn_blocking` (worktree removal). The blocking bridge REFUSES an ambient
+/// tokio runtime (design R12), so the kills run on a scratch thread that has no
+/// runtime context — there the handle's OWN runtime drives them. Registry removal
+/// happens regardless, so a worktree teardown never leaves a stale pane behind.
+fn close_ptys_for_worktree_blocking(worktree_path: &str) -> Result<(), String> {
+    let ids = ids_for_worktree(worktree_path);
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let sessions: Vec<(String, String)> = ids
+        .iter()
+        .filter_map(|id| session_id_for(id).map(|session_id| (id.clone(), session_id)))
+        .collect();
+    {
+        let mut reg = lock_recover(registry());
+        for (id, _) in &sessions {
+            reg.remove(id);
         }
     }
 
-    close_orphaned_tmux_sessions_for_worktree(worktree_path)?;
+    let Some(handle) = daemon::global_client() else {
+        // No client was ever initialized ⇒ no daemon session can exist for these
+        // panes; dropping the registry entries above is the whole job.
+        return Ok(());
+    };
 
-    Ok(())
+    let session_ids: Vec<String> = sessions
+        .into_iter()
+        .map(|(_, session_id)| session_id)
+        .collect();
+    std::thread::spawn(move || {
+        for session_id in session_ids {
+            if let Err(error) = handle.kill_blocking(&session_id) {
+                eprintln!("Warning: failed to kill daemon session {session_id}: {error}");
+            }
+            handle.client().unsubscribe(&session_id);
+        }
+    })
+    .join()
+    .map_err(|_| "worktree PTY teardown thread panicked".to_string())
 }
 
-pub fn run_terminal_gc(dry_run: bool) -> Result<TerminalGcReport, String> {
+/// Terminal GC (design §9), on the daemon backend.
+///
+/// The liveness partition keys off the DAEMON's `listSessions`: a registry entry whose
+/// session the daemon no longer knows is dead, a worktree whose directory is gone is
+/// stale, and its sessions get killed over the socket. `TerminalGcReport` is unchanged.
+///
+/// Two guards are load-bearing:
+///  - **Another app connected → stand down entirely.** `connected_clients()` counts
+///    the CALLER's own control socket, so the gate is `> 1`, not `> 0` (a `> 0` test
+///    would disable GC forever). A second connected app may reattach any session, so
+///    we reap nothing rather than pull the rug out from under it.
+///  - **No daemon → fail open.** If the client cannot be reached we do NOT reap the
+///    registry and do NOT prune history: an unreachable daemon proves nothing about
+///    session liveness, and killing every open pane on a transport hiccup is strictly
+///    worse than leaking one dir. Filesystem-only pruning still runs.
+pub async fn run_terminal_gc(dry_run: bool) -> Result<TerminalGcReport, String> {
     let referenced_paths = collect_referenced_worktree_paths()?;
-    let grove_sessions = list_grove_tmux_sessions()?;
-    let session_infos = collect_terminal_gc_session_infos(&grove_sessions)?;
-    let plan = build_terminal_gc_plan(referenced_paths, &session_infos);
 
+    // Snapshot the registry BEFORE asking the daemon what it knows. Ordering matters:
+    // `create` inserts a pane only AFTER `createOrAttach` returns, so anything in this
+    // snapshot was created before the query — "absent from listSessions" is therefore
+    // conclusive death, never a create race, and needs no re-verification round trip.
     let registry_snapshot: Vec<RegistryReapEntry> = {
         let reg = lock_recover(registry());
         reg.iter()
-            .map(|(id, instance)| RegistryReapEntry {
-                pty_id: id.clone(),
+            .map(|(pty_id, instance)| RegistryReapEntry {
+                pty_id: pty_id.clone(),
                 session_name: instance.session_name.clone(),
                 reader_exited: lock_recover(&instance.tracked).reader_exited,
             })
             .collect()
     };
-    let live_sessions: HashSet<String> = grove_sessions.iter().cloned().collect();
-    let reap_plan = build_registry_reap_plan(&registry_snapshot, &live_sessions);
+
+    let client = match daemon::get_or_init_client().await {
+        Ok(handle) => handle.client(),
+        Err(error) => {
+            crate::logger::emit_log(
+                "warn",
+                "pty",
+                &format!("terminal GC: daemon unavailable, skipping session reaping: {error}"),
+            );
+            return run_terminal_gc_without_daemon(&referenced_paths, dry_run);
+        }
+    };
+
+    // The gauge INCLUDES our own control connection, so `> 1` means another app.
+    let another_app_connected = client
+        .connected_clients()
+        .await
+        .map(|count| count > 1)
+        .unwrap_or(false);
+    if another_app_connected {
+        crate::logger::emit_log(
+            "info",
+            "pty",
+            "terminal GC: another app is connected to the daemon; standing down",
+        );
+        return Ok(TerminalGcReport::default());
+    }
+
+    let sessions = client
+        .list_sessions()
+        .await
+        .map_err(|error| format!("terminal GC: failed to list daemon sessions: {error}"))?;
+    let known_sessions = daemon::gc::known_session_ids(&sessions);
+
+    let attached_session_names: HashSet<String> = registry_snapshot
+        .iter()
+        .map(|entry| entry.session_name.clone())
+        .collect();
+    let session_infos =
+        daemon_gc_session_infos(&sessions, &referenced_paths, &attached_session_names);
+    let plan = build_terminal_gc_plan(referenced_paths.clone(), &session_infos);
+    let reap_plan = build_registry_reap_plan(&registry_snapshot, &known_sessions);
 
     let mut report = TerminalGcReport {
         stale_worktree_paths: plan.stale_worktree_paths.clone(),
@@ -1133,17 +1475,305 @@ pub fn run_terminal_gc(dry_run: bool) -> Result<TerminalGcReport, String> {
     }
 
     for session_name in &plan.stale_session_names {
-        match close_grove_session_by_name(session_name) {
-            Ok(()) => report.killed_session_names.push(session_name.clone()),
-            Err(error) => eprintln!(
-                "Warning: failed to close stale Grove tmux session {session_name}: {error}"
-            ),
+        match client.kill(session_name).await {
+            Ok(()) => {
+                drop_registry_entries_for_session(session_name);
+                client.unsubscribe(session_name);
+                report.killed_session_names.push(session_name.clone());
+            }
+            Err(error) => {
+                eprintln!("Warning: failed to kill stale Grove daemon session {session_name}: {error}")
+            }
         }
     }
 
+    // The child processes live under the DAEMON, and killing a session does not always
+    // take its whole tree down transitively — this sweep of the pane pid's descendants
+    // is what catches a detached leftover (a nohup'd agent, a stray dev server) after
+    // its pane is gone.
     report.leftover_process_ids = terminate_leftover_processes(&leftover_candidates);
 
+    prune_daemon_history_dirs(&known_sessions, &referenced_paths);
+
     Ok(report)
+}
+
+/// GC with no reachable daemon: prune the filesystem-derived state only. Never reaps
+/// the registry, never kills a session, never touches history — an unreachable daemon
+/// proves nothing about liveness (fail open).
+fn run_terminal_gc_without_daemon(
+    referenced_paths: &[String],
+    dry_run: bool,
+) -> Result<TerminalGcReport, String> {
+    let plan = build_terminal_gc_plan(referenced_paths.to_vec(), &[]);
+    let mut report = TerminalGcReport {
+        stale_worktree_paths: plan.stale_worktree_paths.clone(),
+        ..TerminalGcReport::default()
+    };
+    if dry_run {
+        return Ok(report);
+    }
+    for worktree_path in &plan.stale_worktree_paths {
+        config::remove_terminal_layouts_for_worktree(worktree_path)?;
+        config::remove_terminal_session_snapshot_for_worktree(worktree_path)?;
+        config::remove_panel_layouts_for_worktree(worktree_path)?;
+        report.pruned_worktree_paths.push(worktree_path.clone());
+    }
+    Ok(report)
+}
+
+/// Attribute each daemon session to a worktree, in the shape `build_terminal_gc_plan`
+/// consumes.
+///
+/// The daemon does not store a worktree path per session — but it does not have to:
+/// a session id IS `grove-{hash(worktree)}-{pane}` (design G6), so the worktree hash
+/// prefix attributes it exactly, and that identity is the very thing that survives
+/// relaunches. A session whose prefix matches no known worktree is skipped (grove
+/// cannot prove whose it is, so it must not kill it).
+///
+/// `attached` = grove currently holds this session in its pane registry. That is what
+/// spares a worktree whose directory is only transiently missing.
+fn daemon_gc_session_infos(
+    sessions: &[daemon::SessionInfo],
+    referenced_paths: &[String],
+    attached_session_names: &HashSet<String>,
+) -> Vec<TerminalGcSessionInfo> {
+    let prefixes: Vec<(String, String)> = referenced_paths
+        .iter()
+        .map(|path| (session_worktree_prefix(path), path.clone()))
+        .collect();
+
+    sessions
+        .iter()
+        .filter_map(|session| {
+            let worktree_path = prefixes
+                .iter()
+                .find(|(prefix, _)| session.session_id.starts_with(prefix.as_str()))
+                .map(|(_, path)| path.clone())?;
+            Some(TerminalGcSessionInfo {
+                session_name: session.session_id.clone(),
+                worktree_path,
+                attached: attached_session_names.contains(&session.session_id),
+                pane_pid: session.pid,
+            })
+        })
+        .collect()
+}
+
+/// The `grove-{worktree hash}-` prefix every session id for `worktree_path` carries.
+fn session_worktree_prefix(worktree_path: &str) -> String {
+    format!("grove-{}-", short_hash(worktree_path, WORKTREE_HASH_LEN))
+}
+
+/// Prune per-session history dirs the daemon no longer needs (design §9c) via the
+/// pure planner in `daemon::gc`: a dir is reaped only when its session is DEAD (the
+/// daemon does not know the id), its pane is UNREFERENCED by any surviving layout,
+/// and it is older than the 5-minute young-dir guard (so a dir mid-first-checkpoint,
+/// created before its session registered, is never raced away).
+fn prune_daemon_history_dirs(known_sessions: &HashSet<String>, referenced_paths: &[String]) {
+    let Some(base_dir) = daemon::runtime_base_dir().or_else(|| config::daemon_runtime_dir().ok())
+    else {
+        return;
+    };
+    let root = daemon::protocol::history_root(&base_dir);
+    let dirs = match collect_history_dirs(&root) {
+        Ok(dirs) => dirs,
+        Err(error) => {
+            crate::logger::emit_log(
+                "warn",
+                "pty",
+                &format!("terminal GC: failed to scan the history root: {error}"),
+            );
+            return;
+        }
+    };
+    if dirs.is_empty() {
+        return;
+    }
+
+    let referenced_session_ids = collect_referenced_session_ids(referenced_paths);
+    let plan = daemon::gc::plan_history_gc(&daemon::gc::HistoryGcInput {
+        dirs: &dirs,
+        daemon_session_ids: known_sessions,
+        referenced_session_ids: &referenced_session_ids,
+        // The caller already stood GC down entirely if another app was connected, so
+        // by construction we are the only client here.
+        any_app_connected: false,
+        min_age: daemon::gc::GC_MIN_AGE,
+    });
+
+    for session_id in plan {
+        let dir = root.join(percent_encode_session_id(&session_id));
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => crate::logger::emit_log(
+                "info",
+                "pty",
+                &format!("terminal GC: pruned the history dir for dead session {session_id}"),
+            ),
+            Err(error) => crate::logger::emit_log(
+                "warn",
+                "pty",
+                &format!("terminal GC: failed to prune {}: {error}", dir.display()),
+            ),
+        }
+    }
+}
+
+/// Enumerate the per-session dirs under the history root with their ages. A missing
+/// root (no daemon has ever checkpointed) is an empty list, not an error.
+fn collect_history_dirs(root: &Path) -> Result<Vec<daemon::gc::HistoryDirInfo>, String> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(root).map_err(|error| error.to_string())?;
+    let now = std::time::SystemTime::now();
+    let mut dirs = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Some(session_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(percent_decode_session_id)
+        else {
+            continue;
+        };
+        // Age from the newest of created/modified: a dir being actively checkpointed
+        // is young by mtime even if its inode is old, so the guard never races a live
+        // writer. An unreadable timestamp reads as age 0 (spared).
+        let age = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().or_else(|_| meta.created()).ok())
+            .and_then(|stamp| now.duration_since(stamp).ok())
+            .unwrap_or_default();
+        dirs.push(daemon::gc::HistoryDirInfo::new(session_id, age));
+    }
+    Ok(dirs)
+}
+
+/// Every session id still referenced by a layout whose worktree EXISTS. A pane whose
+/// worktree is gone is deliberately absent — that absence is what makes its history
+/// dir an orphan.
+fn collect_referenced_session_ids(referenced_paths: &[String]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let existing: HashSet<&String> = referenced_paths
+        .iter()
+        .filter(|path| Path::new(path).exists())
+        .collect();
+
+    if let Ok(raw) = config::load_terminal_layouts_impl() {
+        if let Ok(layouts) = serde_json::from_str::<serde_json::Map<String, Value>>(&raw) {
+            for (worktree_path, layout) in layouts {
+                if !existing.contains(&worktree_path) {
+                    continue;
+                }
+                collect_layout_session_ids(&worktree_path, &layout, &mut ids);
+            }
+        }
+    }
+
+    // Global-terminal panes hang off the app's base dir, not a worktree, so they are
+    // always "referenced" while the layout names them.
+    if let Ok(raw) = config::load_panel_layouts_impl() {
+        if let Ok(ids_from_panels) = panel_layout_session_ids(&raw) {
+            ids.extend(ids_from_panels);
+        }
+    }
+
+    ids
+}
+
+fn panel_layout_session_ids(raw: &str) -> Result<HashSet<String>, String> {
+    let panels: Value = serde_json::from_str(raw)
+        .map_err(|error| format!("Failed to parse panel-layouts.json: {error}"))?;
+
+    let mut session_names = HashSet::new();
+    let base_dir = config::load_app_config().base_dir;
+
+    if let Some(tabs) = panels
+        .get("globalTerminal")
+        .and_then(|gt| gt.get("tabs"))
+        .and_then(Value::as_array)
+    {
+        for tab in tabs {
+            if tab.get("mirrorPtyId").and_then(Value::as_str).is_some() {
+                continue;
+            }
+            if let Some(pane_id) = tab.get("paneId").and_then(Value::as_str) {
+                session_names.insert(grove_session_name(&base_dir, pane_id));
+            }
+        }
+    }
+
+    Ok(session_names)
+}
+
+fn collect_layout_session_ids(
+    worktree_path: &str,
+    node: &Value,
+    session_names: &mut HashSet<String>,
+) {
+    let Some(object) = node.as_object() else {
+        return;
+    };
+
+    let node_type = object.get("type").and_then(Value::as_str);
+    if node_type == Some("horizontal") || node_type == Some("vertical") {
+        if let Some(children) = object.get("children").and_then(Value::as_array) {
+            for child in children {
+                collect_layout_session_ids(worktree_path, child, session_names);
+            }
+        }
+        return;
+    }
+
+    if let Some(pane_id) = object.get("id").and_then(Value::as_str) {
+        session_names.insert(grove_session_name(worktree_path, pane_id));
+    }
+}
+
+/// Percent-encode a session id into its history dir name — the same transform the
+/// daemon's `history::percent_encode` applies. grove session ids are already
+/// RFC-3986 unreserved (`grove-<hex>-<alnum>`), so this is the identity for every id
+/// grove mints; it exists so a hand-crafted or future id still lands on the right dir.
+fn percent_encode_session_id(session_id: &str) -> String {
+    let mut out = String::with_capacity(session_id.len());
+    for &b in session_id.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Inverse of [`percent_encode_session_id`]; `None` on a malformed escape (the dir is
+/// then not ours and is left alone).
+fn percent_decode_session_id(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                if i + 2 >= bytes.len() {
+                    return None;
+                }
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 struct RegistryReapEntry {
@@ -1159,30 +1789,24 @@ struct RegistryReapPlan {
 
 struct RegistryReapCandidate {
     pty_id: String,
+    #[allow(dead_code)]
     session_name: String,
 }
 
-/// Removes confirmed-dead registry entries and returns the reaped PTY ids.
+/// Removes confirmed-dead registry entries and returns the reaped PTY ids. No
+/// re-verification round trip is needed: the registry snapshot was taken BEFORE
+/// `listSessions`, so a candidate cannot be a not-yet-known fresh session.
 fn reap_dead_registry_entries(candidates: &[RegistryReapCandidate]) -> Vec<String> {
     let mut reaped = Vec::new();
     for candidate in candidates {
-        // Why: the session list predates the registry snapshot, so a session
-        // created in between would look missing; only reap after tmux itself
-        // confirms the session is gone.
-        match tmux_session_exists(&candidate.session_name) {
-            Ok(false) => {}
-            Ok(true) | Err(_) => continue,
-        }
         let removed = lock_recover(registry()).remove(&candidate.pty_id);
-        if let Some(instance) = removed {
-            std::thread::spawn(move || {
-                reap_child_after_close(instance.child);
-            });
+        if removed.is_some() {
+            // No local child to reap any more — the daemon owns (and reaps) the child.
             crate::logger::emit_log(
                 "info",
                 "pty",
                 &format!(
-                    "terminal GC: reaped PTY {} (tmux session {} no longer exists)",
+                    "terminal GC: reaped PTY {} (daemon session {} no longer exists)",
                     candidate.pty_id, candidate.session_name
                 ),
             );
@@ -1192,21 +1816,22 @@ fn reap_dead_registry_entries(candidates: &[RegistryReapCandidate]) -> Vec<Strin
     reaped
 }
 
-/// Partitions a registry snapshot against the live grove tmux session set.
-/// Grove PTYs only exist inside grove-managed tmux sessions, so an entry whose
-/// session vanished (external kill, tmux server restart, pane exit) is dead:
-/// its master fd, writer, and child handle leak until reaped. An entry whose
-/// session is alive but whose reader exited is report-only — the session (and
-/// the user's shell) must survive; re-attach is a separate concern.
+/// Partitions a registry snapshot against the DAEMON's known session set (design §9a).
+/// A pane whose session the daemon no longer knows is dead: its sink subscription and
+/// registry entry leak until reaped. An entry whose session is known but whose reader
+/// exited is report-only — the session (and the user's shell) must survive.
+///
+/// Keyed on KNOWN (not alive): a dead-but-unreaped session is still the daemon's to
+/// clean up, and reaping grove's side out from under it would race its own teardown.
 fn build_registry_reap_plan(
     snapshot: &[RegistryReapEntry],
-    live_sessions: &HashSet<String>,
+    known_sessions: &HashSet<String>,
 ) -> RegistryReapPlan {
     let mut reap_candidates = Vec::new();
     let mut dead_reader_pty_ids = Vec::new();
 
     for entry in snapshot {
-        if !live_sessions.contains(&entry.session_name) {
+        if !known_sessions.contains(&entry.session_name) {
             reap_candidates.push(RegistryReapCandidate {
                 pty_id: entry.pty_id.clone(),
                 session_name: entry.session_name.clone(),
@@ -1222,67 +1847,24 @@ fn build_registry_reap_plan(
     }
 }
 
-pub fn cleanup_stale_tmux_sessions_on_startup() -> Result<(), String> {
-    run_terminal_gc(false).map(|_| ())
+/// Startup GC. Same body as the periodic job — the tmux-only session sweep this used
+/// to wrap is gone, and the one-time kill of leftover grove-* tmux sessions from a
+/// pre-daemon build lives in [`crate::tmux_sweep`], which the shells call directly.
+pub async fn cleanup_stale_sessions_on_startup() -> Result<(), String> {
+    run_terminal_gc(false).await.map(|_| ())
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn cleanup_stale_tmux_sessions<I>(
-    session_names: I,
-    preserved_sessions: &HashSet<String>,
-) -> Result<(), String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let live_sessions: HashSet<String> = {
-        let reg = lock_recover(registry());
-        reg.values()
-            .map(|instance| instance.session_name.clone())
-            .collect()
-    };
-
-    for session_name in session_names {
-        if live_sessions.contains(&session_name) || preserved_sessions.contains(&session_name) {
-            continue;
-        }
-
-        let managed = match tmux_session_option(&session_name, TMUX_GROVE_MANAGED_OPTION) {
-            Ok(value) => value,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect tmux session {session_name} during startup cleanup: {error}"
-                );
-                continue;
-            }
-        };
-        if managed.as_deref() != Some("1") {
-            continue;
-        }
-
-        let attached_clients = match tmux_session_attached_count(&session_name) {
-            Ok(value) => value,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect attached tmux clients for {session_name} during startup cleanup: {error}"
-                );
-                continue;
-            }
-        };
-        if attached_clients > 0 {
-            continue;
-        }
-
-        if let Err(error) = kill_tmux_session_if_exists(&session_name) {
-            eprintln!(
-                "Warning: failed to clean up stale tmux session {session_name} during startup cleanup: {error}"
-            );
-        }
+/// Drop every registry entry pointing at a session grove just killed.
+fn drop_registry_entries_for_session(session_name: &str) {
+    let mut reg = lock_recover(registry());
+    let matching_ids: Vec<String> = reg
+        .iter()
+        .filter(|(_, instance)| instance.session_name == session_name)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in matching_ids {
+        reg.remove(&id);
     }
-
-    Ok(())
 }
 
 fn collect_referenced_worktree_paths() -> Result<Vec<String>, String> {
@@ -1307,60 +1889,6 @@ fn collect_referenced_worktree_paths() -> Result<Vec<String>, String> {
     paths.extend(snapshot_store.worktrees.into_keys());
 
     Ok(paths.into_iter().collect())
-}
-
-fn collect_terminal_gc_session_infos(
-    grove_sessions: &[String],
-) -> Result<Vec<TerminalGcSessionInfo>, String> {
-    let mut sessions = Vec::new();
-
-    for session_name in grove_sessions.iter().cloned() {
-        let managed = match tmux_session_option(&session_name, TMUX_GROVE_MANAGED_OPTION) {
-            Ok(value) => value,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect tmux session {session_name} during terminal GC: {error}"
-                );
-                continue;
-            }
-        };
-        if managed.as_deref() != Some("1") {
-            continue;
-        }
-
-        let worktree_path = match tmux_session_option(&session_name, TMUX_GROVE_WORKTREE_OPTION) {
-            Ok(Some(value)) if !value.trim().is_empty() => value,
-            Ok(_) => continue,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect tmux worktree metadata for {session_name} during terminal GC: {error}"
-                );
-                continue;
-            }
-        };
-
-        let attached = match tmux_session_attached_count(&session_name) {
-            Ok(value) => value > 0,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect attached client count for {session_name} during terminal GC: {error}"
-                );
-                continue;
-            }
-        };
-
-        sessions.push(TerminalGcSessionInfo {
-            pane_pid: tmux_pane_pid(&session_name).ok().flatten(),
-            session_name,
-            worktree_path,
-            attached,
-        });
-    }
-
-    Ok(sessions)
 }
 
 fn build_terminal_gc_plan(
@@ -1421,34 +1949,6 @@ fn build_terminal_gc_plan(
     }
 }
 
-fn close_grove_session_by_name(session_name: &str) -> Result<(), String> {
-    kill_tmux_session_if_exists(session_name)?;
-
-    let mut removed_instances = Vec::new();
-    {
-        let mut reg = lock_recover(registry());
-        let matching_ids: Vec<String> = reg
-            .iter()
-            .filter(|(_, instance)| instance.session_name == session_name)
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        for id in matching_ids {
-            if let Some(instance) = reg.remove(&id) {
-                removed_instances.push(instance);
-            }
-        }
-    }
-
-    for instance in removed_instances {
-        std::thread::spawn(move || {
-            reap_child_after_close(instance.child);
-        });
-    }
-
-    Ok(())
-}
-
 fn collect_process_tree_candidates(root_pids: &[u32]) -> BTreeSet<u32> {
     let processes = match list_process_snapshots() {
         Ok(processes) => processes,
@@ -1487,7 +1987,7 @@ fn terminate_leftover_processes(candidate_pids: &BTreeSet<u32>) -> Vec<u32> {
 
     sleep(TERMINAL_GC_PROCESS_EXIT_GRACE);
 
-    let live_after_tmux_kill = match list_process_snapshots() {
+    let live_after_session_kill = match list_process_snapshots() {
         Ok(processes) => processes
             .into_iter()
             .map(|process| process.pid)
@@ -1501,7 +2001,7 @@ fn terminate_leftover_processes(candidate_pids: &BTreeSet<u32>) -> Vec<u32> {
     let leftover: Vec<u32> = candidate_pids
         .iter()
         .copied()
-        .filter(|pid| live_after_tmux_kill.contains(pid))
+        .filter(|pid| live_after_session_kill.contains(pid))
         .collect();
     if leftover.is_empty() {
         return leftover;
@@ -1551,7 +2051,7 @@ fn signal_processes(pids: &[u32], signal: &str) -> Result<(), String> {
             .map_err(|error| format!("failed to execute kill {signal} {pid}: {error}"))?;
 
         if !output.status.success() {
-            let message = tmux_output_message(&output);
+            let message = command_output_message(&output);
             if message.contains("No such process") {
                 continue;
             }
@@ -1562,71 +2062,21 @@ fn signal_processes(pids: &[u32], signal: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn restorable_grove_tmux_sessions_from_layouts(raw: &str) -> Result<HashSet<String>, String> {
-    let layouts: serde_json::Map<String, Value> = serde_json::from_str(raw)
-        .map_err(|error| format!("Failed to parse terminal-layouts.json: {error}"))?;
-    let mut session_names = HashSet::new();
-
-    for (worktree_path, layout) in layouts {
-        collect_restorable_tmux_sessions(&worktree_path, &layout, &mut session_names);
+/// The most useful human-readable line from a failed subprocess: stderr, else stdout,
+/// else the exit status. (Was `tmux_output_message`; `kill` is the only shell-out in
+/// this module that still needs it.)
+fn command_output_message(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
     }
 
-    Ok(session_names)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn restorable_grove_tmux_sessions_from_panel_layouts(raw: &str) -> Result<HashSet<String>, String> {
-    let panels: Value = serde_json::from_str(raw)
-        .map_err(|error| format!("Failed to parse panel-layouts.json: {error}"))?;
-
-    let mut session_names = HashSet::new();
-    let base_dir = config::load_app_config().base_dir;
-
-    if let Some(tabs) = panels
-        .get("globalTerminal")
-        .and_then(|gt| gt.get("tabs"))
-        .and_then(Value::as_array)
-    {
-        for tab in tabs {
-            if tab.get("mirrorPtyId").and_then(Value::as_str).is_some() {
-                continue;
-            }
-            if let Some(pane_id) = tab.get("paneId").and_then(Value::as_str) {
-                session_names.insert(grove_tmux_session_name(&base_dir, pane_id));
-            }
-        }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
     }
 
-    Ok(session_names)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn collect_restorable_tmux_sessions(
-    worktree_path: &str,
-    node: &Value,
-    session_names: &mut HashSet<String>,
-) {
-    let Some(object) = node.as_object() else {
-        return;
-    };
-
-    let node_type = object.get("type").and_then(Value::as_str);
-    if node_type == Some("horizontal") || node_type == Some("vertical") {
-        if let Some(children) = object.get("children").and_then(Value::as_array) {
-            for child in children {
-                collect_restorable_tmux_sessions(worktree_path, child, session_names);
-            }
-        }
-        return;
-    }
-
-    if let Some(pane_id) = object.get("id").and_then(Value::as_str) {
-        session_names.insert(grove_tmux_session_name(worktree_path, pane_id));
-    }
+    format!("kill exited with status {}", output.status)
 }
 
 fn reconcile_hookless_ai_status(
@@ -1675,11 +2125,6 @@ fn detect_live_hookless_tool_in_session_from_processes(
     processes: &[ProcessSnapshot],
 ) -> Option<&'static str> {
     detect_hookless_tool_from_process_tree(pane_pid?, processes)
-}
-
-fn tmux_pane_pid(session_name: &str) -> Result<Option<u32>, String> {
-    Ok(tmux_display_message_value(session_name, "#{pane_pid}")?
-        .and_then(|value| value.parse::<u32>().ok()))
 }
 
 fn list_process_snapshots() -> Result<Vec<ProcessSnapshot>, String> {
@@ -1766,121 +2211,36 @@ fn process_line_mentions_tool(command_line: &str, tool: &str) -> bool {
     })
 }
 
-/// `tmux list-windows -a -F '#{session_name} #{window_active} #{window_bell_flag}'`
-/// collapsed to one fork. Keyed to each session's ACTIVE window to match the
-/// previous per-session `display-message #{window_bell_flag}` semantics (the
-/// active window's flag, not an OR across every window). tmux-not-found and
-/// no-server degrade to an empty map so every tracked session reads bell=false,
-/// mirroring the old per-session `tmux_session_missing` fallback; any other hard
-/// failure aborts the poll exactly as the per-session read did.
-fn collect_active_window_bell_flags() -> Result<HashMap<String, bool>, String> {
-    let output = match tmux_output([
-        "list-windows",
-        "-a",
-        "-F",
-        "#{session_name} #{window_active} #{window_bell_flag}",
-    ]) {
-        Ok(output) => output,
-        Err(error) if error == TMUX_NOT_FOUND_ERROR => return Ok(HashMap::new()),
-        Err(error) => return Err(error),
-    };
-    if !output.status.success() {
-        let message = tmux_output_message(&output);
-        if tmux_session_missing(&message) {
-            return Ok(HashMap::new());
-        }
-        return Err(format!("failed to poll tmux bell state: {message}"));
-    }
-
-    Ok(parse_active_window_bell_flags(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+/// One row of the daemon's `pollBells` reply, re-keyed from the daemon SESSION id
+/// to the pane's grove PTY id by the caller. The daemon returns a row per LIVE
+/// session on every poll — bells DRAINED, ai_status READ — so the delta machine
+/// below is what turns that into the sparse `PtyBellEvent` stream the renderer
+/// contract expects (an event only when a bell fired or the status CHANGED).
+struct DaemonBellRow {
+    bell: bool,
+    ai_status: Option<String>,
 }
 
-fn parse_active_window_bell_flags(output: &str) -> HashMap<String, bool> {
-    let mut flags = HashMap::new();
-    for line in output.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(session_name), Some(window_active), Some(bell_flag)) =
-            (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        if window_active != "1" {
-            continue;
-        }
-        flags.insert(session_name.to_string(), bell_flag == "1");
-    }
-    flags
-}
-
-/// `tmux list-sessions -F '#{session_name} #{@grove_ai_status}'` collapsed to one
-/// fork. The user option renders empty when unset (mapped to None), and any tmux
-/// failure degrades to an empty map so every session reads None — matching the
-/// old per-session `tmux_session_option(..)` where errors were swallowed to None.
-fn collect_session_ai_statuses() -> HashMap<String, Option<String>> {
-    let output = match tmux_output(["list-sessions", "-F", "#{session_name} #{@grove_ai_status}"]) {
-        Ok(output) if output.status.success() => output,
-        _ => return HashMap::new(),
-    };
-
-    parse_session_ai_statuses(&String::from_utf8_lossy(&output.stdout))
-}
-
-fn parse_session_ai_statuses(output: &str) -> HashMap<String, Option<String>> {
-    let mut statuses = HashMap::new();
-    for line in output.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(session_name) = parts.next() else {
-            continue;
-        };
-        // @grove_ai_status has no spaces; an unset option renders empty and is
-        // dropped by split_whitespace, yielding None.
-        let status = parts.next().map(str::to_string);
-        statuses.insert(session_name.to_string(), status);
-    }
-    statuses
-}
-
-/// `tmux list-panes -a -F '#{session_name} #{pane_active} #{pane_pid}'` collapsed
-/// to one fork. Keyed to each session's ACTIVE pane to match the previous
-/// per-session `display-message #{pane_pid}`. Only consulted for sessions that
-/// need live hookless-tool probing; any tmux failure degrades to an empty map
-/// (no pid → no live-tool detection), mirroring `tmux_pane_pid(..).ok().flatten()`.
-fn collect_active_pane_pids() -> HashMap<String, u32> {
-    let output = match tmux_output([
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name} #{pane_active} #{pane_pid}",
-    ]) {
-        Ok(output) if output.status.success() => output,
-        _ => return HashMap::new(),
-    };
-
-    parse_active_pane_pids(&String::from_utf8_lossy(&output.stdout))
-}
-
-fn parse_active_pane_pids(output: &str) -> HashMap<String, u32> {
-    let mut pids = HashMap::new();
-    for line in output.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(session_name), Some(pane_active), Some(pane_pid)) =
-            (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        if pane_active != "1" {
-            continue;
-        }
-        if let Ok(pane_pid) = pane_pid.parse::<u32>() {
-            pids.insert(session_name.to_string(), pane_pid);
-        }
-    }
-    pids
-}
-
-pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
+/// Poll every attached pane for a terminal bell + its AI-tool status (design G9).
+///
+/// The daemon replaced only the SOURCES here, not the machine. It stores status; it
+/// does not run the idle/attention state machine — a hookless tool (codex) never
+/// reports anything, so a wholesale swap to "just return `pollBells`" would freeze
+/// such a pane at `running` forever. So the full client-side machine is preserved:
+///
+///   1. HOOK CHANNEL — the per-session status file (`GROVE_AI_STATUS_FILE`) is
+///      consumed FIRST and WINS over whatever the daemon holds. Daemon-side
+///      Enter-detection (`Session::detect_enter`) is the other writer of that store,
+///      and it loses to a fresh hook write: last writer wins, and the hook wrote last.
+///   2. HOOKLESS RECONCILE — when nothing claims a hookless tool, walk the child
+///      process tree (rooted at the daemon-reported child pid) to discover a live one
+///      and recover its status.
+///   3. IDLE/ATTENTION CLOCK — running →(no output for 3s)→ idle →(30s)→ attention,
+///      driven by `last_output_at`, which the daemon stream sink stamps on output.
+///
+/// The single write-back at the end pushes the resolved status into the daemon's
+/// store (`setAiStatus`) whenever it differs from what the daemon reported.
+pub async fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
     let tracked_sessions = {
         let reg = lock_recover(registry());
         reg.iter()
@@ -1898,22 +2258,44 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
         return Ok(Vec::new());
     }
 
-    // Batch the per-session tmux reads into single aggregate forks per tick,
-    // keyed by session_name and intersected with the tracked registry below.
-    let bell_flags = collect_active_window_bell_flags()?;
-    let ai_statuses = collect_session_ai_statuses();
+    let client = daemon::get_or_init_client().await?.client();
+    let rows: HashMap<String, DaemonBellRow> = client
+        .poll_bells()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        // The daemon keys its rows by SESSION id (it knows nothing of grove pane ids)
+        // and ships them in the `PtyBellEvent` shape; re-key onto grove's pty ids.
+        .map(|event| {
+            (
+                event.pty_id,
+                DaemonBellRow {
+                    bell: event.bell,
+                    ai_status: event.ai_status,
+                },
+            )
+        })
+        .collect();
 
     let mut events = Vec::new();
-    let mut cached_process_snapshots: Option<Vec<ProcessSnapshot>> = None;
-    let mut cached_pane_pids: Option<HashMap<String, u32>> = None;
-    let mut process_snapshots_loaded = false;
+    let mut process_probe: Option<HooklessProbe> = None;
 
     for (pty_id, session_name, tracked) in tracked_sessions {
-        // Sessions absent from the aggregate (killed/missing) read as false,
-        // matching the previous per-session tmux_session_missing fallback.
-        let bell_flag = bell_flags.get(&session_name).copied().unwrap_or(false);
+        // A session the daemon no longer lists (killed/exited) reads as no bell and
+        // no status.
+        let (bell, daemon_status) = match rows.get(&session_name) {
+            Some(row) => (row.bell, row.ai_status.clone()),
+            None => (false, None),
+        };
 
-        let ai_status = ai_statuses.get(&session_name).cloned().flatten();
+        // (1) The hook channel WINS: a status published since the last tick overrides
+        // the daemon's store (which Enter-detection may also have touched).
+        let ai_status = match consume_ai_status_file(&session_name) {
+            Some(signal) => signal,
+            None => daemon_status.clone(),
+        };
+
+        // (2) Hookless reconcile — unchanged logic, daemon-fed pid.
         let current_tool = ai_status
             .as_deref()
             .and_then(|status| status.split(':').next());
@@ -1921,42 +2303,30 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
             || current_tool.is_some_and(|tool| !tool_hooks::is_hookless_tool(tool));
 
         let ai_status = if should_probe_live_hookless_tool {
-            if !process_snapshots_loaded {
-                cached_process_snapshots = list_process_snapshots().ok();
-                cached_pane_pids = Some(collect_active_pane_pids());
-                process_snapshots_loaded = true;
+            // Lazily — and at most once per tick — take one `ps` snapshot plus one
+            // `listSessions` (for child pids). A pane that needs no probe pays nothing.
+            if process_probe.is_none() {
+                process_probe = Some(HooklessProbe::collect(client).await);
             }
-
-            let pane_pid = cached_pane_pids
+            let live_tool = process_probe
                 .as_ref()
-                .and_then(|pids| pids.get(&session_name).copied());
-            let live_tool = cached_process_snapshots.as_deref().and_then(|processes| {
-                detect_live_hookless_tool_in_session_from_processes(pane_pid, processes)
-            });
+                .and_then(|probe| probe.live_hookless_tool(&session_name));
             let (last_ai_status, last_output_at) = {
                 let state = lock_recover(&tracked);
                 (state.last_ai_status.clone(), state.last_output_at)
             };
 
-            let reconciled = reconcile_hookless_ai_status(
+            reconcile_hookless_ai_status(
                 ai_status.as_deref(),
                 live_tool,
                 last_ai_status.as_deref(),
                 last_output_at,
-            );
-
-            if reconciled.as_deref() != ai_status.as_deref() {
-                if let Some(status) = reconciled.as_deref() {
-                    let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, status);
-                }
-            }
-
-            reconciled
+            )
         } else {
             ai_status
         };
 
-        // Hookless tool idle/attention state machine:
+        // (3) Hookless tool idle/attention state machine:
         // running → [output idle > 3s] → idle → [30s elapsed] → attention
         // TUI apps produce periodic screen refreshes so we don't revalidate
         // after transitions — the next Enter re-asserts running.
@@ -1969,9 +2339,7 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
                 None => true, // no output tracked (e.g. after app restart)
             };
             if should_idle {
-                let idle_status = tool_hooks::to_idle(ai_ref.unwrap());
-                let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, &idle_status);
-                Some(idle_status)
+                Some(tool_hooks::to_idle(ai_ref.unwrap()))
             } else {
                 ai_status
             }
@@ -1980,10 +2348,10 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
                 .idle_since
                 .is_some_and(|t| t.elapsed() >= HOOKLESS_ATTENTION_TIMEOUT);
             if should_attention {
-                let attn_status =
-                    format!("{}:attention", ai_ref.unwrap().split(':').next().unwrap());
-                let _ = tmux_set_option(&session_name, TMUX_GROVE_AI_STATUS_OPTION, &attn_status);
-                Some(attn_status)
+                Some(format!(
+                    "{}:attention",
+                    ai_ref.unwrap().split(':').next().unwrap()
+                ))
             } else {
                 ai_status
             }
@@ -1991,8 +2359,25 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
             ai_status
         };
 
+        // Write the resolved status back to the daemon's store whenever it differs
+        // from what the daemon reported. One store, last writer wins, so a single
+        // deduped push at the end of the tick is equivalent to the separate write-backs
+        // the reconcile / idle / attention branches each used to perform — and skipping
+        // it when nothing changed keeps a steady-state poll free of socket traffic.
+        if ai_status != daemon_status {
+            if let Err(error) = client
+                .set_ai_status(&session_name, ai_status.as_deref())
+                .await
+            {
+                crate::logger::emit_log(
+                    "warn",
+                    "pty",
+                    &format!("failed to publish AI status for {session_name}: {error}"),
+                );
+            }
+        }
+
         let mut state = lock_recover(&tracked);
-        let bell = consume_bell_edge(&mut state.last_bell_flag, bell_flag);
         let ai_changed = ai_status != state.last_ai_status;
         if ai_changed {
             // Track running→idle transition for attention timeout.
@@ -2008,6 +2393,12 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
             }
             state.last_ai_status = ai_status.clone();
         }
+        // DELTA EMISSION (unchanged contract): the daemon hands us one row per live
+        // session per poll, but grove emits an event ONLY on a bell or a CHANGED
+        // status — never a row-per-tick stream. The bell needs no local edge detector:
+        // the daemon DRAINS it, so `true` is already "a bell since the last poll" (and
+        // two bells on two consecutive ticks both report, which a rising-edge filter
+        // over a latched flag would have swallowed).
         if bell || ai_changed {
             events.push(PtyBellEvent {
                 pty_id,
@@ -2020,6 +2411,41 @@ pub fn poll_bell_events() -> Result<Vec<PtyBellEvent>, String> {
     Ok(events)
 }
 
+/// One tick's worth of hookless-tool probing inputs: the machine's process table plus
+/// each daemon session's child pid. Collected at most once per poll, and only when a
+/// pane actually needs a probe (the common steady state — every pane claimed by a
+/// hooked tool, or no AI tool at all — pays nothing).
+struct HooklessProbe {
+    processes: Vec<ProcessSnapshot>,
+    /// Daemon session id → child-shell pid (the root of the pane's process tree).
+    pids: HashMap<String, u32>,
+}
+
+impl HooklessProbe {
+    async fn collect(client: &daemon::DaemonClient) -> Self {
+        let processes = list_process_snapshots().unwrap_or_default();
+        // A failed `listSessions` degrades to "no pids" → no live-tool detection.
+        let pids = client
+            .list_sessions()
+            .await
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter_map(|session| Some((session.session_id, session.pid?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { processes, pids }
+    }
+
+    fn live_hookless_tool(&self, session_id: &str) -> Option<&'static str> {
+        detect_live_hookless_tool_in_session_from_processes(
+            self.pids.get(session_id).copied(),
+            &self.processes,
+        )
+    }
+}
+
 pub struct PtySessionResource;
 
 impl WorktreeResource for PtySessionResource {
@@ -2028,11 +2454,11 @@ impl WorktreeResource for PtySessionResource {
     }
 
     fn on_remove(&self, worktree_path: &str) -> Result<(), String> {
-        close_ptys_for_worktree(worktree_path)
+        close_ptys_for_worktree_blocking(worktree_path)
     }
 }
 
-pub fn save_terminal_session_snapshot(
+pub async fn save_terminal_session_snapshot(
     request: SaveTerminalSessionSnapshotRequest,
 ) -> Result<TerminalSessionSnapshot, String> {
     let worktree_path = request.worktree_path.trim();
@@ -2060,7 +2486,7 @@ pub fn save_terminal_session_snapshot(
                 "Duplicate paneId in terminal snapshot request: {pane_id}"
             ));
         }
-        panes.push(build_pane_snapshot(pane)?);
+        panes.push(build_pane_snapshot(pane).await?);
     }
 
     let snapshot = TerminalSessionSnapshot {
@@ -2085,7 +2511,9 @@ pub fn load_terminal_session_snapshot(
     Ok(store.worktrees.get(worktree_path).cloned())
 }
 
-fn build_pane_snapshot(input: &TerminalPaneSnapshotInput) -> Result<TerminalPaneSnapshot, String> {
+async fn build_pane_snapshot(
+    input: &TerminalPaneSnapshotInput,
+) -> Result<TerminalPaneSnapshot, String> {
     let runtime_state = input
         .pty_id
         .as_deref()
@@ -2110,14 +2538,19 @@ fn build_pane_snapshot(input: &TerminalPaneSnapshotInput) -> Result<TerminalPane
             })?,
     };
 
-    let last_known_cwd = runtime_state
-        .as_ref()
-        .and_then(resolve_live_cwd)
-        .or_else(|| {
-            runtime_state
-                .as_ref()
-                .and_then(|state| state.last_known_cwd.clone())
-        });
+    // cwd source (design S11/P15): the daemon's OSC-7 tracked cwd, falling back to the
+    // cached `last_known_cwd`. A daemon that is unreachable, lagging, or has not seen
+    // an OSC 7 yet must NEVER fail the snapshot — the snapshot is what restores the
+    // pane, so a missing cwd degrades to the cached/launch cwd instead of erroring.
+    let live_cwd = match runtime_state.as_ref() {
+        Some(state) => daemon_session_cwd(&state.session_name).await,
+        None => None,
+    };
+    let last_known_cwd = live_cwd.or_else(|| {
+        runtime_state
+            .as_ref()
+            .and_then(|state| state.last_known_cwd.clone())
+    });
 
     if let (Some(pty_id), Some(cwd)) = (input.pty_id.as_deref(), last_known_cwd.as_deref()) {
         cache_last_known_cwd(pty_id, cwd)?;
@@ -2146,6 +2579,21 @@ fn build_pane_snapshot(input: &TerminalPaneSnapshotInput) -> Result<TerminalPane
         restore_cwd,
         restore_cwd_source,
     })
+}
+
+/// The daemon's OSC-7 cwd for a session, or `None` on any failure (no client, no
+/// connection, session gone, no OSC 7 seen yet). Deliberately total — see the Why in
+/// [`build_pane_snapshot`].
+async fn daemon_session_cwd(session_id: &str) -> Option<String> {
+    let handle = daemon::get_or_init_client().await.ok()?;
+    handle
+        .client()
+        .cwd(session_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|cwd| cwd.trim().to_string())
+        .filter(|cwd| !cwd.is_empty())
 }
 
 fn runtime_snapshot_for_pty(pty_id: &str) -> Result<Option<PtyRuntimeSnapshot>, String> {
@@ -2220,89 +2668,6 @@ fn runtime_restore_seed<'a>(
     }
 }
 
-fn create_tmux_initial_hydration(capture: &TmuxCapturedContent) -> CreatePtyInitialHydration {
-    CreatePtyInitialHydration {
-        text: String::from_utf8_lossy(&capture.bytes).into_owned(),
-        truncated: capture.truncated,
-        source: CreatePtyInitialHydrationSource::TmuxCapture,
-        // Daemon-snapshot-only fields stay None here so the tmux capture reply
-        // serializes byte-identically to before (skip_serializing_if omits them).
-        snapshot_cols: None,
-        snapshot_rows: None,
-        pending_escape_tail_ansi: None,
-        kitty_keyboard_flags: None,
-        is_alternate_screen: None,
-        is_cold_restore: None,
-    }
-}
-
-fn tmux_capture_scope(pane_in_mode: bool, alternate_on: bool) -> TmuxCaptureScope {
-    if pane_in_mode {
-        TmuxCaptureScope::ModeScreen
-    } else if alternate_on {
-        TmuxCaptureScope::AlternateScreen
-    } else {
-        TmuxCaptureScope::History
-    }
-}
-
-fn capture_tmux_content_with_fallback(
-    session_name: &str,
-    preferred_scope: TmuxCaptureScope,
-) -> Result<TmuxCapturedContent, String> {
-    match preferred_scope {
-        TmuxCaptureScope::History => capture_tmux_content(session_name, TmuxCaptureScope::History),
-        TmuxCaptureScope::AlternateScreen | TmuxCaptureScope::ModeScreen => {
-            capture_tmux_content(session_name, preferred_scope)
-                .or_else(|_| capture_tmux_content(session_name, TmuxCaptureScope::History))
-        }
-    }
-}
-
-fn capture_tmux_content(
-    session_name: &str,
-    scope: TmuxCaptureScope,
-) -> Result<TmuxCapturedContent, String> {
-    let output = match scope {
-        TmuxCaptureScope::History => tmux_output([
-            "capture-pane",
-            "-e",
-            "-p",
-            "-J",
-            "-S",
-            "-",
-            "-t",
-            session_name,
-        ])?,
-        TmuxCaptureScope::AlternateScreen => {
-            tmux_output(["capture-pane", "-a", "-e", "-p", "-J", "-t", session_name])?
-        }
-        TmuxCaptureScope::ModeScreen => {
-            tmux_output(["capture-pane", "-M", "-e", "-p", "-J", "-t", session_name])?
-        }
-    };
-    if !output.status.success() {
-        return Err(format!(
-            "failed to capture tmux pane for {session_name}: {}",
-            tmux_output_message(&output)
-        ));
-    }
-
-    let mut bytes: VecDeque<u8> = VecDeque::new();
-    let mut truncated = false;
-    append_scrollback_capped(
-        &mut bytes,
-        &mut truncated,
-        output.stdout.as_slice(),
-        MAX_SCROLLBACK_BYTES,
-    );
-
-    Ok(TmuxCapturedContent {
-        bytes: Vec::from(bytes),
-        truncated,
-    })
-}
-
 fn required_arg(name: &str, value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -2312,32 +2677,38 @@ fn required_arg(name: &str, value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn apply_portable_terminal_env(cmd: &mut CommandBuilder) {
-    for (key, value) in subprocess_env_pairs() {
-        cmd.env(&key, &value);
-    }
-    cmd.env("TERM", "xterm-256color");
+/// The portable terminal env every grove pane's child gets. The daemon spawns the
+/// child, so these ride `createOrAttach.env` (which the daemon layers on top of its
+/// inherited env).
+fn portable_terminal_env_pairs() -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = subprocess_env_pairs().into_iter().collect();
+    env.push(("TERM".to_string(), "xterm-256color".to_string()));
     // Why: advertise Grove so tools (and the user's shell prompt) can detect the
     // host terminal the same way they detect iTerm/Apple_Terminal.
-    cmd.env("TERM_PROGRAM", "Grove");
-    cmd.env("TERM_PROGRAM_VERSION", crate::app_version());
+    env.push(("TERM_PROGRAM".to_string(), "Grove".to_string()));
+    env.push(("TERM_PROGRAM_VERSION".to_string(), crate::app_version()));
     let locale = preferred_utf8_locale();
-    cmd.env("LC_ALL", &locale);
-    cmd.env("LANG", &locale);
-    cmd.env("LC_CTYPE", &locale);
+    env.push(("LC_ALL".to_string(), locale.clone()));
+    env.push(("LANG".to_string(), locale.clone()));
+    env.push(("LC_CTYPE".to_string(), locale));
+    env
 }
 
-fn apply_tmux_command_env(cmd: &mut Command) {
-    for (key, value) in subprocess_env_pairs() {
-        cmd.env(key, value);
-    }
-    let locale = preferred_utf8_locale();
-    cmd.env("LC_ALL", &locale);
-    cmd.env("LANG", &locale);
-    cmd.env("LC_CTYPE", &locale);
+/// The daemon session id for a pane: `grove-{hash(worktree)}-{pane}` (design G6).
+/// Stable across relaunches — it IS the reattach identity — and its worktree-hash
+/// prefix is what terminal GC uses to attribute a daemon session to a worktree
+/// (`session_worktree_prefix`). Exposed so callers/tests can name a session without
+/// re-deriving the hash.
+pub fn daemon_session_id(worktree_path: &str, pane_id: &str) -> String {
+    grove_session_name(worktree_path, pane_id)
 }
 
-fn grove_tmux_session_name(worktree_path: &str, pane_id: &str) -> String {
+/// FROZEN OUTPUT. This id names a pane's session on disk (history dir) and in the
+/// daemon; changing a single byte of it silently orphans every terminal every user
+/// already has. It kept the `grove-` prefix and the exact hash shape across the tmux
+/// → daemon cutover for precisely that reason. Pinned by
+/// `grove_session_name_is_stable_and_namespaced`.
+fn grove_session_name(worktree_path: &str, pane_id: &str) -> String {
     format!(
         "grove-{}-{}",
         short_hash(worktree_path, WORKTREE_HASH_LEN),
@@ -2371,551 +2742,20 @@ fn short_hash(input: &str, len: usize) -> String {
     hex
 }
 
-fn ensure_grove_tmux_session(
-    session_name: &str,
-    worktree_path: &str,
-    pane_id: &str,
-    cwd: &str,
-) -> Result<CreatePtySessionState, String> {
-    if tmux_session_exists(session_name)? {
-        verify_grove_tmux_session(session_name, worktree_path, pane_id)?;
-        return Ok(CreatePtySessionState::Attached);
-    }
-
-    let created_session = create_tmux_session(session_name, cwd)?;
-    if created_session {
-        if let Err(error) = set_grove_tmux_metadata(session_name, worktree_path, pane_id) {
-            let _ = kill_tmux_session_if_exists(session_name);
-            return Err(error);
-        }
-
-        verify_grove_tmux_session(session_name, worktree_path, pane_id)?;
-        return Ok(CreatePtySessionState::Created);
-    }
-
-    verify_grove_tmux_session(session_name, worktree_path, pane_id)?;
-    Ok(CreatePtySessionState::Attached)
-}
-
-fn grove_tmux_environment(session_name: &str) -> Vec<(&'static str, String)> {
-    let locale = preferred_utf8_locale();
-    let mut vars = vec![
-        ("GROVE_TMUX_SESSION", session_name.to_string()),
-        ("PATH", enriched_path().to_string()),
-        ("LANG", locale.clone()),
-        ("LC_CTYPE", locale),
-        // Why: advertise Grove into the tmux session environment so panes inherit
-        // the same TERM_PROGRAM signal as the direct-spawn path.
-        ("TERM_PROGRAM", "Grove".to_string()),
-        ("TERM_PROGRAM_VERSION", crate::app_version()),
-    ];
-    if let Some(ssh_auth_sock) = preferred_ssh_auth_sock() {
-        vars.push(("SSH_AUTH_SOCK", ssh_auth_sock));
-    }
-    if let Some(zdotdir) = tool_hooks::grove_zdotdir() {
-        vars.push(("GROVE_REAL_ZDOTDIR", grove_real_zdotdir()));
-        vars.push(("ZDOTDIR", zdotdir));
-    }
-    vars
-}
-
-fn grove_real_zdotdir() -> String {
-    let real_zdotdir = env::var("ZDOTDIR").unwrap_or_default();
-    let grove_zsh = tool_hooks::grove_zdotdir();
-
-    // If ZDOTDIR is set and it's NOT our own Grove zsh dir, honour it.
-    if !real_zdotdir.is_empty() && grove_zsh.as_deref() != Some(real_zdotdir.as_str()) {
-        return real_zdotdir;
-    }
-
-    dirs::home_dir()
-        .map(|home| home.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-fn create_tmux_session(session_name: &str, cwd: &str) -> Result<bool, String> {
-    let mut command = Command::new("tmux");
-    command.args(["-u", "new-session", "-d", "-s", session_name, "-c", cwd]);
-    for (key, value) in grove_tmux_environment(session_name) {
-        command.arg("-e").arg(format!("{key}={value}"));
-    }
-    apply_tmux_command_env(&mut command);
-    let output = command.output().map_err(tmux_command_error)?;
-    if output.status.success() {
-        return Ok(true);
-    }
-
-    let message = tmux_output_message(&output);
-    if message.contains("duplicate session") {
-        return Ok(false);
-    }
-
-    Err(format!(
-        "failed to create tmux session {session_name}: {message}"
-    ))
-}
-
-fn set_grove_tmux_metadata(
-    session_name: &str,
-    worktree_path: &str,
-    pane_id: &str,
-) -> Result<(), String> {
-    tmux_set_option(session_name, TMUX_GROVE_MANAGED_OPTION, "1")?;
-    tmux_set_option(session_name, TMUX_GROVE_WORKTREE_OPTION, worktree_path)?;
-    tmux_set_option(session_name, TMUX_GROVE_PANE_ID_OPTION, pane_id)?;
-    refresh_grove_tmux_environment(session_name)?;
-    enforce_grove_tmux_options(session_name)?;
-    Ok(())
-}
-
-fn refresh_grove_tmux_environment(session_name: &str) -> Result<(), String> {
-    for (key, value) in grove_tmux_environment(session_name) {
-        tmux_set_session_environment(session_name, key, &value)?;
-    }
-    Ok(())
-}
-
-/// Options that must be applied on every session open — both new and existing.
-/// Adding a new enforced option here guarantees it takes effect on the next
-/// attach even for sessions created before the option existed.
-fn enforce_grove_tmux_options(session_name: &str) -> Result<(), String> {
-    tmux_set_option(session_name, TMUX_STATUS_OPTION, TMUX_STATUS_OFF_VALUE)?;
-    tmux_set_option(session_name, TMUX_MOUSE_OPTION, TMUX_MOUSE_ON_VALUE)?;
-    tmux_set_window_option(
-        session_name,
-        TMUX_MONITOR_BELL_OPTION,
-        TMUX_MONITOR_BELL_ON_VALUE,
-    )?;
-    tmux_set_server_option(TMUX_ESCAPE_TIME_OPTION, TMUX_ESCAPE_TIME_VALUE)?;
-    Ok(())
-}
-
-fn verify_grove_tmux_session(
-    session_name: &str,
-    worktree_path: &str,
-    pane_id: &str,
-) -> Result<(), String> {
-    let managed = tmux_session_option(session_name, TMUX_GROVE_MANAGED_OPTION)?;
-    if managed.as_deref() != Some("1") {
-        return Err(format!(
-            "tmux session {session_name} exists but is not a matching Grove-managed session"
-        ));
-    }
-
-    let actual_worktree = tmux_session_option(session_name, TMUX_GROVE_WORKTREE_OPTION)?;
-    if actual_worktree.as_deref() != Some(worktree_path) {
-        return Err(format!(
-            "tmux session {session_name} exists but belongs to a different worktree"
-        ));
-    }
-
-    let actual_pane_id = tmux_session_option(session_name, TMUX_GROVE_PANE_ID_OPTION)?;
-    if actual_pane_id.as_deref() != Some(pane_id) {
-        return Err(format!(
-            "tmux session {session_name} exists but belongs to a different pane"
-        ));
-    }
-
-    refresh_grove_tmux_environment(session_name)?;
-    enforce_grove_tmux_options(session_name)?;
-
-    Ok(())
-}
-
-fn tmux_session_exists(session_name: &str) -> Result<bool, String> {
-    let output = tmux_output(["has-session", "-t", session_name])?;
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(format!(
-            "failed to query tmux session {session_name}: {}",
-            tmux_output_message(&output)
-        )),
-    }
-}
-
-fn tmux_set_server_option(option: &str, value: &str) -> Result<(), String> {
-    let output = tmux_output(["set-option", "-sg", option, value])?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "failed to set tmux server option {option}: {}",
-        tmux_output_message(&output)
-    ))
-}
-
-fn clear_tmux_history(target: &str) -> Result<(), String> {
-    let output = tmux_output(["clear-history", "-t", target])?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "failed to clear tmux history for {target}: {}",
-        tmux_output_message(&output)
-    ))
-}
-
-fn tmux_set_option(session_name: &str, option: &str, value: &str) -> Result<(), String> {
-    let output = tmux_output(["set-option", "-q", "-t", session_name, option, value])?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let message = tmux_output_message(&output);
-    if tmux_session_missing(&message) {
-        return Ok(());
-    }
-    Err(format!(
-        "failed to set tmux option {option} on {session_name}: {message}"
-    ))
-}
-
-fn tmux_set_session_environment(session_name: &str, key: &str, value: &str) -> Result<(), String> {
-    let output = tmux_output(["set-environment", "-t", session_name, key, value])?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "failed to set tmux environment {key} on {session_name}: {}",
-        tmux_output_message(&output)
-    ))
-}
-
-#[cfg(test)]
-fn tmux_session_environment_value(session_name: &str, key: &str) -> Result<Option<String>, String> {
-    let output = tmux_output(["show-environment", "-t", session_name, key])?;
-    if output.status.success() {
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if let Some((_, raw)) = value.split_once('=') {
-            return if raw.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(raw.to_string()))
-            };
-        }
-
-        return if value.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(value))
-        };
-    }
-
-    let message = tmux_output_message(&output);
-    if output.status.code() == Some(1)
-        && (message.contains(format!("unknown variable: {key}").as_str()) || message.is_empty())
-    {
-        return Ok(None);
-    }
-
-    Err(format!(
-        "failed to query tmux environment {key} on {session_name}: {message}"
-    ))
-}
-
-fn tmux_set_window_option(session_name: &str, option: &str, value: &str) -> Result<(), String> {
-    let output = tmux_output(["set-window-option", "-q", "-t", session_name, option, value])?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "failed to set tmux window option {option} on {session_name}: {}",
-        tmux_output_message(&output)
-    ))
-}
-
-fn tmux_session_option(session_name: &str, option: &str) -> Result<Option<String>, String> {
-    let output = tmux_output(["show-options", "-qv", "-t", session_name, option])?;
-    if output.status.success() {
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return if value.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(value))
-        };
-    }
-
-    let message = tmux_output_message(&output);
-    if output.status.code() == Some(1)
-        && (message.contains("invalid option")
-            || message.contains("unknown option")
-            || message.contains("no option")
-            || message.is_empty())
-    {
-        return Ok(None);
-    }
-
-    Err(format!(
-        "failed to query tmux option {option} on {session_name}: {message}"
-    ))
-}
-
-fn tmux_session_attached_count(session_name: &str) -> Result<u32, String> {
-    let attached = tmux_display_message_value(session_name, "#{session_attached}")?
-        .unwrap_or_else(|| "0".to_string());
-    attached.parse::<u32>().map_err(|error| {
-        format!("failed to parse attached client count for {session_name}: {attached} ({error})")
-    })
-}
-
-fn kill_tmux_session_if_exists(session_name: &str) -> Result<(), String> {
-    let output = tmux_output(["kill-session", "-t", session_name])?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let message = tmux_output_message(&output);
-    if output.status.code() == Some(1)
-        && (message.contains("can't find session") || message.contains("no server running"))
-    {
-        return Ok(());
-    }
-
-    Err(format!(
-        "failed to kill tmux session {session_name}: {message}"
-    ))
-}
-
-fn close_orphaned_tmux_sessions_for_worktree(worktree_path: &str) -> Result<(), String> {
-    for session_name in list_grove_tmux_sessions()? {
-        let managed = match tmux_session_option(&session_name, TMUX_GROVE_MANAGED_OPTION) {
-            Ok(value) => value,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect tmux session {session_name} for worktree {worktree_path}: {error}"
-                );
-                continue;
-            }
-        };
-        if managed.as_deref() != Some("1") {
-            continue;
-        }
-
-        let session_worktree = match tmux_session_option(&session_name, TMUX_GROVE_WORKTREE_OPTION)
-        {
-            Ok(value) => value,
-            Err(error) if tmux_session_missing(&error) => continue,
-            Err(error) => {
-                eprintln!(
-                    "Warning: failed to inspect tmux session {session_name} for worktree {worktree_path}: {error}"
-                );
-                continue;
-            }
-        };
-        if session_worktree.as_deref() != Some(worktree_path) {
-            continue;
-        }
-
-        if let Err(error) = kill_tmux_session_if_exists(&session_name) {
-            eprintln!(
-                "Warning: failed to close orphaned tmux session {session_name} for worktree {worktree_path}: {error}"
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn list_grove_tmux_sessions() -> Result<Vec<String>, String> {
-    let output = match tmux_output(["list-sessions", "-F", "#{session_name}"]) {
-        Ok(output) => output,
-        Err(error) if error == TMUX_NOT_FOUND_ERROR => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    if !output.status.success() {
-        let message = tmux_output_message(&output);
-        if message.contains("no server running") {
-            return Ok(Vec::new());
-        }
-
-        return Err(format!("failed to list tmux sessions: {message}"));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|session_name| !session_name.is_empty() && session_name.starts_with("grove-"))
-        .map(str::to_string)
-        .collect())
-}
-
-fn tmux_session_missing(error: &str) -> bool {
-    error.contains("can't find session") || error.contains("no server running")
-}
-
-fn tmux_output<const N: usize>(args: [&str; N]) -> Result<Output, String> {
-    Command::new("tmux")
-        .args(args)
-        .env("PATH", enriched_path())
-        .output()
-        .map_err(tmux_command_error)
-}
-
-fn tmux_command_error(error: std::io::Error) -> String {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        TMUX_NOT_FOUND_ERROR.to_string()
-    } else {
-        format!("failed to execute tmux: {error}")
-    }
-}
-
-fn tmux_output_message(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !stderr.is_empty() {
-        return stderr;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stdout.is_empty() {
-        return stdout;
-    }
-
-    format!("tmux exited with status {}", output.status)
-}
-
-fn tmux_pane_in_mode(session_name: &str) -> Result<bool, String> {
-    Ok(tmux_display_message_value(session_name, "#{pane_in_mode}")?.as_deref() == Some("1"))
-}
-
-fn tmux_pane_alternate_on(session_name: &str) -> Result<bool, String> {
-    Ok(tmux_display_message_value(session_name, "#{alternate_on}")?.as_deref() == Some("1"))
-}
-
-fn tmux_display_message_value(session_name: &str, format: &str) -> Result<Option<String>, String> {
-    let output = tmux_output(["display-message", "-p", "-t", session_name, format])?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to read tmux display message for {session_name}: {}",
-            tmux_output_message(&output)
-        ));
-    }
-
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
-fn resolve_live_cwd(runtime_state: &PtyRuntimeSnapshot) -> Option<String> {
-    resolve_tmux_session_cwd(&runtime_state.session_name)
-        .or_else(|| resolve_process_cwd(runtime_state.process_id))
-}
-
-fn resolve_tmux_session_cwd(session_name: &str) -> Option<String> {
-    tmux_display_message_value(session_name, "#{pane_current_path}")
-        .ok()
-        .flatten()
-}
-
-fn resolve_process_cwd(process_id: Option<u32>) -> Option<String> {
-    let process_id = process_id?;
-
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_link(format!("/proc/{process_id}/cwd"))
-            .ok()
-            .map(|path| path.to_string_lossy().into_owned())
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("lsof")
-            .args(["-a", "-d", "cwd", "-Fn", "-p", &process_id.to_string()])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-
-        String::from_utf8(output.stdout)
-            .ok()?
-            .lines()
-            .find_map(|line| line.strip_prefix('n').map(str::to_string))
-            .filter(|cwd| !cwd.trim().is_empty())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
-}
-
-fn consume_bell_edge(previous_flag: &mut bool, current_flag: bool) -> bool {
-    let triggered = current_flag && !*previous_flag;
-    *previous_flag = current_flag;
-    triggered
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::env_lock;
     use crate::TerminalPaneSnapshotInput;
-    use std::fmt;
     use std::fs;
     use std::io;
-    use std::path::{Path, PathBuf};
-    use std::process::Output;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::path::PathBuf;
     use std::thread::sleep;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
     use uuid::Uuid;
-
-    const ZDOTDIR_CHILD_ENV: &str = "GROVE_PTY_ZDOTDIR_CHILD";
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()))
-    }
-
-    fn assert_subprocess_success(output: &Output, context: &str) {
-        if output.status.success() {
-            return;
-        }
-
-        panic!(
-            "{context} failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn shell_single_quote(value: &str) -> String {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
-
-    fn wait_for_file_contents(path: &Path) -> String {
-        for _ in 0..20 {
-            if let Ok(contents) = fs::read_to_string(path) {
-                let trimmed = contents.trim().to_string();
-                if !trimmed.is_empty() {
-                    return trimmed;
-                }
-            }
-            sleep(Duration::from_millis(100));
-        }
-
-        panic!("timed out waiting for {}", path.display());
-    }
-
-    fn wait_for_atomic(counter: &AtomicUsize, expected: usize, context: &str) {
-        for _ in 0..20 {
-            if counter.load(Ordering::SeqCst) == expected {
-                return;
-            }
-            sleep(Duration::from_millis(25));
-        }
-
-        panic!(
-            "timed out waiting for {context}; expected {expected}, got {}",
-            counter.load(Ordering::SeqCst)
-        );
     }
 
     struct TestHome {
@@ -3016,8 +2856,8 @@ mod tests {
         assert!(plan.skipped_attached_worktree_paths.is_empty());
     }
 
-    #[test]
-    fn empty_snapshot_request_removes_saved_snapshot_for_worktree() {
+    #[tokio::test]
+    async fn empty_snapshot_request_removes_saved_snapshot_for_worktree() {
         let _env = env_lock();
         let _home = TestHome::new();
         let worktree_path = unique_test_dir("grove-terminal-snapshot-clear");
@@ -3032,6 +2872,7 @@ mod tests {
                 launch_cwd: Some(worktree_path_str.clone()),
             }],
         })
+        .await
         .unwrap();
         assert!(load_terminal_session_snapshot(&worktree_path_str)
             .unwrap()
@@ -3041,6 +2882,7 @@ mod tests {
             worktree_path: worktree_path_str.clone(),
             panes: Vec::new(),
         })
+        .await
         .unwrap();
 
         assert_eq!(cleared.worktree_path, worktree_path_str);
@@ -3050,22 +2892,6 @@ mod tests {
             .is_none());
 
         let _ = fs::remove_dir_all(worktree_path);
-    }
-
-    struct TmuxSessionGuard {
-        session_name: String,
-    }
-
-    impl TmuxSessionGuard {
-        fn new(session_name: String) -> Self {
-            Self { session_name }
-        }
-    }
-
-    impl Drop for TmuxSessionGuard {
-        fn drop(&mut self) {
-            let _ = kill_tmux_session_if_exists(&self.session_name);
-        }
     }
 
     struct NoopSink;
@@ -3085,27 +2911,26 @@ mod tests {
         }
     }
 
-    /// Read implementation that yields a fixed script of chunks then EOF.
-    struct ScriptedReader {
-        chunks: Vec<Vec<u8>>,
-        idx: usize,
+    /// Records every emit, and STALLS inside the first one after signalling — the
+    /// window a racing `on_data` needs to overtake the replay gate's drain.
+    struct RacingSink {
+        calls: Mutex<Vec<Vec<u8>>>,
+        first: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     }
 
-    impl io::Read for ScriptedReader {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            if self.idx >= self.chunks.len() {
-                return Ok(0);
+    impl PtyEventSink for RacingSink {
+        fn on_output(&self, _pty_id: &str, data: &[u8]) {
+            self.calls.lock().unwrap().push(data.to_vec());
+            let signal = self.first.lock().unwrap().take();
+            if let Some(tx) = signal {
+                let _ = tx.send(());
+                sleep(Duration::from_millis(150));
             }
-            let chunk = &self.chunks[self.idx];
-            self.idx += 1;
-            let n = chunk.len().min(buf.len());
-            buf[..n].copy_from_slice(&chunk[..n]);
-            Ok(n)
         }
     }
 
     /// Write implementation whose `write` blocks until a gate is released,
-    /// used to simulate a stalled `write_all` (tmux input buffer full).
+    /// used to simulate a stalled `write_all` (a wedged PTY master).
     struct BlockingWriter {
         gate: Arc<(Mutex<bool>, Condvar)>,
     }
@@ -3166,16 +2991,55 @@ mod tests {
         }
     }
 
-    fn new_mock_master() -> Box<dyn MasterPty + Send> {
-        native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap()
-            .master
+    /// A pane registered against the daemon-era registry: no local writer/master/child
+    /// (the daemon owns those now), just the routing identity + runtime state.
+    fn register_mock_pty(session_name: String) -> String {
+        register_mock_pty_in(session_name, "/tmp/grove/worktree".to_string())
+    }
+
+    fn register_mock_pty_in(session_name: String, worktree_path: String) -> String {
+        let pty_id = format!("pty-{}", Uuid::new_v4().simple());
+        let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
+            worktree_path.clone(),
+            None,
+            session_name.clone(),
+            80,
+            24,
+            None,
+            None,
+        )));
+        let sink: Arc<dyn PtyEventSink> = Arc::new(NoopSink);
+        let subscriber = Arc::new(DaemonSinkAdapter::new(
+            pty_id.clone(),
+            session_name.clone(),
+            Arc::clone(&sink),
+            Arc::clone(&tracked),
+        ));
+        // Registered panes are past `create`, so their replay gate is already open.
+        subscriber.open_gate(None, || {});
+
+        registry().lock().unwrap().insert(
+            pty_id.clone(),
+            PtyInstance {
+                session_name,
+                worktree_path,
+                sink,
+                subscriber,
+                tracked,
+            },
+        );
+
+        pty_id
+    }
+
+    fn tracked_for(pty_id: &str) -> Arc<Mutex<PtyRuntimeState>> {
+        let reg = registry().lock().unwrap();
+        Arc::clone(&reg.get(pty_id).unwrap().tracked)
+    }
+
+    fn subscriber_for(pty_id: &str) -> Arc<DaemonSinkAdapter> {
+        let reg = registry().lock().unwrap();
+        Arc::clone(&reg.get(pty_id).unwrap().subscriber)
     }
 
     #[test]
@@ -3198,73 +3062,242 @@ mod tests {
     }
 
     #[test]
-    fn flushes_small_tail_within_window_and_on_eof() {
+    fn flushes_small_tail_on_close() {
         let sink = Arc::new(CollectingSink::default());
         let coalescer =
             OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, "pty-eof".into());
+
+        // A sub-threshold tail must still reach the sink when the producer ends.
+        coalescer.push(b"tail");
+        coalescer.close();
+
+        // Give the flusher thread a moment to emit the final tail.
+        sleep(Duration::from_millis(20));
+        assert_eq!(sink.calls.lock().unwrap().concat(), b"tail");
+    }
+
+    /// The sink adapter is the ONLY remaining feed for `last_output_at` (the hookless
+    /// AI-status idle clock) and for the local scrollback mirror that
+    /// `save_terminal_session_snapshot` persists. A regression here freezes the status
+    /// machine silently, so assert both stamps plus the transport hand-off.
+    #[test]
+    fn stream_sink_stamps_runtime_state_before_forwarding_output() {
+        let sink = Arc::new(CollectingSink::default());
         let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
             "/tmp/grove/worktree".into(),
             None,
             "grove-test".into(),
+            80,
+            24,
             None,
             None,
         )));
-        let reader = Box::new(ScriptedReader {
-            chunks: vec![b"tail".to_vec()],
-            idx: 0,
-        });
+        let adapter = DaemonSinkAdapter::new(
+            "pty-sink".into(),
+            "grove-test".into(),
+            Arc::clone(&sink) as Arc<dyn PtyEventSink>,
+            Arc::clone(&tracked),
+        );
+        adapter.open_gate(None, || {});
 
-        // Drives push then EOF → close(); the flusher emits the pending tail.
-        read_pty_output(reader, coalescer, Arc::clone(&tracked));
+        adapter.on_data(5, b"hello");
 
-        // Give the flusher thread a moment to emit the final tail.
-        sleep(Duration::from_millis(20));
-
-        let calls = sink.calls.lock().unwrap();
-        assert_eq!(calls.concat(), b"tail");
-        // Raw-path bookkeeping stayed per-read despite coalescing.
+        assert_eq!(sink.calls.lock().unwrap().concat(), b"hello");
         let state = tracked.lock().unwrap();
-        assert_eq!(Vec::from(state.scrollback.clone()), b"tail");
-        assert!(state.last_output_at.is_some());
+        assert_eq!(Vec::from(state.scrollback.clone()), b"hello");
+        assert!(
+            state.last_output_at.is_some(),
+            "last_output_at must be stamped — it is the only idle-clock feed left"
+        );
+    }
+
+    /// Frames that land between `subscribe` and the `createOrAttach` reply are held by
+    /// the gate; on release, bytes the warm snapshot already contains are dropped and a
+    /// straddling frame is trimmed to its post-snapshot tail (design S3/P12).
+    #[test]
+    fn stream_sink_gate_drops_bytes_already_in_the_warm_snapshot() {
+        let sink = Arc::new(CollectingSink::default());
+        let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
+            "/tmp/grove/worktree".into(),
+            None,
+            "grove-test".into(),
+            80,
+            24,
+            None,
+            None,
+        )));
+        let adapter = DaemonSinkAdapter::new(
+            "pty-gate".into(),
+            "grove-test".into(),
+            Arc::clone(&sink) as Arc<dyn PtyEventSink>,
+            Arc::clone(&tracked),
+        );
+
+        // Buffered while the RPC is in flight; nothing reaches the sink yet.
+        adapter.on_data(4, b"AAAA"); // bytes 0..4  — fully inside the snapshot
+        adapter.on_data(10, b"BBCCCC"); // bytes 4..10 — straddles seq 6
+        adapter.on_data(13, b"DDD"); // bytes 10..13 — fully after
+        assert!(sink.calls.lock().unwrap().is_empty());
+
+        adapter.open_gate(Some(6), || {});
+
+        assert_eq!(sink.calls.lock().unwrap().concat(), b"CCCCDDD");
     }
 
     #[test]
-    fn write_to_one_pty_does_not_block_writes_to_another() {
-        let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let blocking = Box::new(BlockingWriter {
-            gate: Arc::clone(&gate),
+    fn stream_sink_exit_removes_the_registry_entry_without_emitting_output() {
+        let session_name = format!("grove-test-exit-{}", Uuid::new_v4().simple());
+        let pty_id = register_mock_pty(session_name);
+        let subscriber = subscriber_for(&pty_id);
+        let tracked = tracked_for(&pty_id);
+
+        subscriber.on_exit(ExitStatus {
+            code: Some(0),
+            signal: None,
         });
-        let a = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-write-a-{}", Uuid::new_v4().simple()),
-            blocking,
-            new_mock_master(),
+
+        assert!(
+            !registry().lock().unwrap().contains_key(&pty_id),
+            "exit must reap the registry entry, as the GC reap does today"
         );
-        let b = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-write-b-{}", Uuid::new_v4().simple()),
-            Box::new(io::sink()),
-            new_mock_master(),
+        assert!(tracked.lock().unwrap().reader_exited);
+    }
+
+    /// The gate's drain and `on_data` run on DIFFERENT tasks (`create` vs the client's
+    /// stream reader). A frame that lands mid-drain must never overtake the frames still
+    /// in the buffer — out-of-order bytes are garbage on the wire and garble xterm.
+    /// `RacingSink` stalls inside the first replayed frame and hands a racer thread the
+    /// widest possible window to jump the queue.
+    #[test]
+    fn stream_sink_gate_drain_is_never_overtaken_by_a_concurrent_frame() {
+        let (tx, drain_started) = std::sync::mpsc::channel();
+        let sink = Arc::new(RacingSink {
+            calls: Mutex::new(Vec::new()),
+            first: Mutex::new(Some(tx)),
+        });
+        let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
+            "/tmp/grove/worktree".into(),
+            None,
+            "grove-test".into(),
+            80,
+            24,
+            None,
+            None,
+        )));
+        let adapter = Arc::new(DaemonSinkAdapter::new(
+            "pty-race".into(),
+            "grove-test".into(),
+            Arc::clone(&sink) as Arc<dyn PtyEventSink>,
+            Arc::clone(&tracked),
+        ));
+
+        // Buffered while the RPC is in flight.
+        adapter.on_data(1, b"1");
+        adapter.on_data(2, b"2");
+        adapter.on_data(3, b"3");
+
+        // The stream task: a frame produced while the drain is running.
+        let racer = {
+            let adapter = Arc::clone(&adapter);
+            std::thread::spawn(move || {
+                drain_started
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the drain must reach the sink");
+                adapter.on_data(4, b"R");
+            })
+        };
+
+        adapter.open_gate(None, || {});
+        racer.join().unwrap();
+
+        assert_eq!(
+            sink.calls.lock().unwrap().concat(),
+            b"123R",
+            "a frame arriving mid-drain must be ingested AFTER the buffered frames"
         );
+    }
+
+    /// An `Exit` frame rides the STREAM socket while the `createOrAttach` reply rides the
+    /// CONTROL socket, so an instantly-dying shell can report its exit before `create`
+    /// registers anything. `create` must then not publish the pane at all: a
+    /// subscriber-less entry marked ALIVE only heals on the next GC pass, and until then
+    /// re-creating the same `pty_id` fails with "PTY already exists".
+    #[test]
+    fn stream_sink_exit_before_create_finishes_never_registers_the_dead_pane() {
+        let session_name = format!("grove-test-early-exit-{}", Uuid::new_v4().simple());
+        let pty_id = format!("pty-{}", Uuid::new_v4().simple());
+        let worktree_path = "/tmp/grove/worktree".to_string();
+        let sink: Arc<dyn PtyEventSink> = Arc::new(CollectingSink::default());
+        let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
+            worktree_path.clone(),
+            None,
+            session_name.clone(),
+            80,
+            24,
+            None,
+            None,
+        )));
+        let adapter = Arc::new(DaemonSinkAdapter::new(
+            pty_id.clone(),
+            session_name.clone(),
+            Arc::clone(&sink),
+            Arc::clone(&tracked),
+        ));
+
+        // The shell printed and died while `createOrAttach` was still in flight.
+        adapter.on_data(4, b"bye\n");
+        adapter.on_exit(ExitStatus {
+            code: Some(0),
+            signal: None,
+        });
+
+        // …and only now does `create` get its reply and try to register the pane.
+        let instance = PtyInstance {
+            session_name,
+            worktree_path,
+            sink: Arc::clone(&sink),
+            subscriber: Arc::clone(&adapter),
+            tracked: Arc::clone(&tracked),
+        };
+        let pty_id_for_insert = pty_id.clone();
+        let exited = adapter.open_gate(None, move || {
+            lock_recover(registry()).insert(pty_id_for_insert, instance);
+        });
+
+        assert!(
+            !registry().lock().unwrap().contains_key(&pty_id),
+            "a session the daemon already reported dead must never be registered as alive"
+        );
+        assert!(exited, "create must observe the exit that beat its reply");
+        assert!(
+            tracked.lock().unwrap().reader_exited,
+            "the pane's runtime state must stay marked exited"
+        );
+    }
+
+    /// The ordered per-PTY writer is now constructed DAEMON-side (it is a shared
+    /// grove-core lib, design G3), so these drive `PtyWriter` directly instead of
+    /// through `pty::write` — same machinery, same guarantees, no registry.
+    #[test]
+    fn write_to_one_writer_does_not_block_another() {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let a = PtyWriter::spawn_input_only(
+            Box::new(BlockingWriter {
+                gate: Arc::clone(&gate),
+            }),
+            WRITE_DEADLINE,
+        );
+        let b = PtyWriter::spawn_input_only(Box::new(io::sink()), WRITE_DEADLINE);
 
         // Stall a write to A inside write_all (holding only A's writer lock).
-        let a_id = a.clone();
-        let a_handle = std::thread::spawn(move || write(&a_id, b"blocked"));
-        // Let A's write reach write_all and block on the gate.
+        let a_writer = Arc::clone(&a);
+        let a_handle = std::thread::spawn(move || a_writer.write(b"blocked"));
         sleep(Duration::from_millis(50));
 
-        // B's write must complete even though A is stuck: with the old code
-        // (write_all under the global registry lock) B would block here.
+        // B's write must complete even though A is stuck.
         let (tx, rx) = std::sync::mpsc::channel();
-        let b_id = b.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(write(&b_id, b"ok"));
+            let _ = tx.send(b.write(b"ok"));
         });
         let received = rx.recv_timeout(Duration::from_secs(2));
         assert!(
@@ -3273,42 +3306,33 @@ mod tests {
         );
         assert!(received.unwrap().is_ok());
 
-        // Release A and clean up registry entries.
         {
             let (lock, cvar) = &*gate;
             *lock.lock().unwrap() = true;
             cvar.notify_all();
         }
         let _ = a_handle.join();
-        registry().lock().unwrap().remove(&a);
-        registry().lock().unwrap().remove(&b);
     }
 
     #[test]
     fn writes_stay_in_enqueue_order_under_concurrency() {
         let recorded = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let writer = Box::new(RecordingWriter {
-            recorded: Arc::clone(&recorded),
-        });
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-fifo-{}", Uuid::new_v4().simple()),
-            writer,
-            new_mock_master(),
+        let writer = PtyWriter::spawn_input_only(
+            Box::new(RecordingWriter {
+                recorded: Arc::clone(&recorded),
+            }),
+            WRITE_DEADLINE,
         );
 
         const PRODUCERS: usize = 4;
         const PER: usize = 25;
         let mut handles = Vec::new();
         for p in 0..PRODUCERS {
-            let wid = id.clone();
+            let writer = Arc::clone(&writer);
             handles.push(std::thread::spawn(move || {
                 // Each producer's calls are program-ordered => enqueue-ordered.
                 for i in 0..PER {
-                    write(&wid, format!("p{p}-{i:03}\r").as_bytes()).unwrap();
+                    writer.write(format!("p{p}-{i:03}\r").as_bytes()).unwrap();
                 }
             }));
         }
@@ -3345,33 +3369,23 @@ mod tests {
                 "producer {p}'s batches were reordered"
             );
         }
-        drop(recorded);
-
-        registry().lock().unwrap().remove(&id);
     }
 
     #[test]
     fn write_does_not_resolve_before_writer_received_bytes() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let writer = Box::new(GatedRecordingWriter {
-            recorded: Arc::clone(&recorded),
-            gate: Arc::clone(&gate),
-        });
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-resolve-{}", Uuid::new_v4().simple()),
-            writer,
-            new_mock_master(),
+        let writer = PtyWriter::spawn_input_only(
+            Box::new(GatedRecordingWriter {
+                recorded: Arc::clone(&recorded),
+                gate: Arc::clone(&gate),
+            }),
+            WRITE_DEADLINE,
         );
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let wid = id.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(write(&wid, b"paste-body"));
+            let _ = tx.send(writer.write(b"paste-body"));
         });
 
         // The writer is gated before recording, so write() must NOT have
@@ -3394,34 +3408,25 @@ mod tests {
             .expect("write() must resolve after the writer received the bytes");
         assert!(result.is_ok());
         assert_eq!(*recorded.lock().unwrap(), b"paste-body");
-
-        registry().lock().unwrap().remove(&id);
     }
 
     #[test]
     fn write_deadline_releases_caller_and_teardown_completes() {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let blocking = Box::new(BlockingWriter {
-            gate: Arc::clone(&gate),
-        });
-        let id = register_mock_pty_with_writer_deadline(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-deadline-{}", Uuid::new_v4().simple()),
-            blocking,
-            new_mock_master(),
+        let writer = PtyWriter::spawn_input_only(
+            Box::new(BlockingWriter {
+                gate: Arc::clone(&gate),
+            }),
             Duration::from_millis(200),
         );
 
         // The writer thread blocks forever in write_all; write() must still
         // release the caller at the (injected) deadline with a timeout error.
         let (tx, rx) = std::sync::mpsc::channel();
-        let wid = id.clone();
         let started = Instant::now();
+        let writing = Arc::clone(&writer);
         std::thread::spawn(move || {
-            let _ = tx.send(write(&wid, b"paste-body"));
+            let _ = tx.send(writing.write(b"paste-body"));
         });
         let received = rx
             .recv_timeout(Duration::from_secs(5))
@@ -3435,14 +3440,14 @@ mod tests {
 
         // Teardown must not deadlock even though the writer thread is still stuck
         // inside write_all.
-        let (ctx, crx) = std::sync::mpsc::channel();
-        let close_id = id.clone();
+        let (dtx, drx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = ctx.send(close(&close_id));
+            drop(writer);
+            let _ = dtx.send(());
         });
         assert!(
-            crx.recv_timeout(Duration::from_secs(5)).is_ok(),
-            "close() deadlocked with a blocked writer thread"
+            drx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "writer teardown deadlocked with a blocked writer thread"
         );
 
         // Release the gate so the writer thread exits cleanly instead of leaking.
@@ -3453,354 +3458,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn write_enter_detection_fires_once_per_carriage_return() {
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-enter-{}", Uuid::new_v4().simple()),
-            Box::new(io::sink()),
-            new_mock_master(),
-        );
-        let tracked = {
-            let reg = registry().lock().unwrap();
-            Arc::clone(&reg.get(&id).unwrap().tracked)
-        };
-
-        // Seed a hookless idle status; Enter should flip its idle clock.
-        {
-            let mut state = tracked.lock().unwrap();
-            state.last_ai_status = Some("codex:idle".to_string());
-            state.last_output_at = None;
-        }
-
-        // A write with no `\r` must NOT trigger the transition.
-        write(&id, b"echo hi").unwrap();
-        assert!(
-            tracked.lock().unwrap().last_output_at.is_none(),
-            "a batch without \\r must not fire Enter-detection"
-        );
-
-        // A batch containing `\r` fires it exactly once (idle clock now set).
-        write(&id, b"echo hi\r").unwrap();
-        assert!(
-            tracked.lock().unwrap().last_output_at.is_some(),
-            "a batch with \\r must fire Enter-detection"
-        );
-
-        // While already running, a further `\r` must NOT re-fire it.
-        {
-            let mut state = tracked.lock().unwrap();
-            state.last_ai_status = Some("codex:running".to_string());
-            state.last_output_at = None;
-        }
-        write(&id, b"more\r").unwrap();
-        assert!(
-            tracked.lock().unwrap().last_output_at.is_none(),
-            "a running status must not re-fire Enter-detection"
-        );
-
-        registry().lock().unwrap().remove(&id);
-    }
-
-    #[derive(Clone, Copy)]
-    enum MockChildMode {
-        Running,
-        Exited,
-    }
-
-    #[derive(Default)]
-    struct MockChildState {
-        try_wait_calls: AtomicUsize,
-        kill_calls: AtomicUsize,
-        wait_calls: AtomicUsize,
-    }
-
-    struct MockChild {
-        mode: MockChildMode,
-        state: Arc<MockChildState>,
-    }
-
-    impl fmt::Debug for MockChild {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("MockChild").finish_non_exhaustive()
-        }
-    }
-
-    impl portable_pty::ChildKiller for MockChild {
-        fn kill(&mut self) -> io::Result<()> {
-            self.state.kill_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
-        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
-            Box::new(Self {
-                mode: self.mode,
-                state: Arc::clone(&self.state),
-            })
-        }
-    }
-
-    impl portable_pty::Child for MockChild {
-        fn try_wait(&mut self) -> io::Result<Option<portable_pty::ExitStatus>> {
-            self.state.try_wait_calls.fetch_add(1, Ordering::SeqCst);
-            match self.mode {
-                MockChildMode::Running => Ok(None),
-                MockChildMode::Exited => Ok(Some(portable_pty::ExitStatus::with_exit_code(0))),
-            }
-        }
-
-        fn wait(&mut self) -> io::Result<portable_pty::ExitStatus> {
-            self.state.wait_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(portable_pty::ExitStatus::with_exit_code(0))
-        }
-
-        fn process_id(&self) -> Option<u32> {
-            Some(42)
-        }
-    }
-
-    fn register_mock_pty(child: MockChild, session_name: String) -> String {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
-        let writer = pair.master.take_writer().unwrap();
-        register_mock_pty_with_writer(child, session_name, writer, pair.master)
-    }
-
-    fn register_mock_pty_with_writer(
-        child: MockChild,
-        session_name: String,
-        writer: Box<dyn Write + Send>,
-        master: Box<dyn MasterPty + Send>,
-    ) -> String {
-        register_mock_pty_with_writer_deadline(child, session_name, writer, master, WRITE_DEADLINE)
-    }
-
-    fn register_mock_pty_with_writer_deadline(
-        child: MockChild,
-        session_name: String,
-        writer: Box<dyn Write + Send>,
-        master: Box<dyn MasterPty + Send>,
-        deadline: Duration,
-    ) -> String {
-        let pty_id = format!("pty-{}", Uuid::new_v4().simple());
-        let tracked = Arc::new(Mutex::new(PtyRuntimeState::new(
-            "/tmp/grove/worktree".into(),
-            Some(42),
-            session_name.clone(),
-            None,
-            None,
-        )));
-
-        registry().lock().unwrap().insert(
-            pty_id.clone(),
-            PtyInstance {
-                session_name,
-                worktree_path: "/tmp/grove/worktree".into(),
-                writer: PtyWriter::spawn(writer, Arc::clone(&tracked), deadline),
-                master,
-                child: Box::new(child),
-                tracked,
-            },
-        );
-
-        pty_id
-    }
-
-    #[test]
-    fn parse_applied_pty_size_reads_cols_and_rows() {
+    #[tokio::test]
+    async fn applied_pty_size_returns_none_for_unknown_pty() {
+        // Resolves entirely from the registry — no daemon round trip for a pane that
+        // was never registered (an evicted pane is "gone", not a fault).
         assert_eq!(
-            parse_applied_pty_size("120x40"),
-            Some(AppliedPtySize {
-                cols: 120,
-                rows: 40
-            })
-        );
-        // Why: tmux may pad the readback with surrounding whitespace/newline.
-        assert_eq!(
-            parse_applied_pty_size(" 80 x 24 \n"),
-            Some(AppliedPtySize { cols: 80, rows: 24 })
-        );
-    }
-
-    #[test]
-    fn parse_applied_pty_size_rejects_malformed_or_zero() {
-        assert_eq!(parse_applied_pty_size(""), None);
-        assert_eq!(parse_applied_pty_size("80"), None);
-        assert_eq!(parse_applied_pty_size("80x"), None);
-        assert_eq!(parse_applied_pty_size("x24"), None);
-        assert_eq!(parse_applied_pty_size("abcxdef"), None);
-        assert_eq!(parse_applied_pty_size("80x24x2"), None);
-        // Why: a zero dimension is never a real grid; don't feed it to reconcile.
-        assert_eq!(parse_applied_pty_size("0x24"), None);
-        assert_eq!(parse_applied_pty_size("80x0"), None);
-        // Why: tmux never reports negatives, but guard the u16 parse anyway.
-        assert_eq!(parse_applied_pty_size("-1x24"), None);
-    }
-
-    #[test]
-    fn applied_pty_size_returns_none_for_unknown_pty() {
-        assert_eq!(applied_pty_size("pty-does-not-exist").unwrap(), None);
-    }
-
-    #[test]
-    fn applied_pty_size_reads_back_live_session_and_none_when_gone() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-applied-size-{nonce}");
-        let cwd = env::current_dir().unwrap();
-        let cwd = cwd.to_string_lossy().into_owned();
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-        create_tmux_session(&session_name, &cwd).unwrap();
-
-        let pty_id = register_mock_pty(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            session_name.clone(),
-        );
-
-        // Readback must match tmux's own per-dimension report (parse ground truth).
-        let expected_cols: u16 = tmux_display_message_value(&session_name, "#{pane_width}")
-            .unwrap()
-            .unwrap()
-            .parse()
-            .unwrap();
-        let expected_rows: u16 = tmux_display_message_value(&session_name, "#{pane_height}")
-            .unwrap()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        assert_eq!(
-            applied_pty_size(&pty_id).unwrap(),
-            Some(AppliedPtySize {
-                cols: expected_cols,
-                rows: expected_rows,
-            })
-        );
-
-        // Missing session on a still-registered pane -> None, not an error.
-        kill_tmux_session_if_exists(&session_name).unwrap();
-        assert_eq!(applied_pty_size(&pty_id).unwrap(), None);
-    }
-
-    fn run_zdotdir_tmux_child_assertions() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let home = dirs::home_dir().unwrap();
-        let real_zdotdir = PathBuf::from(env::var("ZDOTDIR").unwrap());
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&real_zdotdir).unwrap();
-
-        let grove_bin = home.join(".grove").join("bin");
-        fs::create_dir_all(&grove_bin).unwrap();
-        tool_hooks::install_zdotdir(&home).unwrap();
-
-        let real_bin = real_zdotdir.join("bin");
-        let real_bin_str = real_bin.to_string_lossy();
-        fs::write(
-            real_zdotdir.join(".zshrc"),
-            format!("export PATH=\"{real_bin_str}:$PATH\"\n"),
-        )
-        .unwrap();
-
-        let session_name = format!("grove-test-zdotdir-{}", Uuid::new_v4().simple());
-        let worktree_path = env::current_dir().unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{}", Uuid::new_v4().simple());
-        let grove_zdotdir = home.join(".grove").join("zsh");
-        let grove_zdotdir_str = grove_zdotdir.to_string_lossy().into_owned();
-        let real_zdotdir_str = real_zdotdir.to_string_lossy().into_owned();
-
-        let _session_guard = TmuxSessionGuard::new(session_name.clone());
-
-        let first =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(first, CreatePtySessionState::Created);
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "ZDOTDIR")
-                .unwrap()
-                .as_deref(),
-            Some(grove_zdotdir_str.as_str())
-        );
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "GROVE_REAL_ZDOTDIR")
-                .unwrap()
-                .as_deref(),
-            Some(real_zdotdir_str.as_str())
-        );
-
-        tmux_set_session_environment(&session_name, "ZDOTDIR", "/tmp/stale-zdotdir").unwrap();
-        tmux_set_session_environment(
-            &session_name,
-            "GROVE_REAL_ZDOTDIR",
-            "/tmp/stale-real-zdotdir",
-        )
-        .unwrap();
-
-        let second =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(second, CreatePtySessionState::Attached);
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "ZDOTDIR")
-                .unwrap()
-                .as_deref(),
-            Some(grove_zdotdir_str.as_str())
-        );
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "GROVE_REAL_ZDOTDIR")
-                .unwrap()
-                .as_deref(),
-            Some(real_zdotdir_str.as_str())
-        );
-
-        let zsh = ["/bin/zsh", "/usr/bin/zsh"]
-            .into_iter()
-            .find(|path| Path::new(path).exists())
-            .unwrap_or("zsh");
-        if Command::new(zsh)
-            .arg("-i")
-            .arg("-c")
-            .arg("exit")
-            .output()
-            .is_err()
-        {
-            return;
-        }
-
-        let path_output = home.join("shell-path.txt");
-        let command = format!(
-            "OUTPUT={}; {zsh} -i -c 'print -r -- \"$PATH\"' > \"$OUTPUT\"",
-            shell_single_quote(path_output.to_string_lossy().as_ref()),
-        );
-        tmux_output(["send-keys", "-t", &session_name, &command, "Enter"]).unwrap();
-
-        let actual_path = wait_for_file_contents(&path_output);
-        let expected_prefix = format!("{}:{}", grove_bin.display(), real_bin.display());
-        assert!(
-            actual_path.starts_with(&expected_prefix),
-            "expected shell PATH to start with {expected_prefix}, got {actual_path}"
+            applied_pty_size("pty-does-not-exist").await.unwrap(),
+            None
         );
     }
 
@@ -3889,38 +3553,60 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The env the daemon spawns the pane's shell with keeps advertising Grove exactly
+    /// as it always has, and adds the two daemon-era session vars.
     #[test]
-    fn grove_tmux_environment_advertises_term_program() {
-        let vars = grove_tmux_environment("grove-test-term-program");
-        let term_program = vars
-            .iter()
-            .find(|(k, _)| *k == "TERM_PROGRAM")
-            .map(|(_, v)| v.as_str());
-        assert_eq!(term_program, Some("Grove"));
+    fn daemon_child_env_advertises_term_program_and_session_vars() {
+        let env = daemon_child_env("grove-abc-pane1");
+        let get = |key: &str| {
+            env.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("{key} present"))
+        };
 
-        let version = vars
-            .iter()
-            .find(|(k, _)| *k == "TERM_PROGRAM_VERSION")
-            .map(|(_, v)| v.clone())
-            .expect("TERM_PROGRAM_VERSION present");
+        assert_eq!(get("TERM"), "xterm-256color");
+        assert_eq!(get("TERM_PROGRAM"), "Grove");
+        let version = get("TERM_PROGRAM_VERSION");
         assert!(!version.is_empty());
         assert_eq!(version, crate::app_version());
+        assert_eq!(get("GROVE_SESSION_ID"), "grove-abc-pane1");
+        // The AI-status file is per-session and lives under the daemon runtime dir.
+        let status_file = env
+            .iter()
+            .find(|(k, _)| k == "GROVE_AI_STATUS_FILE")
+            .map(|(_, v)| v.clone());
+        if let Some(status_file) = status_file {
+            assert!(status_file.ends_with("/ai-status/grove-abc-pane1"), "{status_file}");
+        }
     }
 
+    /// Regression: the daemon rewrite dropped ZDOTDIR from the child env, which silently
+    /// disabled BOTH the `open` link-interception wrapper and the `claude`/`codex` hook
+    /// shims — they reach the shell only because grove's overlay rc prepends
+    /// `~/.grove/bin` to PATH after all user config. The pair must ship together:
+    /// ZDOTDIR points zsh at grove's overlay, GROVE_REAL_ZDOTDIR tells that overlay
+    /// which rc files to source, so omitting the latter silently drops the user's config.
     #[test]
-    fn apply_portable_terminal_env_advertises_term_program() {
-        let mut cmd = CommandBuilder::new("true");
-        apply_portable_terminal_env(&mut cmd);
-        assert_eq!(
-            cmd.get_env("TERM_PROGRAM").and_then(|v| v.to_str()),
-            Some("Grove")
+    fn daemon_child_env_carries_the_zdotdir_overlay_when_installed() {
+        let env = daemon_child_env("grove-abc-pane1");
+        let lookup = |key: &str| {
+            env.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+
+        let Some(grove_zsh) = tool_hooks::grove_zdotdir() else {
+            // Hooks not installed in this environment — nothing to overlay.
+            assert!(lookup("ZDOTDIR").is_none(), "ZDOTDIR without an overlay");
+            return;
+        };
+
+        assert_eq!(lookup("ZDOTDIR").as_deref(), Some(grove_zsh.as_str()));
+        assert!(
+            lookup("GROVE_REAL_ZDOTDIR").is_some_and(|real| real != grove_zsh),
+            "GROVE_REAL_ZDOTDIR must name the USER's zdotdir, never grove's own"
         );
-        let version = cmd
-            .get_env("TERM_PROGRAM_VERSION")
-            .and_then(|v| v.to_str())
-            .expect("TERM_PROGRAM_VERSION present");
-        assert!(!version.is_empty());
-        assert_eq!(version, crate::app_version());
     }
 
     // Why: fallback and set-value in ONE test because APP_VERSION is a process-wide
@@ -4088,13 +3774,14 @@ mod tests {
         assert_eq!(truncated, total_appended > limit);
     }
 
-    #[test]
-    fn pane_snapshot_falls_back_to_launch_cwd_without_live_pty() {
+    #[tokio::test]
+    async fn pane_snapshot_falls_back_to_launch_cwd_without_live_pty() {
         let snapshot = build_pane_snapshot(&TerminalPaneSnapshotInput {
             pane_id: "pane-1".into(),
             pty_id: None,
             launch_cwd: Some("/tmp/grove/worktree".into()),
         })
+        .await
         .unwrap();
 
         assert_eq!(snapshot.pane_id, "pane-1");
@@ -4120,6 +3807,8 @@ mod tests {
             "/tmp/grove/worktree".into(),
             None,
             "grove-test".into(),
+            80,
+            24,
             Some(&restore),
             None,
         );
@@ -4141,6 +3830,8 @@ mod tests {
             "/tmp/grove/worktree".into(),
             None,
             "grove-test".into(),
+            80,
+            24,
             Some(&restore),
             None,
         );
@@ -4149,73 +3840,114 @@ mod tests {
         assert!(state.scrollback_truncated);
     }
 
+    /// The hook channel: a status published into the pane's file is READ and CONSUMED
+    /// on the next poll, and an EMPTY payload is the explicit clear (the daemon-native
+    /// `tmux set-option -u`). Consuming is what stops a stale hook write from
+    /// re-asserting itself over the state machine on every subsequent tick.
     #[test]
-    fn consume_bell_edge_only_triggers_on_rising_edge() {
-        let mut previous = false;
+    fn ai_status_file_is_consumed_on_read_and_empty_means_clear() {
+        let _env = env_lock();
+        let _home = TestHome::new();
+        let session_id = format!("grove-test-{}", Uuid::new_v4().simple());
 
-        assert!(consume_bell_edge(&mut previous, true));
-        assert!(!consume_bell_edge(&mut previous, true));
-        assert!(!consume_bell_edge(&mut previous, false));
-        assert!(consume_bell_edge(&mut previous, true));
+        // No hook wrote anything → no signal at all (leave the daemon's store alone).
+        assert_eq!(consume_ai_status_file(&session_id), None);
+
+        let path = ai_status_file_path(&session_id).expect("the AI-status path resolves");
+        fs::write(&path, "claude:running\n").unwrap();
+        assert_eq!(
+            consume_ai_status_file(&session_id),
+            Some(Some("claude:running".to_string())),
+            "a published status is read (and trimmed)"
+        );
+        assert!(!path.exists(), "reading the file must CONSUME it");
+        assert_eq!(
+            consume_ai_status_file(&session_id),
+            None,
+            "a consumed status must not re-assert on the next tick"
+        );
+
+        fs::write(&path, "").unwrap();
+        assert_eq!(
+            consume_ai_status_file(&session_id),
+            Some(None),
+            "an EMPTY payload is the hook's explicit clear"
+        );
+    }
+
+    /// GC attributes a daemon session to a worktree by the worktree-hash prefix its id
+    /// carries (the daemon stores no worktree path). A session whose prefix matches no
+    /// known worktree is skipped — grove cannot prove whose it is, so it must not kill
+    /// it.
+    #[test]
+    fn daemon_gc_session_infos_attribute_sessions_by_worktree_hash_prefix() {
+        let worktree = "/tmp/grove/worktree-a".to_string();
+        let other = "/tmp/grove/worktree-b".to_string();
+        let mine = daemon_session_id(&worktree, "pane-1");
+        let attached = daemon_session_id(&other, "pane-2");
+
+        let sessions = vec![
+            daemon::SessionInfo {
+                session_id: mine.clone(),
+                is_alive: true,
+                cols: 80,
+                rows: 24,
+                pid: Some(4242),
+            },
+            daemon::SessionInfo {
+                session_id: attached.clone(),
+                is_alive: true,
+                cols: 80,
+                rows: 24,
+                pid: Some(4243),
+            },
+            daemon::SessionInfo {
+                session_id: "grove-ffffffffffff-unknown".to_string(),
+                is_alive: true,
+                cols: 80,
+                rows: 24,
+                pid: Some(4244),
+            },
+        ];
+        let attached_names: HashSet<String> = [attached.clone()].into_iter().collect();
+
+        let infos = daemon_gc_session_infos(
+            &sessions,
+            &[worktree.clone(), other.clone()],
+            &attached_names,
+        );
+
+        assert_eq!(infos.len(), 2, "the unattributable session is skipped");
+        let a = infos
+            .iter()
+            .find(|info| info.session_name == mine)
+            .expect("session a");
+        assert_eq!(a.worktree_path, worktree);
+        assert!(!a.attached, "not held in the pane registry");
+        assert_eq!(a.pane_pid, Some(4242), "the child pid comes from the daemon");
+
+        let b = infos
+            .iter()
+            .find(|info| info.session_name == attached)
+            .expect("session b");
+        assert_eq!(b.worktree_path, other);
+        assert!(b.attached, "a registry-held pane counts as attached");
     }
 
     #[test]
-    fn parse_active_window_bell_flags_keeps_only_active_windows() {
-        let output = "\
-grove-a 1 1
-grove-a 0 0
-grove-b 0 1
-grove-b 1 0
-grove-c 1 0
-";
-        let flags = parse_active_window_bell_flags(output);
-
-        // grove-a: active window has the bell set.
-        assert_eq!(flags.get("grove-a"), Some(&true));
-        // grove-b: the ringing window is inactive, so the active window wins (no OR).
-        assert_eq!(flags.get("grove-b"), Some(&false));
-        assert_eq!(flags.get("grove-c"), Some(&false));
-        assert_eq!(flags.len(), 3);
-    }
-
-    #[test]
-    fn parse_active_window_bell_flags_ignores_malformed_lines() {
-        let output = "\n   \ngrove-a 1\ngrove-b 1 1\n";
-        let flags = parse_active_window_bell_flags(output);
-
-        assert_eq!(flags.get("grove-b"), Some(&true));
-        assert_eq!(flags.len(), 1);
-    }
-
-    #[test]
-    fn parse_session_ai_statuses_maps_unset_option_to_none() {
-        let output = "\
-grove-a codex:running
-grove-b
-grove-c
-";
-        let statuses = parse_session_ai_statuses(output);
-
-        assert_eq!(statuses.get("grove-a"), Some(&Some("codex:running".into())));
-        assert_eq!(statuses.get("grove-b"), Some(&None));
-        assert_eq!(statuses.get("grove-c"), Some(&None));
-        assert_eq!(statuses.len(), 3);
-    }
-
-    #[test]
-    fn parse_active_pane_pids_keeps_only_active_panes() {
-        let output = "\
-grove-a 1 4242
-grove-a 0 111
-grove-b 0 222
-grove-c 1 notapid
-";
-        let pids = parse_active_pane_pids(output);
-
-        assert_eq!(pids.get("grove-a"), Some(&4242));
-        assert_eq!(pids.get("grove-b"), None);
-        assert_eq!(pids.get("grove-c"), None);
-        assert_eq!(pids.len(), 1);
+    fn history_dir_names_round_trip_through_percent_encoding() {
+        let id = daemon_session_id("/tmp/grove/worktree", "pane-1");
+        // grove ids are RFC-3986 unreserved, so the dir name IS the id.
+        assert_eq!(percent_encode_session_id(&id), id);
+        assert_eq!(percent_decode_session_id(&id), Some(id.clone()));
+        // …and a dir name that is not ours decodes back to its id or is rejected.
+        assert_eq!(percent_encode_session_id("a/b"), "a%2Fb");
+        assert_eq!(
+            percent_decode_session_id("a%2Fb"),
+            Some("a/b".to_string()),
+            "the encoder and decoder are inverses"
+        );
+        assert_eq!(percent_decode_session_id("bad%"), None);
     }
 
     #[test]
@@ -4247,6 +3979,8 @@ grove-c 1 notapid
             "/tmp/grove/worktree".into(),
             None,
             "grove-test".into(),
+            80,
+            24,
             Some(&restore),
             None,
         );
@@ -4272,6 +4006,8 @@ grove-c 1 notapid
             "/tmp/grove/worktree".into(),
             None,
             "grove-test".into(),
+            80,
+            24,
             Some(&restore),
             None,
         );
@@ -4281,15 +4017,39 @@ grove-c 1 notapid
         assert!(!state.scrollback_truncated);
     }
 
+    /// GOLDEN PIN — do not "fix" these strings.
+    ///
+    /// A session id names the pane's session in the daemon AND its history dir on disk
+    /// (`~/.grove/daemon/history/<id>`), and it is the identity `createOrAttach` uses to
+    /// re-adopt a live shell across an app relaunch. Change one byte of the hash shape,
+    /// the prefix, or the pane-id sanitizer and EVERY terminal every user already has is
+    /// silently orphaned: warm reattach misses, cold restore misses, the old history dirs
+    /// are GC'd as unreferenced, and the pane comes back as a blank fresh shell.
+    ///
+    /// These values were captured from the pre-daemon (tmux) build and MUST NOT drift.
+    /// The `grove-` prefix is likewise load-bearing: it is what `tmux_sweep` matches when
+    /// it reaps leftover sessions from a pre-daemon build.
     #[test]
-    fn grove_tmux_session_name_is_stable_and_namespaced() {
-        let session_name = grove_tmux_session_name(
+    fn grove_session_name_is_stable_and_namespaced() {
+        let session_name = grove_session_name(
             "/tmp/grove/worktree",
             "550e8400-e29b-41d4-a716-446655440000",
         );
-
         assert!(session_name.starts_with("grove-"));
-        assert_eq!(session_name, "grove-40c3d931f1d8-550e8400a3a9".to_string());
+        assert_eq!(session_name, "grove-40c3d931f1d8-550e8400a3a9");
+
+        // A second fixed input, so a change to EITHER hash (worktree or pane) trips.
+        assert_eq!(
+            grove_session_name("/Users/grove/worktrees/main", "pane-1"),
+            "grove-d22dedc09796-pane1370b"
+        );
+        // `daemon_session_id` is the public alias — it must agree byte-for-byte.
+        assert_eq!(
+            daemon_session_id("/tmp/grove/worktree", "550e8400-e29b-41d4-a716-446655440000"),
+            session_name
+        );
+        // And the GC worktree-attribution prefix must stay a prefix of it.
+        assert!(session_name.starts_with(&session_worktree_prefix("/tmp/grove/worktree")));
     }
 
     #[test]
@@ -4313,425 +4073,26 @@ grove-c 1 notapid
         );
     }
 
+    /// On attach the local scrollback mirror is seeded from the hydration payload (the
+    /// daemon's warm/cold snapshot), so the very first `save_terminal_session_snapshot`
+    /// after a reattach still persists real content.
     #[test]
     fn runtime_state_seeds_attached_scrollback_from_initial_hydration() {
-        let capture = TmuxCapturedContent {
-            bytes: b"live tmux buffer".to_vec(),
-            truncated: true,
-        };
-
         let state = PtyRuntimeState::new(
             "/tmp/grove".into(),
-            Some(123),
-            "grove-session".into(),
             None,
-            Some(&capture),
+            "grove-session".into(),
+            80,
+            24,
+            None,
+            Some(HydrationSeed {
+                bytes: b"live daemon snapshot",
+                truncated: true,
+            }),
         );
 
-        assert_eq!(Vec::from(state.scrollback.clone()), b"live tmux buffer");
+        assert_eq!(Vec::from(state.scrollback.clone()), b"live daemon snapshot");
         assert!(state.scrollback_truncated);
-    }
-
-    #[test]
-    fn tmux_capture_scope_prefers_mode_then_alternate_then_history() {
-        assert_eq!(tmux_capture_scope(true, true), TmuxCaptureScope::ModeScreen);
-        assert_eq!(
-            tmux_capture_scope(false, true),
-            TmuxCaptureScope::AlternateScreen
-        );
-        assert_eq!(tmux_capture_scope(false, false), TmuxCaptureScope::History);
-    }
-
-    #[test]
-    fn create_tmux_initial_hydration_returns_live_tmux_content() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-hydration-{nonce}");
-        let worktree_path = env::current_dir().unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-        let marker = format!("hydrate-{nonce}");
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-        ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path).unwrap();
-
-        sleep(Duration::from_millis(150));
-        tmux_output([
-            "send-keys",
-            "-t",
-            &session_name,
-            &format!("printf '{marker}\\n'"),
-            "Enter",
-        ])
-        .unwrap();
-        sleep(Duration::from_millis(150));
-
-        let hydration = create_tmux_initial_hydration(
-            &capture_tmux_content_with_fallback(&session_name, TmuxCaptureScope::History).unwrap(),
-        );
-        assert_eq!(
-            hydration.source,
-            CreatePtyInitialHydrationSource::TmuxCapture
-        );
-        assert!(!hydration.truncated);
-        assert!(hydration.text.contains(&marker));
-
-        kill_tmux_session_if_exists(&session_name).unwrap();
-    }
-
-    #[test]
-    fn ensure_grove_tmux_session_reports_created_then_attached_and_forces_status_off() {
-        if env::var_os(ZDOTDIR_CHILD_ENV).is_some() {
-            run_zdotdir_tmux_child_assertions();
-            return;
-        }
-
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-{nonce}");
-        let worktree_path = env::current_dir().unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-
-        let first =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(first, CreatePtySessionState::Created);
-        assert_eq!(
-            tmux_session_option(&session_name, TMUX_STATUS_OPTION)
-                .unwrap()
-                .as_deref(),
-            Some(TMUX_STATUS_OFF_VALUE)
-        );
-        assert_eq!(
-            tmux_session_option(&session_name, TMUX_MOUSE_OPTION)
-                .unwrap()
-                .as_deref(),
-            Some(TMUX_MOUSE_ON_VALUE)
-        );
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "GROVE_TMUX_SESSION")
-                .unwrap()
-                .as_deref(),
-            Some(session_name.as_str())
-        );
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "PATH")
-                .unwrap()
-                .as_deref(),
-            Some(enriched_path())
-        );
-
-        tmux_set_option(&session_name, TMUX_STATUS_OPTION, "on").unwrap();
-        tmux_set_session_environment(&session_name, "GROVE_TMUX_SESSION", "stale-session").unwrap();
-        tmux_set_session_environment(&session_name, "PATH", "/tmp/stale-path").unwrap();
-
-        let second =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(second, CreatePtySessionState::Attached);
-        assert_eq!(
-            tmux_session_option(&session_name, TMUX_STATUS_OPTION)
-                .unwrap()
-                .as_deref(),
-            Some(TMUX_STATUS_OFF_VALUE)
-        );
-        assert_eq!(
-            tmux_session_option(&session_name, TMUX_MOUSE_OPTION)
-                .unwrap()
-                .as_deref(),
-            Some(TMUX_MOUSE_ON_VALUE)
-        );
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "GROVE_TMUX_SESSION")
-                .unwrap()
-                .as_deref(),
-            Some(session_name.as_str())
-        );
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "PATH")
-                .unwrap()
-                .as_deref(),
-            Some(enriched_path())
-        );
-
-        kill_tmux_session_if_exists(&session_name).unwrap();
-
-        let child_root = unique_test_dir("grove-pty-zdotdir");
-        let child_home = child_root.join("home");
-        let child_real_zdotdir = child_root.join("real-zdotdir");
-        fs::create_dir_all(&child_home).unwrap();
-        fs::create_dir_all(&child_real_zdotdir).unwrap();
-
-        let output = Command::new(env::current_exe().unwrap())
-            .arg("--exact")
-            .arg("pty::tests::ensure_grove_tmux_session_reports_created_then_attached_and_forces_status_off")
-            .arg("--nocapture")
-            .env(ZDOTDIR_CHILD_ENV, "1")
-            .env("HOME", &child_home)
-            .env("ZDOTDIR", &child_real_zdotdir)
-            .output()
-            .unwrap();
-
-        let _ = fs::remove_dir_all(&child_root);
-        assert_subprocess_success(&output, "zdotdir tmux assertions");
-    }
-
-    #[test]
-    fn ensure_grove_tmux_session_propagates_current_ssh_auth_sock() {
-        let _lock = env_lock();
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let original = env::var_os("SSH_AUTH_SOCK");
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-ssh-auth-{nonce}");
-        let worktree_path = env::current_dir().unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-        let expected_sock = format!("/tmp/grove-ssh-auth-{nonce}.sock");
-
-        unsafe {
-            env::set_var("SSH_AUTH_SOCK", &expected_sock);
-        }
-
-        let _session_guard = TmuxSessionGuard::new(session_name.clone());
-        let _ = kill_tmux_session_if_exists(&session_name);
-
-        let first =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(first, CreatePtySessionState::Created);
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "SSH_AUTH_SOCK")
-                .unwrap()
-                .as_deref(),
-            Some(expected_sock.as_str())
-        );
-
-        tmux_set_session_environment(&session_name, "SSH_AUTH_SOCK", "/tmp/stale-agent.sock")
-            .unwrap();
-
-        let second =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(second, CreatePtySessionState::Attached);
-        assert_eq!(
-            tmux_session_environment_value(&session_name, "SSH_AUTH_SOCK")
-                .unwrap()
-                .as_deref(),
-            Some(expected_sock.as_str())
-        );
-
-        match original {
-            Some(value) => unsafe {
-                env::set_var("SSH_AUTH_SOCK", value);
-            },
-            None => unsafe {
-                env::remove_var("SSH_AUTH_SOCK");
-            },
-        }
-    }
-
-    #[test]
-    fn enforce_grove_tmux_options_restores_overridden_values_on_attach() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-enforce-{nonce}");
-        let worktree_path = env::current_dir().unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-
-        // Create session — enforced options are set.
-        ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path).unwrap();
-
-        // Simulate user or external process overriding every enforced option.
-        tmux_set_option(&session_name, TMUX_STATUS_OPTION, "on").unwrap();
-        tmux_set_option(&session_name, TMUX_MOUSE_OPTION, "off").unwrap();
-
-        // Re-attach — ensure all enforced options are restored.
-        let state =
-            ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path)
-                .unwrap();
-        assert_eq!(state, CreatePtySessionState::Attached);
-        assert_eq!(
-            tmux_session_option(&session_name, TMUX_STATUS_OPTION)
-                .unwrap()
-                .as_deref(),
-            Some(TMUX_STATUS_OFF_VALUE),
-            "status must be restored to off on attach"
-        );
-        assert_eq!(
-            tmux_session_option(&session_name, TMUX_MOUSE_OPTION)
-                .unwrap()
-                .as_deref(),
-            Some(TMUX_MOUSE_ON_VALUE),
-            "mouse must be restored to on on attach"
-        );
-
-        kill_tmux_session_if_exists(&session_name).unwrap();
-    }
-
-    #[test]
-    fn close_ptys_for_worktree_kills_orphaned_tmux_sessions() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-orphan-{nonce}");
-        let worktree_path = env::temp_dir().join(format!("grove-worktree-{nonce}"));
-        std::fs::create_dir_all(&worktree_path).unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-        ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path).unwrap();
-        assert!(tmux_session_exists(&session_name).unwrap());
-
-        // This reproduces the restart case: the tmux session exists, but no live PTY
-        // instance was registered in memory.
-        close_ptys_for_worktree(&worktree_path).unwrap();
-
-        assert!(!tmux_session_exists(&session_name).unwrap());
-
-        let _ = std::fs::remove_dir_all(&worktree_path);
-    }
-
-    #[test]
-    fn startup_cleanup_kills_stale_grove_tmux_sessions() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let session_name = format!("grove-test-startup-stale-{nonce}");
-        let worktree_path = env::temp_dir().join(format!("grove-worktree-startup-stale-{nonce}"));
-        std::fs::create_dir_all(&worktree_path).unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-        ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path).unwrap();
-        assert!(tmux_session_exists(&session_name).unwrap());
-
-        cleanup_stale_tmux_sessions(vec![session_name.clone()], &HashSet::new()).unwrap();
-
-        assert!(!tmux_session_exists(&session_name).unwrap());
-
-        let _ = std::fs::remove_dir_all(&worktree_path);
-    }
-
-    #[test]
-    fn startup_cleanup_preserves_live_registered_tmux_sessions() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let pty_id = format!("pty-{nonce}");
-        let pane_id = format!("pane-{nonce}");
-        let worktree_path = env::temp_dir().join(format!("grove-worktree-startup-live-{nonce}"));
-        std::fs::create_dir_all(&worktree_path).unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let session_name = grove_tmux_session_name(&worktree_path, &pane_id);
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-
-        create(
-            CreatePtyRequest {
-                pty_id: pty_id.clone(),
-                pane_id: pane_id.clone(),
-                worktree_path: worktree_path.clone(),
-                cwd: worktree_path.clone(),
-                cols: 80,
-                rows: 24,
-                restore: None,
-            },
-            Arc::new(NoopSink),
-        )
-        .unwrap();
-        assert!(tmux_session_exists(&session_name).unwrap());
-
-        cleanup_stale_tmux_sessions(vec![session_name.clone()], &HashSet::new()).unwrap();
-
-        assert!(tmux_session_exists(&session_name).unwrap());
-
-        close(&pty_id).unwrap();
-        let _ = std::fs::remove_dir_all(&worktree_path);
-    }
-
-    #[test]
-    fn startup_cleanup_preserves_detached_sessions_present_in_saved_layouts() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let worktree_path =
-            env::temp_dir().join(format!("grove-worktree-startup-restorable-{nonce}"));
-        std::fs::create_dir_all(&worktree_path).unwrap();
-        let worktree_path = worktree_path.to_string_lossy().into_owned();
-        let pane_id = format!("pane-{nonce}");
-        let session_name = grove_tmux_session_name(&worktree_path, &pane_id);
-
-        let _ = kill_tmux_session_if_exists(&session_name);
-        ensure_grove_tmux_session(&session_name, &worktree_path, &pane_id, &worktree_path).unwrap();
-        assert!(tmux_session_exists(&session_name).unwrap());
-
-        let layouts = serde_json::json!({
-            worktree_path.clone(): {
-                "id": pane_id,
-                "type": "leaf"
-            }
-        });
-        let preserved_sessions =
-            restorable_grove_tmux_sessions_from_layouts(&layouts.to_string()).unwrap();
-
-        cleanup_stale_tmux_sessions(vec![session_name.clone()], &preserved_sessions).unwrap();
-
-        assert!(tmux_session_exists(&session_name).unwrap());
-
-        kill_tmux_session_if_exists(&session_name).unwrap();
-        let _ = std::fs::remove_dir_all(&worktree_path);
     }
 
     #[test]
@@ -4740,6 +4101,8 @@ grove-c 1 notapid
             "/tmp/grove/worktree".into(),
             None,
             "grove-test".into(),
+            80,
+            24,
             None,
             None,
         )));
@@ -4759,54 +4122,6 @@ grove-c 1 notapid
         let state = tracked.lock().unwrap();
         assert!(state.scrollback.is_empty());
         assert!(!state.scrollback_truncated);
-    }
-
-    #[test]
-    fn close_reaps_running_child_after_signalling_termination() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let state = Arc::new(MockChildState::default());
-        let session_name = format!("grove-test-close-running-{}", Uuid::new_v4().simple());
-        let pty_id = register_mock_pty(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::clone(&state),
-            },
-            session_name,
-        );
-
-        close(&pty_id).unwrap();
-
-        wait_for_atomic(&state.wait_calls, 1, "running child wait");
-        assert_eq!(state.try_wait_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(state.kill_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(state.wait_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn close_reaps_already_exited_child_without_signalling_it_again() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
-        let state = Arc::new(MockChildState::default());
-        let session_name = format!("grove-test-close-exited-{}", Uuid::new_v4().simple());
-        let pty_id = register_mock_pty(
-            MockChild {
-                mode: MockChildMode::Exited,
-                state: Arc::clone(&state),
-            },
-            session_name,
-        );
-
-        close(&pty_id).unwrap();
-
-        wait_for_atomic(&state.try_wait_calls, 1, "exited child try_wait");
-        assert_eq!(state.try_wait_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(state.kill_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(state.wait_calls.load(Ordering::SeqCst), 0);
     }
 
     /// Run `f` with panic output suppressed so intentional test panics don't
@@ -4829,31 +4144,6 @@ grove-c 1 notapid
         });
     }
 
-    #[derive(Default)]
-    struct CountingLogSink {
-        errors: AtomicUsize,
-    }
-
-    impl crate::logger::LogEventSink for CountingLogSink {
-        fn on_log(&self, level: &str, _tag: &str, _message: &str) {
-            if level == "error" {
-                self.errors.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-    }
-
-    /// Read impl that reports a byte count larger than the caller's buffer,
-    /// forcing the `&buf[..n]` slice in read_pty_output to panic WHILE the
-    /// tracked lock is held — the same failure vector as a panic in
-    /// append_scrollback.
-    struct OverReadingReader;
-
-    impl io::Read for OverReadingReader {
-        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-            Ok(usize::MAX)
-        }
-    }
-
     struct BlockingSink {
         entered: Arc<(Mutex<bool>, Condvar)>,
         release: Arc<(Mutex<bool>, Condvar)>,
@@ -4874,8 +4164,8 @@ grove-c 1 notapid
         }
     }
 
-    #[test]
-    fn poisoned_registry_lock_recovers_for_subsequent_ops() {
+    #[tokio::test]
+    async fn poisoned_registry_lock_recovers_for_subsequent_ops() {
         let _env = env_lock();
 
         // Poison the global registry: a thread panics while holding its lock.
@@ -4896,61 +4186,43 @@ grove-c 1 notapid
             assert!(!guard.contains_key("definitely-missing"));
         }
 
-        // write/close/resize acquire the registry through lock_recover, so they
-        // reach their own not-found logic instead of erroring on the poison.
+        // write/close/resize acquire the registry through lock_recover, so they reach
+        // their own not-found logic instead of erroring on the poison — and they do so
+        // BEFORE any daemon round trip, so this holds with no daemon running.
         let missing = format!("pty-missing-{}", Uuid::new_v4().simple());
         assert_eq!(
-            write(&missing, b"x"),
+            write(&missing, b"x").await,
             Err(format!("PTY not found: {missing}"))
         );
-        assert_eq!(close(&missing), Err(format!("PTY not found: {missing}")));
         assert_eq!(
-            resize(&missing, 80, 24),
+            close(&missing).await,
             Err(format!("PTY not found: {missing}"))
         );
-        assert!(poll_bell_events().is_ok());
+        assert_eq!(
+            resize(&missing, 80, 24).await,
+            Err(format!("PTY not found: {missing}"))
+        );
+        // poll_bell_events reaches the same lock_recover path; with no daemon
+        // configured its RPC may legitimately fail, but it must not panic on the poison.
+        let _ = poll_bell_events().await;
 
         // Restore a clean flag so unrelated tests' .lock().unwrap() don't panic.
         registry().clear_poison();
         assert!(registry().lock().is_ok());
     }
 
+    /// The per-instance `tracked` lock is still grove-owned (the AI-status + snapshot
+    /// state), so a panic while holding it must not brick later ops. The writer lock
+    /// moved into the daemon; `PtyWriter`'s own recovery is covered below.
     #[test]
-    fn poisoned_instance_locks_recover_for_write_and_snapshot() {
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-poison-inst-{}", Uuid::new_v4().simple()),
-            Box::new(io::sink()),
-            new_mock_master(),
-        );
+    fn poisoned_instance_lock_recovers_for_snapshot() {
+        let id = register_mock_pty(format!("grove-test-poison-inst-{}", Uuid::new_v4().simple()));
+        let tracked = tracked_for(&id);
 
-        let (writer_shared, tracked) = {
-            let reg = registry().lock().unwrap();
-            let instance = reg.get(&id).unwrap();
-            (Arc::clone(&instance.writer.shared), Arc::clone(&instance.tracked))
-        };
-
-        // Poison the per-instance write-queue lock the same way a panic while
-        // holding it would, then the tracked lock.
-        with_silenced_panics(|| {
-            let shared = Arc::clone(&writer_shared);
-            let _ = std::thread::spawn(move || {
-                let _guard = shared.inner.lock().unwrap();
-                panic!("intentional poison for test");
-            })
-            .join();
-        });
         poison_mutex(Arc::clone(&tracked));
-        assert!(writer_shared.inner.lock().is_err());
         assert!(tracked.lock().is_err());
 
-        // write() recovers the poisoned per-instance write-queue lock and succeeds.
-        assert!(write(&id, b"hello").is_ok());
-
-        // A tracked-reading op recovers the poisoned tracked lock too.
+        // A tracked-reading op recovers the poisoned tracked lock.
         assert!(runtime_snapshot_for_pty(&id).unwrap().is_some());
         {
             let _guard = lock_recover(&tracked);
@@ -4960,82 +4232,22 @@ grove-c 1 notapid
     }
 
     #[test]
-    fn panic_in_read_path_is_contained_and_never_reaches_sink() {
-        let log = Arc::new(CountingLogSink::default());
-        crate::logger::set_log_sink(log.clone() as Arc<dyn crate::logger::LogEventSink>);
+    fn poisoned_writer_queue_lock_recovers_for_subsequent_writes() {
+        let writer = PtyWriter::spawn_input_only(Box::new(io::sink()), WRITE_DEADLINE);
+        let shared = Arc::clone(&writer.shared);
 
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-read-panic-{}", Uuid::new_v4().simple()),
-            Box::new(io::sink()),
-            new_mock_master(),
-        );
-        let tracked = {
-            let reg = registry().lock().unwrap();
-            Arc::clone(&reg.get(&id).unwrap().tracked)
-        };
-
-        let sink = Arc::new(CollectingSink::default());
-        let coalescer =
-            OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, id.clone());
-        let before = log.errors.load(Ordering::SeqCst);
-
-        // The reader panics inside the tracked-locked block; the loop must
-        // contain it, exit cleanly, and never push the panic bytes to the sink.
         with_silenced_panics(|| {
-            read_pty_output(Box::new(OverReadingReader), coalescer, Arc::clone(&tracked));
+            let shared = Arc::clone(&shared);
+            let _ = std::thread::spawn(move || {
+                let _guard = shared.inner.lock().unwrap();
+                panic!("intentional poison for test");
+            })
+            .join();
         });
+        assert!(shared.inner.lock().is_err());
 
-        // Give the flusher a moment; it should have nothing to emit.
-        sleep(Duration::from_millis(20));
-        assert!(
-            sink.calls.lock().unwrap().is_empty(),
-            "panic bytes must never reach on_output"
-        );
-        assert!(
-            log.errors.load(Ordering::SeqCst) > before,
-            "a diagnostic must be logged for the contained panic"
-        );
-
-        // The panic poisoned tracked; the same instance's locks still recover.
-        {
-            let reg = registry().lock().unwrap();
-            let instance = reg.get(&id).unwrap();
-            let _tracked_guard = lock_recover(&instance.tracked);
-            let _writer_guard = lock_recover(&instance.writer.shared.inner);
-        }
-        assert!(write(&id, b"still works").is_ok());
-
-        registry().lock().unwrap().remove(&id);
-    }
-
-    #[test]
-    fn read_loop_marks_reader_exited_on_eof() {
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            format!("grove-test-reader-eof-{}", Uuid::new_v4().simple()),
-            Box::new(io::sink()),
-            new_mock_master(),
-        );
-        let tracked = {
-            let reg = registry().lock().unwrap();
-            Arc::clone(&reg.get(&id).unwrap().tracked)
-        };
-        let sink = Arc::new(CollectingSink::default());
-        let coalescer =
-            OutputCoalescer::new(Arc::clone(&sink) as Arc<dyn PtyEventSink>, id.clone());
-
-        assert!(!tracked.lock().unwrap().reader_exited);
-        read_pty_output(Box::new(io::empty()), coalescer, Arc::clone(&tracked));
-        assert!(tracked.lock().unwrap().reader_exited);
-
-        registry().lock().unwrap().remove(&id);
+        // The writer recovers the poisoned queue lock and still delivers.
+        assert!(writer.write(b"hello").is_ok());
     }
 
     #[test]
@@ -5071,36 +4283,16 @@ grove-c 1 notapid
     }
 
     #[test]
-    fn terminal_gc_reaps_registry_entry_for_missing_tmux_session() {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            return;
-        }
-
+    fn terminal_gc_reaps_registry_entries_the_daemon_no_longer_knows() {
+        // The registry snapshot is taken BEFORE `listSessions`, so a candidate is
+        // conclusively dead — no re-verification round trip is needed.
         let session_name = format!("grove-test-reap-{}", Uuid::new_v4().simple());
-        let id = register_mock_pty_with_writer(
-            MockChild {
-                mode: MockChildMode::Running,
-                state: Arc::new(MockChildState::default()),
-            },
-            session_name.clone(),
-            Box::new(io::sink()),
-            new_mock_master(),
-        );
+        let id = register_mock_pty(session_name.clone());
 
-        // Why: a concurrent test process churning the shared tmux server can
-        // make the has-session probe transiently error, which the reap path
-        // (correctly) treats as skip. Retry a few times before judging.
-        let mut reaped = Vec::new();
-        for _ in 0..3 {
-            reaped = reap_dead_registry_entries(&[RegistryReapCandidate {
-                pty_id: id.clone(),
-                session_name: session_name.clone(),
-            }]);
-            if !reaped.is_empty() {
-                break;
-            }
-            sleep(Duration::from_millis(100));
-        }
+        let reaped = reap_dead_registry_entries(&[RegistryReapCandidate {
+            pty_id: id.clone(),
+            session_name: session_name.clone(),
+        }]);
 
         assert_eq!(reaped, vec![id.clone()]);
         assert!(!registry().lock().unwrap().contains_key(&id));

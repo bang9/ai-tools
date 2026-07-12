@@ -98,6 +98,36 @@ pub fn set_app_version(version: String) {
     grove_core::set_app_version(&version);
 }
 
+/// Configure the PTY daemon runtime (design item 1). main.ts calls this once at
+/// `app.whenReady`, before any PTY create; the first terminal op then runs the
+/// connect-or-spawn adoption gate. `base_dir` is optional — omit it to use grove's
+/// fixed `~/.grove/daemon` convention (matching Tauri). Pure: no IO, no spawn.
+#[napi]
+pub fn configure_daemon(version: String, base_dir: Option<String>) -> Result<()> {
+    grove_core::daemon::configure_default(version, base_dir.map(std::path::PathBuf::from))
+        .map_err(napi_error)
+}
+
+/// One-time sweep of leftover grove-managed tmux sessions from a pre-daemon build
+/// (design OVERLAY 1). Marker-gated in the daemon base dir: runs once on upgrade,
+/// then never again. tmux absent ⇒ success no-op. main.ts calls this at
+/// `app.whenReady`, after `configureDaemon`.
+#[napi]
+pub fn sweep_grove_tmux_sessions() -> Result<()> {
+    let base_dir = grove_core::config::daemon_runtime_dir().map_err(napi_error)?;
+    grove_core::tmux_sweep::sweep_grove_tmux_sessions_once(&base_dir).map_err(napi_error)?;
+    Ok(())
+}
+
+/// Force a final checkpoint of every live daemon session (design L12/P6 sleep
+/// tier). Sync — meant to run OFF a tokio runtime, from main.ts's
+/// `powerMonitor.on('suspend', …)` on the Node main thread. No-ops when the
+/// daemon client is not yet installed.
+#[napi]
+pub fn checkpoint_all_sessions() {
+    grove_core::daemon::checkpoint_all_sessions_blocking();
+}
+
 #[napi]
 pub async fn get_terminal_theme() -> Result<String> {
     blocking_json(|| Ok(grove_core::terminal_theme::detect_terminal_theme())).await
@@ -166,9 +196,15 @@ pub async fn load_ui_state() -> Result<String> {
     blocking_core(grove_core::config::load_ui_state_impl).await
 }
 
+// Awaited directly (not via `blocking_json`): terminal GC now crosses the daemon
+// socket, and the blocking bridge refuses an ambient tokio runtime — which
+// `spawn_blocking` would put us inside. Same JSON payload, same NAPI signature.
 #[napi]
 pub async fn run_terminal_gc(dry_run: bool) -> Result<String> {
-    blocking_json(move || grove_core::pty::run_terminal_gc(dry_run)).await
+    let report = grove_core::pty::run_terminal_gc(dry_run)
+        .await
+        .map_err(napi_error)?;
+    to_json(&report)
 }
 
 #[napi]
@@ -341,7 +377,13 @@ pub async fn create_pty(
         callback: on_output,
     });
 
-    blocking_json(move || grove_core::pty::create(request, sink)).await
+    // Awaited directly, not via `blocking_json(...)`: the daemon-backed pub fns are
+    // async (design G1) and the blocking bridge refuses an ambient tokio runtime (R12),
+    // which `spawn_blocking` has. Renderer-invisible — already an `async fn`.
+    let result = grove_core::pty::create(request, sink)
+        .await
+        .map_err(napi_error)?;
+    to_json(&result)
 }
 
 #[napi]
@@ -352,27 +394,34 @@ pub fn install_panic_hook() {
 #[napi]
 pub async fn write_pty(id: String, data: Buffer) -> Result<()> {
     let data = data.to_vec();
-    blocking_core(move || grove_core::pty::write(&id, &data)).await
+    grove_core::pty::write(&id, &data).await.map_err(napi_error)
 }
 
 #[napi]
 pub async fn resize_pty(id: String, cols: u16, rows: u16) -> Result<()> {
-    blocking_core(move || grove_core::pty::resize(&id, cols, rows)).await
+    grove_core::pty::resize(&id, cols, rows)
+        .await
+        .map_err(napi_error)
 }
 
 #[napi]
 pub async fn applied_pty_size(id: String) -> Result<String> {
-    blocking_json(move || grove_core::pty::applied_pty_size(&id)).await
+    let size = grove_core::pty::applied_pty_size(&id)
+        .await
+        .map_err(napi_error)?;
+    to_json(&size)
 }
 
 #[napi]
 pub async fn clear_pty_scrollback(pty_id: String) -> Result<()> {
-    blocking_core(move || grove_core::pty::clear_scrollback(&pty_id)).await
+    grove_core::pty::clear_scrollback(&pty_id)
+        .await
+        .map_err(napi_error)
 }
 
 #[napi]
 pub async fn close_pty(pty_id: String) -> Result<()> {
-    blocking_core(move || grove_core::pty::close(&pty_id)).await
+    grove_core::pty::close(&pty_id).await.map_err(napi_error)
 }
 
 // Acknowledge that a daemon cold-restore payload has been superseded (design
@@ -386,9 +435,15 @@ pub async fn ack_cold_restore(id: String) -> Result<()> {
     .await
 }
 
+// Awaited directly for the same reason as `run_terminal_gc`: the bell/AI-status poll
+// is an RPC now (`pollBells` + `setAiStatus`), so it must not run inside
+// `spawn_blocking`. Same JSON payload, same NAPI signature.
 #[napi]
 pub async fn poll_pty_bells() -> Result<String> {
-    blocking_json(grove_core::pty::poll_bell_events).await
+    let events = grove_core::pty::poll_bell_events()
+        .await
+        .map_err(napi_error)?;
+    to_json(&events)
 }
 
 #[napi]
@@ -397,7 +452,10 @@ pub async fn save_terminal_session_snapshot(snapshot: String) -> Result<String> 
         &snapshot,
         "SaveTerminalSessionSnapshotRequest",
     )?;
-    blocking_json(move || grove_core::pty::save_terminal_session_snapshot(snapshot)).await
+    let saved = grove_core::pty::save_terminal_session_snapshot(snapshot)
+        .await
+        .map_err(napi_error)?;
+    to_json(&saved)
 }
 
 #[napi]

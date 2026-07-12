@@ -59,7 +59,11 @@ pub use client::{
 };
 
 #[cfg(unix)]
-pub use global::{ack_cold_restore, set_global_client};
+pub use global::{
+    ack_cold_restore, checkpoint_all_sessions, checkpoint_all_sessions_blocking, configure,
+    configure_default, default_bin_source_path, get_or_init_client, global_client, is_configured,
+    runtime_base_dir, set_global_client, DaemonRuntimeConfig, DAEMON_BIN_ENV,
+};
 
 /// Non-unix stub for the P9 cold-restore ack entry point. The daemon client is
 /// unix-only, so off-unix there is never a global client to forward to — this

@@ -11,7 +11,6 @@ dirs = "5"
 tokio = { version = "1", features = ["full"] }
 git2 = "0.19"
 uuid = { version = "1", features = ["v4"] }
-portable-pty = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.9"

@@ -80,8 +80,32 @@ fn attach(session_id: &str) -> CreateOrAttach {
         cwd: Some("/tmp".to_string()),
         cols: 80,
         rows: 24,
+        env: shell_rc_quiet_env(),
         ..Default::default()
     }
+}
+
+/// Env that stops the spawned shell's own rc files from emitting OSC 7 / OSC 0 at every
+/// prompt, which would overwrite what a test's `printf` just wrote (the shell's cwd is
+/// `/private/tmp`, not the probe path). Two emitters on a dev mac:
+///   * `/etc/zshrc_Apple_Terminal`'s `update_terminal_cwd`, armed whenever
+///     TERM_PROGRAM==Apple_Terminal is inherited from the terminal running `cargo test`
+///     (grove itself always sets TERM_PROGRAM=Grove, so this is purely a test artifact);
+///   * a user `~/.zshrc` with a cwd/title hook.
+///
+/// Blank TERM_PROGRAM disarms the first; an empty ZDOTDIR gives zsh no user rc to read.
+fn shell_rc_quiet_env() -> Vec<(String, String)> {
+    let empty_zdotdir =
+        std::env::temp_dir().join(format!("grove-rpc-zdotdir-{}", std::process::id()));
+    std::fs::create_dir_all(&empty_zdotdir).expect("create empty zdotdir");
+    vec![
+        ("TERM".to_string(), "dumb".to_string()),
+        ("TERM_PROGRAM".to_string(), String::new()),
+        (
+            "ZDOTDIR".to_string(),
+            empty_zdotdir.to_string_lossy().into_owned(),
+        ),
+    ]
 }
 
 /// Spawn a daemon, wait for readiness, and return (proc, client). The `_proc`

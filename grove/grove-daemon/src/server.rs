@@ -494,6 +494,16 @@ impl Daemon {
                 let session = self.get(&id).ok_or_else(session_not_found)?;
                 Ok(json!({ "title": session.title() }))
             }
+            // Clear scrollback history (design item 4): the daemon-native replacement
+            // for the tmux `clear-history` shell-out. Drops the byte-exact ring +
+            // emulator scrollback view and logs a Clear frame (D4). RPC — the client
+            // awaits the ack so it can then clear its own local mirror in order.
+            "clearHistory" => {
+                let id = str_param(&params, "sessionId")?;
+                let session = self.get(&id).ok_or_else(session_not_found)?;
+                session.clear_history();
+                Ok(json!({}))
+            }
             // Bell + AI status poll (design G9): one entry per LIVE session with its
             // pending bell (DRAINED on read — swap-false) and current ai_status (read,
             // NOT drained — it is state, not an event). Replaces the tmux
@@ -575,6 +585,12 @@ impl Daemon {
             .to_string();
         let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
         let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+        // Per-session scrollback ring cap (design D10/§8.X). Absent → the daemon's
+        // built-in default. Ignored on a warm adopt (only a fresh/cold spawn reads it).
+        let ring_cap_bytes = params
+            .get("scrollbackBytes")
+            .and_then(Value::as_u64)
+            .map(|bytes| bytes as usize);
         let env: Vec<(String, String)> = params
             .get("env")
             .and_then(Value::as_object)
@@ -701,8 +717,13 @@ impl Daemon {
                     let env = env.clone();
                     // Why: openpty + spawn_command are blocking; keep them off the
                     // reactor.
-                    let spawned = tokio::task::spawn_blocking(move || {
-                        Session::spawn(spawn_id, &spawn_cwd_c, spawn_cols, spawn_rows, &env, hub, reaper)
+                    let spawned = tokio::task::spawn_blocking(move || match ring_cap_bytes {
+                        Some(cap) => Session::spawn_with_ring_cap(
+                            spawn_id, &spawn_cwd_c, spawn_cols, spawn_rows, &env, hub, reaper, cap,
+                        ),
+                        None => {
+                            Session::spawn(spawn_id, &spawn_cwd_c, spawn_cols, spawn_rows, &env, hub, reaper)
+                        }
                     })
                     .await;
 
@@ -836,6 +857,10 @@ impl Daemon {
                         "isAlive": session.is_alive(),
                         "cols": cols,
                         "rows": rows,
+                        // The child shell's pid (design G9): grove's hookless
+                        // AI-status reconcile walks the process tree rooted here,
+                        // replacing tmux's `#{pane_pid}` readback.
+                        "pid": session.pid(),
                     }))
                 }
                 SessionSlot::Pending => None,
@@ -1236,6 +1261,51 @@ mod tests {
             json!(0),
             "no socket attached → zero connected controls"
         );
+
+        daemon.kill_all_sessions();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn clear_history_drops_the_byte_exact_ring() {
+        // Design item 4: the clearHistory RPC is the daemon-native replacement for
+        // the tmux `clear-history` shell-out. It drops the byte-exact ring (the
+        // cold-restore source) so a subsequent reattach/cold-restore never replays
+        // the pre-clear scrollback.
+        let root = temp_root();
+        let daemon = Daemon::new("tok".to_string(), root.clone());
+        daemon
+            .rpc_create_or_attach(json!({
+                "sessionId": "c1", "cwd": "/tmp", "cols": 80, "rows": 24
+            }))
+            .await
+            .expect("createOrAttach ok");
+        let session = daemon.get("c1").expect("session c1 live");
+        session.test_tee(b"PRE-CLEAR-SCROLLBACK");
+        assert!(
+            session
+                .ring_tail()
+                .windows(20)
+                .any(|w| w == b"PRE-CLEAR-SCROLLBACK"),
+            "teed bytes must land in the ring before clear"
+        );
+
+        daemon
+            .dispatch_rpc("clearHistory", json!({ "sessionId": "c1" }))
+            .await
+            .expect("clearHistory ok");
+
+        assert!(
+            session.ring_tail().is_empty(),
+            "clearHistory must drop the byte-exact ring"
+        );
+
+        // An unknown session id is a clean not-found error, not a panic.
+        let err = daemon
+            .dispatch_rpc("clearHistory", json!({ "sessionId": "nope" }))
+            .await
+            .expect_err("clearHistory on a missing session errors");
+        assert_eq!(err.code, session_not_found().code);
 
         daemon.kill_all_sessions();
         let _ = std::fs::remove_dir_all(&root);

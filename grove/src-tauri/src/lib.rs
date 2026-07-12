@@ -383,7 +383,10 @@ async fn create_pty(
     };
     let sink = eventbus::pty_sink(on_output);
 
-    blocking(move || grove_core::pty::create(request, sink)).await
+    // Awaited directly, not via `blocking(...)`: the daemon-backed pub fns are async
+    // (design G1) and the blocking bridge refuses an ambient tokio runtime (R12), which
+    // `spawn_blocking` has. Renderer-invisible — this command was already `async`.
+    grove_core::pty::create(request, sink).await
 }
 
 // Input arrives as a raw octet-stream body (a nested Uint8Array degrades to a
@@ -405,27 +408,27 @@ async fn write_pty(request: tauri::ipc::Request<'_>) -> Result<(), String> {
         }
     };
 
-    blocking(move || grove_core::pty::write(&id, &data)).await
+    grove_core::pty::write(&id, &data).await
 }
 
 #[tauri::command]
 async fn resize_pty(id: String, cols: u16, rows: u16) -> Result<(), String> {
-    blocking(move || grove_core::pty::resize(&id, cols, rows)).await
+    grove_core::pty::resize(&id, cols, rows).await
 }
 
 #[tauri::command]
 async fn applied_pty_size(id: String) -> Result<Option<AppliedPtySize>, String> {
-    blocking(move || grove_core::pty::applied_pty_size(&id)).await
+    grove_core::pty::applied_pty_size(&id).await
 }
 
 #[tauri::command]
 async fn clear_pty_scrollback(pty_id: String) -> Result<(), String> {
-    blocking(move || grove_core::pty::clear_scrollback(&pty_id)).await
+    grove_core::pty::clear_scrollback(&pty_id).await
 }
 
 #[tauri::command]
 async fn close_pty(pty_id: String) -> Result<(), String> {
-    blocking(move || grove_core::pty::close(&pty_id)).await
+    grove_core::pty::close(&pty_id).await
 }
 
 // Acknowledge that a daemon cold-restore payload has been superseded by fresh
@@ -440,16 +443,30 @@ async fn ack_cold_restore(id: String) -> Result<(), String> {
     .await
 }
 
+// Awaited directly (not wrapped in `blocking`): the bell/AI-status poll crosses the
+// daemon socket now (`pollBells` + `setAiStatus`), and the blocking bridge refuses an
+// ambient tokio runtime — which `spawn_blocking` would put us inside.
 #[tauri::command]
 async fn poll_pty_bells() -> Result<Vec<PtyBellEvent>, String> {
-    blocking(grove_core::pty::poll_bell_events).await
+    grove_core::pty::poll_bell_events().await
+}
+
+// Force a final checkpoint of every live daemon session (design L12/P6 sleep
+// tier). Awaited directly on the command's runtime — the blocking bridge refuses
+// an ambient runtime, so this uses the async client path. No-ops (error-swallow)
+// when the daemon client is not yet installed. Tauri does NOT wire a suspend hook
+// this cut (see the release notes); the command exists for parity + manual use.
+#[tauri::command]
+async fn checkpoint_all_sessions() -> Result<(), String> {
+    grove_core::daemon::checkpoint_all_sessions().await;
+    Ok(())
 }
 
 #[tauri::command]
 async fn save_terminal_session_snapshot(
     snapshot: SaveTerminalSessionSnapshotRequest,
 ) -> Result<TerminalSessionSnapshot, String> {
-    blocking(move || grove_core::pty::save_terminal_session_snapshot(snapshot)).await
+    grove_core::pty::save_terminal_session_snapshot(snapshot).await
 }
 
 #[tauri::command]
@@ -459,9 +476,12 @@ async fn load_terminal_session_snapshot(
     blocking(move || grove_core::pty::load_terminal_session_snapshot(&worktree_path)).await
 }
 
+// Awaited directly for the same reason as `poll_pty_bells`: GC partitions the pane
+// registry against the daemon's `listSessions` and kills stale sessions over the
+// socket, so it must not run inside `spawn_blocking`.
 #[tauri::command]
 async fn run_terminal_gc(dry_run: bool) -> Result<TerminalGcReport, String> {
-    blocking(move || grove_core::pty::run_terminal_gc(dry_run)).await
+    grove_core::pty::run_terminal_gc(dry_run).await
 }
 
 // === GIT DIFF COMMANDS (W4) ===
@@ -724,6 +744,7 @@ pub fn run() {
             close_pty,
             ack_cold_restore,
             poll_pty_bells,
+            checkpoint_all_sessions,
             save_terminal_session_snapshot,
             load_terminal_session_snapshot,
             run_terminal_gc,
@@ -780,14 +801,44 @@ pub fn run() {
         .setup(|app| {
             // Why: advertise the real app version as TERM_PROGRAM_VERSION in spawned
             // terminals. Set before any PTY create so panes never fall back.
-            grove_core::set_app_version(&app.package_info().version.to_string());
+            let app_version = app.package_info().version.to_string();
+            grove_core::set_app_version(&app_version);
             grove_core::pty::install_panic_hook();
             grove_core::tool_hooks::ensure_installed();
-            if let Err(error) = grove_core::pty::cleanup_stale_tmux_sessions_on_startup() {
-                eprintln!(
-                    "Warning: failed to clean up stale Grove tmux sessions on startup: {error}"
-                );
+            // Configure the PTY daemon runtime (design item 1): store the base dir,
+            // the bundled daemon binary path, and the app version. Pure — the first
+            // terminal op runs the connect-or-spawn adoption gate lazily.
+            if let Err(error) = grove_core::daemon::configure_default(&app_version, None) {
+                eprintln!("Warning: failed to configure the grove PTY daemon: {error}");
             }
+            // One-time sweep of leftover grove-* tmux sessions from a pre-daemon build
+            // (design OVERLAY 1). Safe now that the cutover has landed: tmux is no
+            // longer the PTY backend, so no session this kills can be one the user is
+            // looking at. Marker-gated in `tmux_sweep`, so it runs at most once ever;
+            // tmux absent ⇒ success no-op. Best-effort — a failure here must never
+            // block app startup.
+            match grove_core::config::daemon_runtime_dir() {
+                Ok(base_dir) => {
+                    if let Err(error) = grove_core::tmux_sweep::sweep_grove_tmux_sessions_once(
+                        &base_dir,
+                    ) {
+                        eprintln!("Warning: failed to sweep leftover grove tmux sessions: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Warning: failed to resolve the daemon runtime dir for the tmux sweep: {error}");
+                }
+            }
+            // Startup terminal GC. Now async (it partitions the pane registry against
+            // the daemon's `listSessions`), so it runs on the app's async runtime
+            // instead of blocking `setup`. Deliberately spawned rather than awaited:
+            // GC's first daemon call runs the connect-or-spawn gate, and window
+            // creation must not wait on a daemon launch.
+            tauri::async_runtime::spawn(async {
+                if let Err(error) = grove_core::pty::run_terminal_gc(false).await {
+                    eprintln!("Warning: failed to run terminal GC on startup: {error}");
+                }
+            });
             eventbus::init(app.handle());
             // Opaque backing for the transparent (punchout) window so the
             // browser hole never bleeds the desktop.

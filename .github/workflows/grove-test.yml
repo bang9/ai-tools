@@ -61,11 +61,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # tmux-backed pty tests skip themselves when tmux is absent; install it
-      # so CI exercises the real session paths.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
+      # No tmux install: the PTY backend is grove-daemon, and nothing under test
+      # shells out to tmux. The one remaining tmux caller (grove-core `tmux_sweep`,
+      # the one-time reap of leftover sessions from a pre-daemon build) is a no-op
+      # success when tmux is absent, and its tests assert that. Both suites are
+      # verified green on a host with no tmux binary at all.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 

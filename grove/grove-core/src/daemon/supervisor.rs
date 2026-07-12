@@ -693,17 +693,40 @@ async fn try_hello(socket_path: &Path, token: &str) -> bool {
         .is_ok()
 }
 
+/// May the supervisor spawn a daemon binary that failed `codesign --verify`?
+///
+/// In a RELEASE build: NO. The daemon runs detached, owns every PTY, and outlives the
+/// app, so an unverifiable binary at that path is exactly the thing signature checking
+/// exists to stop — degrading to "spawn it anyway with a warning" turns the check into
+/// a log line. Refuse instead.
+///
+/// In debug/test builds: yes. `cargo build` produces an ad-hoc-signed daemon and the
+/// tests spawn it straight out of `target/debug`; a hard gate there would fail the
+/// whole dev loop, not catch an attack.
+const ALLOW_UNVERIFIED_DAEMON_BINARY: bool = cfg!(debug_assertions);
+
 /// Copy the app bundle's signed daemon binary into `base_dir` and verify it.
 /// A byte-identical copy is skipped UNLESS `force` is set. On macOS,
-/// `codesign --verify` + a Mach-O magic check gate the copy; on failure the
-/// supervisor DEGRADES to spawning the source path directly with a warning rather
-/// than refusing to start.
+/// `codesign --verify` + a Mach-O magic check GATE the spawn: a release build refuses
+/// to run an unverifiable binary, a debug build degrades to the source path with a
+/// warning (see [`ALLOW_UNVERIFIED_DAEMON_BINARY`]).
 ///
 /// `force` is set by [`restart_daemon`] (design L1-sig): a "Restart daemon" must
 /// re-adopt the CURRENT app bundle's binary even when it happens to be byte-
 /// identical to the previously-copied one, so the restart is guaranteed to run
 /// code from the running bundle (never a stale copy left by a prior version).
 fn prepare_binary(source: &Path, base_dir: &Path, force: bool) -> Result<PathBuf, SupervisorError> {
+    prepare_binary_with_policy(source, base_dir, force, ALLOW_UNVERIFIED_DAEMON_BINARY)
+}
+
+/// [`prepare_binary`] with the release/debug verification policy injected, so the
+/// release GATE itself is testable from a debug test binary.
+fn prepare_binary_with_policy(
+    source: &Path,
+    base_dir: &Path,
+    force: bool,
+    allow_unverified: bool,
+) -> Result<PathBuf, SupervisorError> {
     if !source.exists() {
         return Err(SupervisorError::BinaryVerify(format!(
             "daemon binary source not found: {}",
@@ -725,8 +748,14 @@ fn prepare_binary(source: &Path, base_dir: &Path, force: bool) -> Result<PathBuf
         if verify_codesign(&dest) && is_mach_o(&dest) {
             return Ok(dest);
         }
-        // Degrade: run the source path, which the OS validated when the app
-        // itself launched. A warning, not a hard failure (design L1-sig).
+        if !allow_unverified {
+            return Err(SupervisorError::BinaryVerify(format!(
+                "daemon binary {} failed codesign/arch verification; refusing to spawn it",
+                dest.display()
+            )));
+        }
+        // Degrade (debug/test only): run the source path, which the OS validated when
+        // the app itself launched. A warning, not a hard failure (design L1-sig).
         eprintln!(
             "[supervisor] codesign/arch verify failed for {}; spawning daemon from source {}",
             dest.display(),
@@ -736,6 +765,7 @@ fn prepare_binary(source: &Path, base_dir: &Path, force: bool) -> Result<PathBuf
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = allow_unverified;
         Ok(dest)
     }
 }
@@ -1134,6 +1164,33 @@ mod tests {
         // pid 0 addresses the process group, never an individual process here;
         // a very high pid is virtually never live.
         assert!(!process_exists(u32::MAX - 1));
+    }
+
+    /// The codesign check must be a GATE, not a log line: a release build that cannot
+    /// verify the daemon binary refuses to spawn it instead of degrading to the
+    /// unverified source path. (Debug builds still degrade — see
+    /// `ALLOW_UNVERIFIED_DAEMON_BINARY` — which is what keeps the dev loop and the
+    /// `GROVE_DAEMON_BIN` tests working.)
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn release_refuses_to_spawn_an_unverifiable_daemon_binary() {
+        let base = std::env::temp_dir().join(format!("grove-sup-verify-{}", generate_token()));
+        std::fs::create_dir_all(&base).unwrap();
+        // Not a Mach-O, not signed — `codesign --verify` and the magic check both fail.
+        let source = base.join("fake-daemon");
+        std::fs::write(&source, b"#!/bin/sh\necho not a daemon\n").unwrap();
+
+        let refused = prepare_binary_with_policy(&source, &base, false, false);
+        assert!(
+            matches!(refused, Err(SupervisorError::BinaryVerify(_))),
+            "an unverifiable binary must be refused in release, got {refused:?}"
+        );
+
+        // Debug/dev keeps working: the same binary degrades to the source path.
+        let degraded = prepare_binary_with_policy(&source, &base, false, true).unwrap();
+        assert_eq!(degraded, source);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

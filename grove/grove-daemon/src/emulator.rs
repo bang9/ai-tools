@@ -165,6 +165,18 @@ impl DaemonEmulator {
         self.parser.screen_mut().set_size(rows, cols);
     }
 
+    /// Reset the scrollback view for a `clearHistory` (design item 4, tmux
+    /// `clear-history` replacement). vt100 0.16 exposes NO public API to drop
+    /// scrollback rows (`set_scrollback` only moves the display offset, and ED-3 is
+    /// not handled), and the warm-reattach body is `contents_formatted()` — a single
+    /// visible screenful, not the scrollback rows — so the byte-exact history the
+    /// daemon actually replays lives in the session ring + on-disk log, both cleared
+    /// by `Session::clear_history`. This only pins the scroll position back to the
+    /// live screen so a subsequent snapshot never serializes from a scrolled-up view.
+    pub fn clear_scrollback(&mut self) {
+        self.parser.screen_mut().set_scrollback(0);
+    }
+
     /// The dims vt100 currently holds (design G8). Advanced by `resize` BEFORE
     /// the caller resizes the subprocess, so this is an accurate proxy for the
     /// size the child took (orca getAppliedSize ordering).

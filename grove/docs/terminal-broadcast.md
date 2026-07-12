@@ -106,7 +106,7 @@ These cases should stay covered by tests or manual verification:
 4. Stop PiP for worktree A. Worktree B's PiP must remain intact.
 5. Remove a worktree that currently owns PiP or mirror state. All broadcast entries tied to that worktree's PTYs must be cleared.
 6. Return from Changes/Browser to Terminal while PiP is active. The source PTY must restore to the pre-broadcast size.
-7. Mirror a PTY: the mirror attaches a **second tmux client**, so tmux may clamp the shared session to the smaller client's grid. The source pane's applied-size reassertion (`docs/terminal-resize.md`) must treat a persistent Mirror-induced clamp as the non-convergence case — adopt it and STOP — with **no re-fit oscillation or flicker loop** in the source pane while the mirror is live. On mirror end the PTY restores to `originalCols/originalRows` as usual.
+7. Mirror a PTY: the mirror and the source pane share **one** daemon session, and the mirror runtime becomes its **resize owner**. There is no second client and nothing clamps the session — the daemon applies exactly what the owner asks. But the source pane's xterm keeps its own container grid, so while the mirror is live the source pane reads back an applied size it did not choose and that will never converge on its fitted grid. Its applied-size reassertion (`docs/terminal-resize.md`) must treat that as the non-convergence case — adopt it and STOP — with **no re-fit oscillation or flicker loop** in the source pane. On mirror end the PTY restores to `originalCols/originalRows` as usual.
 
 ## Key Files
 

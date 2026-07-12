@@ -122,6 +122,7 @@ mod tests {
             is_alive: alive,
             cols: 80,
             rows: 24,
+            pid: Some(4242),
         }
     }
 

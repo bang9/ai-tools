@@ -80,6 +80,9 @@ type NativeMethod = (...args: unknown[]) => Promise<unknown>;
 type NativeAddon = Record<string, NativeMethod> & {
   installPanicHook(): void;
   setAppVersion(version: string): void;
+  configureDaemon(version: string, baseDir?: string): void;
+  sweepGroveTmuxSessions(): void;
+  checkpointAllSessions(): void;
   createPty(
     ptyId: string,
     paneId: string,
@@ -726,6 +729,20 @@ function registerDisplayWakeBroadcast() {
   });
 }
 
+function registerSuspendCheckpoint() {
+  // Sleep can kill the daemon's child shells under power management, so force a
+  // checkpoint of every live session before the machine goes down (design L12).
+  // Without this the last write is bounded only by the daemon's 5s tick; on wake
+  // a dead child cold-restores from whatever was last persisted.
+  powerMonitor.on("suspend", () => {
+    try {
+      native.checkpointAllSessions();
+    } catch (error) {
+      console.error("Failed to checkpoint daemon sessions before suspend:", error);
+    }
+  });
+}
+
 function registerOptionalLogForwarding() {
   const candidateNames = ["setLogListener", "registerLogListener", "onLog"] as const;
 
@@ -876,9 +893,27 @@ app.whenReady().then(() => {
   // Before any PTY create, so spawned shells advertise the real app version
   // as TERM_PROGRAM_VERSION instead of grove-core's compiled fallback.
   native.setAppVersion(app.getVersion());
+  // Store the daemon runtime config before any PTY create; the first terminal op
+  // then runs the connect-or-spawn adoption gate lazily. Pure — no IO, no spawn.
+  // A throw here must not take the app down: terminals then surface a
+  // "daemon not configured" error instead of the window never appearing.
+  try {
+    native.configureDaemon(app.getVersion());
+  } catch (error) {
+    console.error("Failed to configure the grove PTY daemon:", error);
+  }
+  // One-time kill of the grove-managed tmux sessions a pre-daemon build left behind.
+  // Safe only now that the daemon owns every PTY: these sessions are orphans no grove
+  // pane can reach. Marker-gated (runs once per install), and a no-op without tmux.
+  try {
+    native.sweepGroveTmuxSessions();
+  } catch (error) {
+    console.error("Failed to sweep stale grove tmux sessions:", error);
+  }
   registerIpcHandlers();
   registerOptionalLogForwarding();
   registerDisplayWakeBroadcast();
+  registerSuspendCheckpoint();
   registerBrowserGuestWindowOpenPolicy();
   createMainWindow();
 

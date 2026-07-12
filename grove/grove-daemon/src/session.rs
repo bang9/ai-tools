@@ -34,9 +34,12 @@ use crate::server::{SessionReaper, StreamHub};
 
 /// End-to-end deadline for one input write (design G3, mirrors grove-core).
 const WRITE_DEADLINE: Duration = Duration::from_secs(30);
-/// Raw scrollback ring cap (design G4; grove's 256 KiB default, configurable
-/// later per §8.X).
+/// Raw scrollback ring cap (design G4; grove's 256 KiB default, used when the
+/// client sends no `scrollbackBytes` on `createOrAttach`, e.g. tests).
 const RING_CAP_BYTES: usize = 256 * 1024;
+/// Floor for a per-session scrollback cap (design D10/§8.X): clamps a pathological
+/// `daemonScrollbackBytes` pref so scrollback can never be disabled outright.
+const MIN_RING_CAP_BYTES: usize = 4 * 1024;
 /// Force-dispose timer after a graceful kill (orca session.ts KILL_TIMEOUT_MS).
 const KILL_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Producer-pause lost-resume failsafe (design S14/P11, orca
@@ -178,6 +181,14 @@ pub struct Session {
     /// blocking `PtyWriter::write` off any tokio worker, preserving write order.
     write_tx: mpsc::Sender<Vec<u8>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    /// The child shell's OS pid, captured at spawn (design G9 hookless reconcile).
+    /// Captured once instead of read through `child.process_id()` on demand because
+    /// the `child` mutex is held across a blocking `wait()` in `emit_exit` — a pid
+    /// read must never park behind a reaping session. Stable for the session's life
+    /// (the child is never re-spawned under the same `Session`), and grove's hookless
+    /// AI-status probe walks the process tree rooted at it exactly as it walked the
+    /// tmux `#{pane_pid}` tree before.
+    pid: Option<u32>,
     /// Byte-exact raw ring (design G4): authoritative for cold restore AND the
     /// degraded fallback source when the emulator is poisoned.
     ring: Mutex<Ring>,
@@ -234,6 +245,11 @@ pub struct Session {
     /// Background bookkeeping flag (design P6 `set_session_background`): stored for
     /// later keep-tail thinning. No behavior beyond storage in this cut.
     background: AtomicBool,
+    /// Byte-exact raw-ring cap (design D10/§8.X). Sourced per-session from
+    /// `GrovePreferences::daemon_scrollback_bytes` via `createOrAttach`; defaults to
+    /// [`RING_CAP_BYTES`] when the client sends none. Bounds this session's history
+    /// depth and the memory a client-less daemon retains.
+    ring_cap: usize,
 }
 
 enum ReadStep {
@@ -242,7 +258,8 @@ enum ReadStep {
 }
 
 impl Session {
-    /// Spawn a fresh PTY session running the user's shell in `cwd`.
+    /// Spawn a fresh PTY session running the user's shell in `cwd`, using the
+    /// daemon's built-in [`RING_CAP_BYTES`] scrollback cap.
     pub fn spawn(
         id: String,
         cwd: &str,
@@ -252,6 +269,24 @@ impl Session {
         hub: StreamHub,
         reaper: SessionReaper,
     ) -> Result<Arc<Session>, String> {
+        Self::spawn_with_ring_cap(id, cwd, cols, rows, env, hub, reaper, RING_CAP_BYTES)
+    }
+
+    /// Spawn a fresh PTY session with an explicit scrollback ring cap in bytes
+    /// (design D10/§8.X). `ring_cap_bytes` is clamped to a small floor so a
+    /// pathological pref can't disable scrollback entirely.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_ring_cap(
+        id: String,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        env: &[(String, String)],
+        hub: StreamHub,
+        reaper: SessionReaper,
+        ring_cap_bytes: usize,
+    ) -> Result<Arc<Session>, String> {
+        let ring_cap = ring_cap_bytes.max(MIN_RING_CAP_BYTES);
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows,
@@ -309,11 +344,16 @@ impl Session {
             })
             .map_err(|e| e.to_string())?;
 
+        // Read the pid BEFORE the child is moved under its mutex: it is fixed for the
+        // session's life and the `child` lock is held across a blocking `wait()`.
+        let pid = child.process_id();
+
         let session = Arc::new(Session {
             id: id.clone(),
             master: Mutex::new(Some(pair.master)),
             write_tx,
             child: Mutex::new(child),
+            pid,
             ring: Mutex::new(Ring {
                 buf: VecDeque::new(),
                 truncated: false,
@@ -333,6 +373,7 @@ impl Session {
             bell: AtomicBool::new(false),
             ai_status: Mutex::new(None),
             background: AtomicBool::new(false),
+            ring_cap,
         });
 
         let reader_session = Arc::clone(&session);
@@ -347,7 +388,7 @@ impl Session {
     fn append_ring(&self, chunk: &[u8]) {
         let mut ring = lock(&self.ring);
         let Ring { buf, truncated } = &mut *ring;
-        append_scrollback_capped(buf, truncated, chunk, RING_CAP_BYTES);
+        append_scrollback_capped(buf, truncated, chunk, self.ring_cap);
     }
 
     /// The raw ring contents (design G4) — the degraded snapshot source used when
@@ -607,6 +648,28 @@ impl Session {
         Ok(())
     }
 
+    /// Clear this session's scrollback history (design item 4): the daemon-native
+    /// replacement for the tmux `clear-history` shell-out that `pty::clear_scrollback`
+    /// used to run. Drops the byte-exact ring (the cold-restore source, G4), resets
+    /// the emulator's scrollback view, and — when history is enabled — appends a
+    /// `Clear` frame so the on-disk log replay drops pre-clear scrollback (D4: the
+    /// reader replays `Clear` as `scrollback.clear()`). Marks the session dirty so
+    /// the next 5s tick persists the clear. Idempotent; safe on a dead session.
+    pub fn clear_history(&self) {
+        {
+            let mut ring = lock(&self.ring);
+            ring.buf.clear();
+            ring.truncated = false;
+        }
+        if let Some(emu) = lock(&self.emulator).as_mut() {
+            emu.clear_scrollback();
+        }
+        if self.history_enabled.load(Ordering::Relaxed) {
+            lock(&self.pending).push_record(HistoryRecord::Clear);
+            self.reaper.mark_dirty(&self.id);
+        }
+    }
+
     /// The size last applied to the PTY (design G8 — daemon-owned, no tmux
     /// shell-out). Read from the emulator dims (advanced atomically in `resize`
     /// before the subprocess); falls back to the mirrored `applied` tuple when
@@ -620,6 +683,14 @@ impl Session {
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// The child shell's pid (design G9), reported by `listSessions`. grove's
+    /// hookless AI-status reconcile roots its process-tree walk here — the daemon
+    /// replacement for tmux's `#{pane_pid}`. `None` only if the platform withheld a
+    /// pid at spawn; the reconcile then simply detects no live tool for that pane.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     /// Producer-side flow control (design S14/P11): stop draining the PTY so the
