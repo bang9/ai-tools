@@ -786,18 +786,21 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
   }, [hasNav, isActive, tabId, suggestionsShowing, rows.length]);
 
   // Drive native webview visibility. Hidden when inactive, when no page is
-  // loaded, when an overlay covers it, or when the OS window is hidden. The
-  // suggestions dropdown no longer hides it (see the bounds effect above).
+  // loaded, or when the OS window is hidden. Overlays (menus, dialogs, the
+  // suggestions/history dropdowns) do NOT hide it: on Tauri hiding the webview
+  // reveals the dark punchout backing (a small "+" menu would black out the
+  // whole page), so overlays only send it BEHIND (see the setBehind effect) and
+  // the DOM overlay composites over it; on Electron the DOM overlay z-indexes
+  // above the in-DOM webview.
   //
   // This is also where a missing webview gets recreated (idle eviction, native
   // crash): recreation must retrigger on every signal that can end a hide —
-  // tab activation, overlay closing, the OS window becoming visible again —
-  // and this effect is the one place that already watches all of them. It never
-  // fights commit(), which flips isBrowserWebviewCreated synchronously before
-  // the store update lands.
+  // tab activation, the OS window becoming visible again — and this effect is
+  // the one place that already watches them. It never fights commit(), which
+  // flips isBrowserWebviewCreated synchronously before the store update lands.
   useEffect(() => {
     const apply = () => {
-      const visible = isActive && hasNav && !overlayOpen && document.visibilityState === "visible";
+      const visible = isActive && hasNav && document.visibilityState === "visible";
       if (visible && url && !isBrowserWebviewCreated(tabId)) {
         // Created visible over the host; the bounds-sync effect snaps it into
         // place right after.
@@ -811,7 +814,7 @@ function BrowserPanel({ tabId, isActive }: BrowserPanelProps) {
     return () => {
       document.removeEventListener("visibilitychange", apply);
     };
-  }, [hasNav, isActive, overlayOpen, tabId, url]);
+  }, [hasNav, isActive, tabId, url]);
 
   // Hide the native webview when this panel unmounts (e.g. tab closed or
   // worktree switched away). The webview itself persists until closeTab.
