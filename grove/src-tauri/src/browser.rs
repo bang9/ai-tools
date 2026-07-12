@@ -896,6 +896,34 @@ pub fn browser_create(
             NewWindowResponse::Deny
         });
 
+    // WKPreferences.javaScriptCanOpenWindowsAutomatically defaults to NO, and
+    // WebKit's popup blocker runs BEFORE the UI delegate that backs
+    // on_new_window: a window.open() with no user gesture behind it (a redirect,
+    // a setTimeout, an OAuth hand-off) is dropped in the web process and the
+    // handler above never fires. Only a real click on a target="_blank" link
+    // carries the gesture that gets through.
+    //
+    // This must be set on the CONFIGURATION, before the webview exists —
+    // WKWebView.configuration is `readonly, copy`, so reaching into the live
+    // webview afterwards (the way the punchout reorder does) has no effect. wry
+    // treats a supplied configuration as the base and still attaches its own
+    // IPC, init scripts and custom protocols to it.
+    //
+    // No popup window is ever created: on_new_window denies every request and
+    // the frontend opens a Grove browser tab instead.
+    #[cfg(target_os = "macos")]
+    let builder = {
+        let mtm = objc2::MainThreadMarker::new()
+            .ok_or("browser_create must run on the main thread")?;
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        unsafe {
+            config
+                .preferences()
+                .setJavaScriptCanOpenWindowsAutomatically(true);
+        }
+        builder.with_webview_configuration(config)
+    };
+
     let webview = window
         .add_child(
             builder,

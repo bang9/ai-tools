@@ -19,3 +19,7 @@ webbrowser = "1"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
+# Tauri's with_webview_configuration names WKWebViewConfiguration in its
+# signature, so the type must come from the same crate (already in the lock file
+# via wry — this adds no new version to the graph).
+objc2-web-kit = "0.3"
