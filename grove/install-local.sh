@@ -63,6 +63,54 @@ pnpm install --frozen-lockfile
 echo "==> About version: ${APP_VERSION} (${BUILD_VERSION})"
 echo "==> About label: ${ABOUT_LABEL}"
 
+# The detached PTY daemon (grove-daemon) and the agent-status launcher (grove-agent)
+# are LOAD-BEARING sidecars: grove-core resolves each as a sibling of the running host
+# executable (current_exe().parent()/grove-{daemon,agent}), so both MUST sit next to the
+# shell's main binary inside Contents/MacOS. Neither Tauri nor Electron builds them, so we
+# build them here (release, host arch) and inject the copies into the produced bundle.
+RUST_RELEASE_DIR="target/release"
+SIDECAR_BINS=(grove-daemon grove-agent)
+
+build_rust_sidecars() {
+  echo "==> Building Rust sidecars (release): ${SIDECAR_BINS[*]}..."
+  cargo build --release -p grove-daemon -p grove-agent
+}
+
+# Copy the release sidecars next to a bundle's main executable and (re)sign them.
+# $1 = the bundle's Contents/MacOS directory.
+#
+# The release build of grove-core GATES the daemon spawn on `codesign --verify` of the
+# copy it drops in ~/.grove/daemon (supervisor.rs prepare_binary_with_policy): an
+# unsigned daemon is refused and terminals break. A fresh arm64 cargo binary already
+# carries an ad-hoc linker signature that passes --verify; we `codesign --force -s -`
+# anyway so the injected copy is deterministically valid and the step stays idempotent.
+# The host .app is ad-hoc linker-signed with no sealed resources (Sealed Resources=none),
+# so adding siblings does NOT invalidate the main executable's self-contained signature
+# and no bundle re-seal is needed for this local flow. (A real notarized/Developer-ID
+# release DOES seal resources — that flow must sign each sidecar with the Developer ID
+# cert and re-sign+notarize the whole .app after injection; see report.)
+install_rust_sidecars() {
+  local macos_dir="$1"
+  local bin src dest
+  if [ ! -d "$macos_dir" ]; then
+    echo "ERROR: bundle MacOS dir not found: $macos_dir" >&2
+    exit 1
+  fi
+  for bin in "${SIDECAR_BINS[@]}"; do
+    src="${RUST_RELEASE_DIR}/${bin}"
+    dest="${macos_dir}/${bin}"
+    if [ ! -f "$src" ]; then
+      echo "ERROR: built sidecar missing: $src (did build_rust_sidecars run?)" >&2
+      exit 1
+    fi
+    echo "==> Bundling ${bin} -> ${dest}"
+    cp -f "$src" "$dest"
+    chmod 0755 "$dest"
+    codesign --force --sign - "$dest"
+    codesign --verify "$dest"
+  done
+}
+
 install_tauri() {
   local bundle_path="target/release/bundle/macos/${APP_NAME}.app"
   local install_path="/Applications/${APP_NAME}.app"
@@ -74,6 +122,9 @@ install_tauri() {
 
   echo "==> Building Tauri app..."
   pnpm tauri build --bundles app --config "$tauri_config_override"
+
+  build_rust_sidecars
+  install_rust_sidecars "${bundle_path}/Contents/MacOS"
 
   echo "==> Installing to /Applications..."
   if [ -d "$install_path" ]; then
@@ -94,6 +145,9 @@ install_electron() {
   GROVE_BUILD_VERSION="$BUILD_VERSION" \
   GROVE_ELECTRON_DIR_ONLY=1 \
   pnpm build:electron
+
+  build_rust_sidecars
+  install_rust_sidecars "${bundle_path}/Contents/MacOS"
 
   echo "==> Installing to /Applications..."
   if [ -d "$install_path" ]; then
