@@ -707,7 +707,9 @@ function registerBrowserGuestWindowOpenPolicy() {
     }
     contents.setWindowOpenHandler(({ url }) => {
       if (isAllowedBrowserUrl(url) && url !== "about:blank") {
-        broadcast("browser:new-window", { url });
+        // The renderer owns the webview↔tab mapping; pass the guest's
+        // webContents id so it can attribute the popup to the opener tab.
+        broadcast("browser:new-window", { url, openerWebContentsId: contents.id });
       }
       return { action: "deny" };
     });

@@ -72,6 +72,8 @@ interface BrowserWebviewElement extends HTMLElement {
   findInPage(text: string, options?: { forward?: boolean; findNext?: boolean }): number;
   stopFindInPage(action: "clearSelection" | "keepSelection" | "activateSelection"): void;
   executeJavaScript(code: string): Promise<unknown>;
+  /** Throws until the guest is attached — always call it inside a try/catch. */
+  getWebContentsId(): number;
 }
 
 // Guest → host channel. Electron's `<webview>` has no custom-scheme bridge like
@@ -279,16 +281,25 @@ function emitNav(
   for (const sub of registry.navSubs) sub(event);
 }
 
-function isAllowedBrowserUrl(url: string): boolean {
-  if (url === "about:blank") return true;
-  try {
-    const parsed = new URL(url);
-    return (
-      parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "file:"
-    );
-  } catch {
-    return false;
+/**
+ * Resolve the tab that owns an Electron webContents id. The main process sees
+ * only webContents (its `setWindowOpenHandler` reports the opener that way);
+ * this renderer registry is the only place the webview↔tabId mapping exists.
+ */
+export function findTabIdByWebContentsId(webContentsId: number): string | null {
+  for (const [tabId, state] of registry.guests) {
+    // Attachment, not `ready`, is the bar here: window.open can fire from an
+    // inline <head> script, i.e. before the guest reaches `dom-ready`. Requiring
+    // `ready` would silently drop the opener and send the popup to whichever
+    // worktree happens to be visible — the exact bug this mapping exists to fix.
+    if (!state.webview) continue;
+    try {
+      if (state.webview.getWebContentsId() === webContentsId) return tabId;
+    } catch {
+      // Not attached yet — getWebContentsId throws; it cannot be the opener.
+    }
   }
+  return null;
 }
 
 function wireWebviewEvents(tabId: string, webview: BrowserWebviewElement): void {
@@ -347,14 +358,9 @@ function wireWebviewEvents(tabId: string, webview: BrowserWebviewElement): void 
     }
   });
 
-  // target="_blank" / window.open: open a Grove browser tab instead of a native
-  // window (allowpopups is off, so no OS window is created regardless).
-  webview.addEventListener("new-window", (e: WebviewDomEvent) => {
-    const url = e.url;
-    if (!url || !isAllowedBrowserUrl(url) || url === "about:blank") return;
-    const event: BrowserNewWindowEvent = { openerTabId: tabId, url };
-    for (const sub of registry.newWindowSubs) sub(event);
-  });
+  // No `new-window` listener: Electron 33 removed that `<webview>` DOM event, so
+  // target=_blank / window.open arrives from the main-process window-open handler
+  // and the opener is resolved from its webContents id (findTabIdByWebContentsId).
 }
 
 /** Create the `<webview>` once both a host and a desired URL exist. */
@@ -364,6 +370,13 @@ function reconcile(tabId: string): void {
 
   const webview = document.createElement("webview") as BrowserWebviewElement;
   webview.setAttribute("partition", BROWSER_PARTITION);
+  // Without `allowpopups` the guest may not request a window at all, so
+  // target=_blank / window.open is dropped before the main process's
+  // setWindowOpenHandler ever runs — and that handler is the ONLY surviving
+  // source of new-window events (Electron 33 removed the `<webview>` DOM event).
+  // No OS window is ever created: the handler denies every request and forwards
+  // the URL so the renderer can open a Grove browser tab instead.
+  webview.setAttribute("allowpopups", "");
   webview.style.display = state.visible ? "flex" : "none";
   webview.style.flex = "1";
   webview.style.width = "100%";

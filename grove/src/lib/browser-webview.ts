@@ -2,6 +2,7 @@ import { useBrowserStore } from "../store/browser";
 import { useTabStore } from "../store/tab";
 import { browserTabTitle } from "./browser-url";
 import { selectEvictions, type WebviewVisibility } from "./browser-eviction";
+import { resolveNewWindowTarget } from "./browser-new-window";
 import { registerSyncJob } from "./sync-manager";
 import {
   browserClose,
@@ -268,7 +269,15 @@ export function initBrowserWebviewBridge(): void {
     try {
       await onBrowserNewWindow((ev) => {
         const title = browserTabTitle(ev.url);
-        const newTabId = useTabStore.getState().addTab("browser", title);
+        // Background worktrees' browser tabs stay alive, so the opener may sit
+        // in a worktree the user is not looking at — that worktree owns the new
+        // tab (and only the visible one gets it focused), not the visible one.
+        const state = useTabStore.getState();
+        const target = resolveNewWindowTarget(state.sessions, state.activeWorktree, ev.openerTabId);
+        const newTabId = state.addTab("browser", title, {
+          worktreePath: target.worktreePath ?? undefined,
+          activate: target.activate,
+        });
         useBrowserStore.getState().navigate(newTabId, ev.url);
       });
     } catch (err) {

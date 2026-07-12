@@ -167,6 +167,59 @@ describe("useTabStore", () => {
       expect(selectTabsForWorktree(state, "/tmp/b")).toHaveLength(0);
     });
 
+    it("addTab with a worktreePath appends to that session, leaving the active one alone", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+      vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(
+        "bg-1" as `${string}-${string}-${string}-${string}-${string}`,
+      );
+
+      const id = useTabStore.getState().addTab("browser", "Popup", { worktreePath: "/tmp/a" });
+
+      const state = useTabStore.getState();
+      expect(id).toBe("bg-1");
+      expect(selectTabsForWorktree(state, "/tmp/a").map((t) => t.id)).toEqual(["bg-1"]);
+      expect(selectCurrentTabs(state)).toHaveLength(0);
+      expect(selectCurrentActiveTabId(state)).toBe("terminal");
+    });
+
+    it("addTab with activate:false leaves the target session's activeTabId untouched", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      const first = useTabStore.getState().addTab("browser", "Opener");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+
+      const id = useTabStore
+        .getState()
+        .addTab("browser", "Popup", { worktreePath: "/tmp/a", activate: false });
+
+      const state = useTabStore.getState();
+      expect(selectTabsForWorktree(state, "/tmp/a").map((t) => t.id)).toEqual([first, id]);
+      expect(selectActiveTabIdForWorktree(state, "/tmp/a")).toBe(first);
+    });
+
+    it("addTab without options still activates in the active session", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+      useTabStore.getState().setActiveWorktree("/tmp/b");
+
+      const id = useTabStore.getState().addTab("browser", "Browser");
+
+      const state = useTabStore.getState();
+      expect(selectTabsForWorktree(state, "/tmp/b").map((t) => t.id)).toEqual([id]);
+      expect(selectCurrentActiveTabId(state)).toBe(id);
+      expect(selectTabsForWorktree(state, "/tmp/a")).toHaveLength(0);
+    });
+
+    it("addTab with an unknown worktreePath falls back to the active session", () => {
+      useTabStore.getState().setActiveWorktree("/tmp/a");
+
+      const id = useTabStore.getState().addTab("browser", "Popup", { worktreePath: "/tmp/gone" });
+
+      const state = useTabStore.getState();
+      expect(state.sessions["/tmp/gone"]).toBeUndefined();
+      expect(selectTabsForWorktree(state, "/tmp/a").map((t) => t.id)).toEqual([id]);
+      expect(selectCurrentActiveTabId(state)).toBe(id);
+    });
+
     it("removeSession cleans up worktree tab state", () => {
       useTabStore.getState().setActiveWorktree("/tmp/a");
       useTabStore.getState().addTab("browser", "Browser");

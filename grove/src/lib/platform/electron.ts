@@ -50,6 +50,7 @@ import {
   domBrowserSetVisible,
   domBrowserStopFind,
   emitDomBrowserNewWindow,
+  findTabIdByWebContentsId,
   onDomBrowserFavicon,
   onDomBrowserFind,
   onDomBrowserFindOpen,
@@ -508,13 +509,25 @@ export function onBrowserNav(handler: (event: BrowserNavEvent) => void): Promise
 
 // One-time pump: target=_blank / window.open is denied+forwarded by the main
 // process (setWindowOpenHandler) as `browser:new-window`; feed it to the DOM bus.
+// The main process knows the opener only as a webContents id, so map it back to
+// a tabId here (the legacy WebContentsView path sends `openerTabId` directly).
 let newWindowPumpStarted = false;
 function ensureNewWindowPump(): void {
   if (newWindowPumpStarted) return;
   newWindowPumpStarted = true;
-  void platform.listen<{ url: string }>("browser:new-window", (payload) => {
-    if (payload?.url) emitDomBrowserNewWindow({ openerTabId: "", url: payload.url });
-  });
+  void platform.listen<{ url: string; openerTabId?: string; openerWebContentsId?: number }>(
+    "browser:new-window",
+    (payload) => {
+      if (!payload?.url) return;
+      const openerTabId =
+        payload.openerTabId ||
+        (payload.openerWebContentsId != null
+          ? findTabIdByWebContentsId(payload.openerWebContentsId)
+          : null) ||
+        "";
+      emitDomBrowserNewWindow({ openerTabId, url: payload.url });
+    },
+  );
 }
 
 export function onBrowserNewWindow(

@@ -4,6 +4,7 @@ import {
   domBrowserClose,
   domBrowserCloseAll,
   domBrowserCreate,
+  findTabIdByWebContentsId,
   registerBrowserHostDom,
 } from "./browser-dom-webview";
 
@@ -18,6 +19,10 @@ interface FakeElement {
   parentElement: FakeElement | null;
   children: FakeElement[];
   src?: string;
+  listeners: Record<string, (() => void)[]>;
+  /** Electron guest methods only exist once attached — tests install them by hand. */
+  getWebContentsId?: () => number;
+  executeJavaScript: (code: string) => Promise<unknown>;
   setAttribute: (name: string, value: string) => void;
   addEventListener: (type: string, handler: () => void) => void;
   appendChild: (child: FakeElement) => FakeElement;
@@ -30,8 +35,12 @@ function createFakeElement(tagName: string): FakeElement {
     style: {},
     parentElement: null,
     children: [],
+    listeners: {},
+    executeJavaScript: () => Promise.resolve(),
     setAttribute: () => {},
-    addEventListener: () => {},
+    addEventListener: (type, handler) => {
+      (el.listeners[type] ??= []).push(handler);
+    },
     appendChild: (child) => {
       child.parentElement = el;
       el.children.push(child);
@@ -53,6 +62,17 @@ function asHost(el: FakeElement): HTMLElement {
 
 function guestTags(host: FakeElement): string[] {
   return host.children.map((child) => child.tagName);
+}
+
+/** Mount a guest for `tabId` and bring it to `dom-ready` with the given id source. */
+function mountReadyGuest(tabId: string, getWebContentsId: () => number): FakeElement {
+  const host = createFakeElement("div");
+  registerBrowserHostDom(tabId, asHost(host));
+  domBrowserCreate(tabId, "http://localhost:3000/");
+  const guest = host.children[0];
+  guest.getWebContentsId = getWebContentsId;
+  for (const handler of guest.listeners["dom-ready"] ?? []) handler();
+  return guest;
 }
 
 describe("browser-dom-webview", () => {
@@ -105,5 +125,42 @@ describe("browser-dom-webview", () => {
     domBrowserCreate("tab-blank", "http://localhost:3000/");
 
     expect(guestTags(host)).toEqual([]);
+  });
+
+  describe("findTabIdByWebContentsId", () => {
+    it("maps a webContents id back to the tab that owns the guest", () => {
+      mountReadyGuest("tab-one", () => 11);
+      mountReadyGuest("tab-two", () => 22);
+
+      expect(findTabIdByWebContentsId(22)).toBe("tab-two");
+      expect(findTabIdByWebContentsId(11)).toBe("tab-one");
+    });
+
+    it("returns null for an unknown webContents id", () => {
+      mountReadyGuest("tab-one", () => 11);
+
+      expect(findTabIdByWebContentsId(99)).toBeNull();
+    });
+
+    it("skips a guest whose getWebContentsId throws", () => {
+      mountReadyGuest("tab-throws", () => {
+        throw new Error("not attached");
+      });
+      mountReadyGuest("tab-ok", () => 33);
+
+      expect(findTabIdByWebContentsId(33)).toBe("tab-ok");
+      expect(findTabIdByWebContentsId(99)).toBeNull();
+    });
+
+    it("maps an attached guest that has not reached dom-ready yet", () => {
+      // window.open can fire from an inline <head> script, i.e. before
+      // `dom-ready`. Such a popup must still be attributed to its opener tab.
+      const host = createFakeElement("div");
+      registerBrowserHostDom("tab-pending", asHost(host));
+      domBrowserCreate("tab-pending", "http://localhost:3000/");
+      host.children[0].getWebContentsId = () => 44;
+
+      expect(findTabIdByWebContentsId(44)).toBe("tab-pending");
+    });
   });
 });

@@ -13,7 +13,11 @@ interface TabState {
   sessions: Record<string, TabSession>;
   activeWorktree: string | null;
   setActiveWorktree: (worktreePath: string | null) => void;
-  addTab: (type: AppTabType, title: string) => string;
+  addTab: (
+    type: AppTabType,
+    title: string,
+    options?: { worktreePath?: string; activate?: boolean },
+  ) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   moveTab: (tabId: string, targetIndex: number) => void;
@@ -103,6 +107,15 @@ function findTabOwner(
   return null;
 }
 
+function writeSession(
+  state: TabState,
+  worktreePath: string | null,
+  session: TabSession,
+): Partial<TabState> {
+  if (!worktreePath) return {};
+  return { sessions: { ...state.sessions, [worktreePath]: session } };
+}
+
 function updateSession(
   state: TabState,
   updater: (session: TabSession) => TabSession,
@@ -136,23 +149,33 @@ export const useTabStore = create<TabState>((set, get) => ({
     set({ activeWorktree: worktreePath, sessions });
   },
 
-  addTab: (type, title) => {
+  addTab: (type, title, options) => {
     const state = get();
-    const session = getSession(state);
+    const activate = options?.activate ?? true;
+    // A background worktree's page can open a tab (browser guests keep running
+    // when not visible), so the target session may not be the active one. An
+    // unknown worktree falls back to the active session — never create one here.
+    const worktreePath =
+      options?.worktreePath && state.sessions[options.worktreePath]
+        ? options.worktreePath
+        : state.activeWorktree;
+    const session = getSessionForWorktree(state, worktreePath);
 
     // Changes is a per-worktree singleton — re-activate an existing tab
     if (type === "changes" && session.tabs.some((t) => t.id === CHANGES_TAB_ID)) {
-      set(updateSession(state, () => ({ ...session, activeTabId: CHANGES_TAB_ID })));
+      if (activate) {
+        set(writeSession(state, worktreePath, { ...session, activeTabId: CHANGES_TAB_ID }));
+      }
       return CHANGES_TAB_ID;
     }
 
     const id = type === "changes" ? CHANGES_TAB_ID : crypto.randomUUID();
     const tab: AppTab = { id, type, title, closable: true };
     set(
-      updateSession(state, () => ({
+      writeSession(state, worktreePath, {
         tabs: [...session.tabs, tab],
-        activeTabId: id,
-      })),
+        activeTabId: activate ? id : session.activeTabId,
+      }),
     );
     return id;
   },
