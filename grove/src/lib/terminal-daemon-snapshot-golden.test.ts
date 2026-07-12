@@ -287,3 +287,30 @@ describe("daemon snapshot golden differential (R2): warm payload replay == direc
     expect(aRows).toContain("A".repeat(20));
   });
 });
+
+// Why: a reattached agent's restored scrollback contains the device queries it
+// emitted at startup (OSC 10/11 colour probes, DSR/CPR). Replaying those bytes
+// makes xterm ANSWER them via onData — a stale duplicate that terminal-runtime
+// must NOT forward to the PTY (it garbles the command line and interrupts a live
+// agent). This proves the hazard is real: xterm does answer a query embedded in
+// replayed bytes, so the `replayingScrollback` guard on onData is load-bearing.
+describe("device queries embedded in replayed scrollback", () => {
+  it("make xterm emit a response on onData (which the replay guard must drop)", async () => {
+    const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+    const emitted: string[] = [];
+    term.onData((d) => emitted.push(d));
+
+    // DSR 6 (cursor position) + DA (device attributes) — device queries of the
+    // same class as the OSC 10/11 colour probes seen leaking onto the prompt after
+    // a reattach. (Headless has no palette so it cannot answer OSC 11, but a real
+    // browser xterm answers that too; the cursor/DA replies prove the mechanism.)
+    await new Promise<void>((resolve) => term.write("\x1b[6n\x1b[c", () => resolve()));
+
+    const joined = emitted.join("");
+    // eslint-disable-next-line no-control-regex -- matching the raw ESC reply
+    expect(joined).toMatch(/\x1b\[\d+;\d+R/); // the cursor-position report (CPR)
+    expect(joined).toContain("\x1b[?"); // the device-attributes reply (DA)
+    expect(joined.length).toBeGreaterThan(0); // xterm DID answer — so the guard matters
+    term.dispose();
+  });
+});

@@ -727,6 +727,20 @@ class TerminalPaneRuntime {
         return;
       }
 
+      // While replaying restored scrollback, xterm answers any device queries
+      // embedded in the replayed bytes (a reattached agent's startup OSC 10/11
+      // colour probes, DSR/CPR, DA). Those answers are STALE DUPLICATES — the
+      // live process already got them the first time — and `onData` cannot tell
+      // them from a keystroke. Forwarding them injects `ESC]11;rgb:…`, `ESC[…R`,
+      // `ESC[O` into the running program (it garbles the command line and can
+      // interrupt a live agent), so drop everything xterm emits during the
+      // replay window. Live output (pendingOutput, drained after the flag
+      // clears) is NOT gated: a query there is from a live process and its
+      // answer must reach the PTY.
+      if (this.replayingScrollback) {
+        return;
+      }
+
       this.writeInput(new TextEncoder().encode(data));
     });
 
