@@ -5,10 +5,13 @@ on:
     branches: [main]
     paths:
       - 'grove/**'
+      - '.github/workflows/grove-test.yml'
   pull_request:
     branches: [main]
     paths:
       - 'grove/**'
+      - '.github/workflows/grove-test.yml'
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,6 +53,10 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+  # grove-core is portable — run it on the cheap Linux runner. (No tmux install:
+  # the PTY backend is grove-daemon, and nothing under test shells out to tmux. The
+  # one remaining tmux caller, grove-core `tmux_sweep`, is a no-op success when tmux
+  # is absent and its tests assert that.)
   test-core:
     runs-on: ubuntu-latest
     defaults:
@@ -61,11 +68,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # No tmux install: the PTY backend is grove-daemon, and nothing under test
-      # shells out to tmux. The one remaining tmux caller (grove-core `tmux_sweep`,
-      # the one-time reap of leftover sessions from a pre-daemon build) is a no-op
-      # success when tmux is absent, and its tests assert that. Both suites are
-      # verified green on a host with no tmux binary at all.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -76,6 +78,30 @@ jobs:
 
       - name: Run grove-core tests
         run: cargo test -p grove-core -- --test-threads=1
+
+  # grove-daemon owns the real PTY and its integration tests exercise macOS PTY /
+  # shell / kernel behavior (sysctl KERN_PROC_PID, LOCAL_PEERPID, shell output
+  # ordering under flow control). grove ships ONLY on macOS, so these must run on a
+  # macOS runner to test what actually ships — on Linux the shell env and kernel
+  # APIs differ and the peer-pid / process-facts paths are macOS-gated no-ops.
+  test-daemon:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: grove
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: grove
 
       - name: Run grove-daemon tests
         run: cargo test -p grove-daemon -- --test-threads=1
