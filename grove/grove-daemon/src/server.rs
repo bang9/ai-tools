@@ -28,7 +28,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Notify as TokioNotify};
 
-use crate::agent::{AgentClaim, Phase};
+use crate::agent::AgentClaim;
 use crate::checkpointer::{CheckpointSource, Checkpointer};
 use crate::emulator::SnapshotOptions;
 use crate::history::{session_dir, ColdRestore, HistoryReader, OwnerLock, SessionMeta};
@@ -543,8 +543,10 @@ impl Daemon {
                 pid: peer,
                 // The PID-reuse fence, captured now and re-verified on EVERY read.
                 start_us: peer_facts.start_us,
-                // A claim with no events yet is an agent that has not started working.
-                phase: Phase::Idle,
+                // No badge until the agent reports a phase: identity is declared here,
+                // but a live agent announces itself within ms via SessionStart. A claim
+                // that never leaves `None` is a hook channel that never came up.
+                phase: None,
                 last_at_ns: 0,
             },
             self.kernel.as_ref(),
@@ -1495,7 +1497,7 @@ mod tests {
                 tool: "codex".into(),
                 pid: 5150,
                 start_us: 42,
-                phase: Phase::Idle,
+                phase: None,
                 last_at_ns: 0,
             },
             &kernel,
