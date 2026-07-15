@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createDisplayWakeDebouncer,
-  recoverTerminalForWake,
+  recoverTerminalsForWake,
   type TerminalWakeTarget,
 } from "./terminal-display-wake";
 
-function makeTarget(visible: boolean) {
+function makeTarget(visible: boolean, hasWebgl = true) {
   const resetWebglLatch = vi.fn();
-  const clearGlyphAtlas = vi.fn();
+  const clearGlyphAtlas = vi.fn(() => hasWebgl);
   const refreshViewport = vi.fn();
   const target: TerminalWakeTarget = {
     isVisible: () => visible,
@@ -18,11 +18,11 @@ function makeTarget(visible: boolean) {
   return { target, resetWebglLatch, clearGlyphAtlas, refreshViewport };
 }
 
-describe("recoverTerminalForWake", () => {
+describe("recoverTerminalsForWake", () => {
   it("resets the latch and repaints a visible pane", () => {
     const { target, resetWebglLatch, clearGlyphAtlas, refreshViewport } = makeTarget(true);
 
-    recoverTerminalForWake(target);
+    recoverTerminalsForWake([target]);
 
     expect(resetWebglLatch).toHaveBeenCalledTimes(1);
     expect(clearGlyphAtlas).toHaveBeenCalledTimes(1);
@@ -32,7 +32,7 @@ describe("recoverTerminalForWake", () => {
   it("resets the latch on a hidden pane but does not touch its atlas or repaint", () => {
     const { target, resetWebglLatch, clearGlyphAtlas, refreshViewport } = makeTarget(false);
 
-    recoverTerminalForWake(target);
+    recoverTerminalsForWake([target]);
 
     // Hidden panes still clear the latch so they retry WebGL on next reveal.
     expect(resetWebglLatch).toHaveBeenCalledTimes(1);
@@ -41,15 +41,24 @@ describe("recoverTerminalForWake", () => {
     expect(refreshViewport).not.toHaveBeenCalled();
   });
 
-  it("refreshes only visible runtimes across a mixed set", () => {
+  it("clears the shared atlas exactly once, then repaints every visible pane", () => {
+    // Regression: the glyph atlas is shared across same-config terminals. The
+    // old per-pane clear+refresh loop cleared it once per visible pane, so each
+    // later clear invalidated the glyph coordinates the previous pane had just
+    // repainted — every pane except the last rendered scattered glyph
+    // fragments after a wake.
     const visibleA = makeTarget(true);
     const hidden = makeTarget(false);
     const visibleB = makeTarget(true);
 
-    for (const { target } of [visibleA, hidden, visibleB]) {
-      recoverTerminalForWake(target);
-    }
+    recoverTerminalsForWake([visibleA.target, hidden.target, visibleB.target]);
 
+    const totalClears =
+      visibleA.clearGlyphAtlas.mock.calls.length +
+      hidden.clearGlyphAtlas.mock.calls.length +
+      visibleB.clearGlyphAtlas.mock.calls.length;
+    expect(totalClears).toBe(1);
+    // Every visible pane repaints AFTER the single clear.
     expect(visibleA.refreshViewport).toHaveBeenCalledTimes(1);
     expect(visibleB.refreshViewport).toHaveBeenCalledTimes(1);
     expect(hidden.refreshViewport).not.toHaveBeenCalled();
@@ -57,6 +66,20 @@ describe("recoverTerminalForWake", () => {
     expect(visibleA.resetWebglLatch).toHaveBeenCalledTimes(1);
     expect(hidden.resetWebglLatch).toHaveBeenCalledTimes(1);
     expect(visibleB.resetWebglLatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through to the next visible pane when one has no WebGL renderer", () => {
+    const domLatched = makeTarget(true, false);
+    const webglPane = makeTarget(true);
+
+    recoverTerminalsForWake([domLatched.target, webglPane.target]);
+
+    // The DOM-latched pane cannot clear (returns false), so the next visible
+    // WebGL pane performs the single shared-atlas clear.
+    expect(domLatched.clearGlyphAtlas).toHaveBeenCalledTimes(1);
+    expect(webglPane.clearGlyphAtlas).toHaveBeenCalledTimes(1);
+    expect(domLatched.refreshViewport).toHaveBeenCalledTimes(1);
+    expect(webglPane.refreshViewport).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -48,9 +48,7 @@ import {
   releaseXtermWebglContext,
   WebglRenderLatch,
 } from "./terminal-webgl-lifecycle";
-import { recoverTerminalForWake } from "./terminal-display-wake";
-import { terminalOutputContainsAtlasRiskGlyph } from "./terminal-complex-script";
-import { AtlasRecoveryDebounce, bytesContainNonAscii } from "./terminal-atlas-recovery";
+import { recoverTerminalsForWake, type TerminalWakeTarget } from "./terminal-display-wake";
 import { nextFitStability, type FitStabilityState } from "./terminal-fit-stability";
 import {
   installTerminalImeCompositionTracker,
@@ -181,12 +179,6 @@ const RUNTIME_RELEASE_GRACE_MS = 50;
 // switching does not thrash the heavyweight GPU context create/destroy path.
 const RUNTIME_SUSPEND_GRACE_MS = 300;
 let ptyOutputListenerStarted = false;
-
-// Why: a single reused decoder for the atlas-risk content scan only. xterm does
-// its own UTF-8 decode of the raw bytes; this is a separate, throwaway decode
-// used purely to classify a chunk, so a byte sequence split at a chunk boundary
-// decoding to U+FFFD is acceptable (it conservatively flags a recovery).
-const atlasRiskDecoder = new TextDecoder();
 
 /**
  * A WebGL addon should be (re)loaded only when the pane has none yet and is
@@ -408,27 +400,23 @@ export function getRuntime(paneId: string) {
 }
 
 /**
- * Display-wake recovery boundary: clear every runtime's DOM-latch so panes
- * parked on the DOM renderer after persistent WebGL context loss retry the GPU
- * renderer. The Wake unit invokes this when the display wakes.
- */
-export function resetWebglLatchForWake() {
-  for (const runtime of runtimes.values()) {
-    runtime.resetWebglLatchForWake();
-  }
-}
-
-/**
  * Display-wake GPU recovery: after real display sleep/wake the WebGL glyph atlas
- * can be stale/corrupt and a DOM-latched pane may be recoverable. For every
- * runtime clear the DOM-latch (so hidden panes retry WebGL on reveal); for each
- * visible pane also rebuild the atlas and repaint now. The shell's display-wake
- * subscription invokes this (debounced) so it runs once per wake.
+ * can be stale/corrupt and a DOM-latched pane may be recoverable. Every
+ * runtime's DOM-latch clears (so hidden panes retry WebGL on reveal); the
+ * SHARED glyph atlas is rebuilt exactly once and then every visible pane
+ * repaints (see recoverTerminalsForWake for why per-pane clears garble the
+ * other panes). The shell's display-wake subscription invokes this (debounced)
+ * so it runs once per wake.
  */
 export function recoverTerminalsForDisplayWake() {
+  const targets: TerminalWakeTarget[] = [];
   for (const runtime of runtimes.values()) {
-    runtime.recoverFromDisplayWake();
+    const target = runtime.wakeTarget();
+    if (target) {
+      targets.push(target);
+    }
   }
+  recoverTerminalsForWake(targets);
 }
 
 export function captureRuntimeSnapshot(paneId: string): string | null {
@@ -531,13 +519,6 @@ class TerminalPaneRuntime {
   private hasLoadedWebgl = false;
   private webglAddon: WebglAddon | null = null;
   private readonly webglLatch = new WebglRenderLatch();
-  // Trailing-edge quiet-wait debounce: coalesces a burst of atlas-risk output
-  // chunks into one clearTextureAtlas()+refresh that fires only after the stream
-  // settles, so a stale wide/complex glyph is repaired without per-chunk (or
-  // per-window) repaints that would flicker a CJK-heavy TUI stream.
-  private readonly atlasRecovery = new AtlasRecoveryDebounce({
-    run: () => this.recoverGlyphAtlas(),
-  });
   // Off-screen panes suspend their WebGL context; term.write keeps flowing into
   // xterm's DOM renderer fallback so scrollback stays current while hidden.
   private visible = true;
@@ -956,46 +937,10 @@ class TerminalPaneRuntime {
     // base64/atob and no per-byte charCodeAt loop on the main thread.
     if (this.hydrated) {
       this.term.write(data);
-      this.maybeScheduleAtlasRecovery(data);
     } else {
       this.pendingOutput.push(data);
     }
     this.reportActivity("output");
-  }
-
-  /**
-   * After a live write, schedule a throttled WebGL atlas rebuild when the chunk
-   * carries a wide/complex glyph (CJK/emoji/RTL/fullwidth/replacement) that an
-   * in-place redraw could leave stale in the texture atlas. Skipped for plain
-   * ASCII (the hot path) and whenever WebGL is absent/DOM-latched — the DOM
-   * renderer has no atlas to rebuild. The throttle coalesces a burst so a
-   * CJK-heavy stream repaints at most once per window instead of per chunk.
-   */
-  private maybeScheduleAtlasRecovery(data: Uint8Array) {
-    if (!this.webglAddon) {
-      return;
-    }
-    if (!bytesContainNonAscii(data)) {
-      return;
-    }
-    if (!terminalOutputContainsAtlasRiskGlyph(atlasRiskDecoder.decode(data))) {
-      return;
-    }
-    this.atlasRecovery.request();
-  }
-
-  private recoverGlyphAtlas() {
-    if (this.disposed || !this.webglAddon) {
-      return;
-    }
-    // Same repair the reveal/wake paths use: drop the stale atlas and repaint
-    // the visible rows so the correct wide glyphs are rasterized.
-    this.webglAddon.clearTextureAtlas();
-    try {
-      this.term.refresh(0, Math.max(0, this.term.rows - 1));
-    } catch {
-      // Pane may be mid-teardown; a missed repaint is harmless.
-    }
   }
 
   setTheme(theme: TerminalTheme | null) {
@@ -1343,10 +1288,14 @@ class TerminalPaneRuntime {
     }
 
     this.pendingRevealRefresh = false;
-    // A suspended context drops its glyph atlas; rebuild it and force a repaint
-    // so the newly revealed pane paints its current buffer instead of a blank
-    // or stale first frame.
-    this.webglAddon?.clearTextureAtlas();
+    // Repaint so the newly revealed pane shows its current buffer instead of a
+    // blank/stale first frame. NO clearTextureAtlas here: the glyph atlas is
+    // shared across every same-config terminal (xterm's module-level
+    // CharAtlasCache), so clearing it from one pane invalidates the glyph
+    // coordinates every OTHER pane's renderer still holds — those panes render
+    // scattered glyph fragments until they repaint. The atlas page canvases
+    // live on the CPU and survive a suspended/recreated WebGL context, so a
+    // refresh alone re-uploads correct textures; no clear is needed.
     this.term.refresh(0, Math.max(0, this.term.rows - 1));
   }
 
@@ -1492,20 +1441,26 @@ class TerminalPaneRuntime {
   }
 
   /**
-   * Display-wake recovery for this pane. Delegates the visible/hidden decision
-   * to the pure {@link recoverTerminalForWake}: the latch reset (which also
-   * reschedules a WebGL reload when visible) runs for every pane, and a visible
-   * pane additionally drops its glyph atlas and repaints so the first post-wake
-   * frame is clean instead of garbled/stale.
+   * Wake-recovery adapter for the pure {@link recoverTerminalsForWake}. All
+   * panes are recovered TOGETHER (see recoverTerminalsForDisplayWake): the
+   * glyph atlas is shared across same-config terminals, so it must be cleared
+   * once for the whole set and every visible pane repainted afterwards —
+   * never cleared per pane.
    */
-  recoverFromDisplayWake() {
+  wakeTarget(): TerminalWakeTarget | null {
     if (this.disposed) {
-      return;
+      return null;
     }
-    recoverTerminalForWake({
+    return {
       isVisible: () => this.visible,
       resetWebglLatch: () => this.resetWebglLatchForWake(),
-      clearGlyphAtlas: () => this.webglAddon?.clearTextureAtlas(),
+      clearGlyphAtlas: () => {
+        if (!this.webglAddon) {
+          return false;
+        }
+        this.webglAddon.clearTextureAtlas();
+        return true;
+      },
       refreshViewport: () => {
         try {
           this.term.refresh(0, Math.max(0, this.term.rows - 1));
@@ -1513,7 +1468,7 @@ class TerminalPaneRuntime {
           // Pane may be mid-teardown after wake; ignore.
         }
       },
-    });
+    };
   }
 
   private fitTerminal() {
@@ -1907,7 +1862,6 @@ class TerminalPaneRuntime {
     }
 
     this.disposed = true;
-    this.atlasRecovery.cancel();
     this.cancelPtySizeReconcile();
     this.ptyReassert?.dispose();
     this.ptyReassert = null;

@@ -10,25 +10,39 @@ export const DISPLAY_WAKE_DEBOUNCE_MS = 300;
 export interface TerminalWakeTarget {
   isVisible(): boolean;
   resetWebglLatch(): void;
-  clearGlyphAtlas(): void;
+  /** Clears the WebGL glyph atlas; returns false when the pane has no live WebGL renderer. */
+  clearGlyphAtlas(): boolean;
   refreshViewport(): void;
 }
 
 /**
- * Pure per-pane wake recovery (no DOM/GPU) so the "reset the DOM latch on every
- * pane, but only rebuild the atlas + repaint a visible pane" contract stays
- * unit-testable. A hidden pane's latch reset lets it retry WebGL on its next
- * reveal; a visible pane also repaints now because a wake can leave the live
- * atlas stale/corrupt and the buffer would otherwise show garbled glyphs until
- * the next output frame.
+ * Pure multi-pane wake recovery (no DOM/GPU) so the wake contract stays
+ * unit-testable. Every pane's DOM-latch resets (a hidden pane retries WebGL on
+ * its next reveal). A wake can leave the live glyph atlas stale/corrupt, so it
+ * is rebuilt — but the atlas is SHARED across every same-config terminal
+ * (xterm's module-level CharAtlasCache), so it must be cleared exactly once
+ * and then every visible pane repainted. The old per-pane clear+refresh loop
+ * garbled the panes recovered earlier in the loop: each later clear
+ * invalidated the glyph coordinates the previous pane had just repainted.
  */
-export function recoverTerminalForWake(target: TerminalWakeTarget): void {
-  target.resetWebglLatch();
-  if (!target.isVisible()) {
-    return;
+export function recoverTerminalsForWake(targets: readonly TerminalWakeTarget[]): void {
+  for (const target of targets) {
+    target.resetWebglLatch();
   }
-  target.clearGlyphAtlas();
-  target.refreshViewport();
+  let cleared = false;
+  for (const target of targets) {
+    if (cleared) {
+      break;
+    }
+    if (target.isVisible()) {
+      cleared = target.clearGlyphAtlas();
+    }
+  }
+  for (const target of targets) {
+    if (target.isVisible()) {
+      target.refreshViewport();
+    }
+  }
 }
 
 export interface DisplayWakeDebounceOptions {
