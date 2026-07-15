@@ -1411,7 +1411,10 @@ class TerminalPaneRuntime {
     }
 
     try {
-      const webglAddon = new WebglAddon(true);
+      // preserveDrawingBuffer keeps the last frame readable for the broadcast
+      // snapshot compositor (captureRuntimeSnapshot drawImage's the WebGL
+      // canvas outside xterm's render callback).
+      const webglAddon = new WebglAddon({ preserveDrawingBuffer: true });
       webglAddon.onContextLoss(() => {
         this.handleWebglContextLoss(webglAddon);
       });
