@@ -86,6 +86,18 @@ export interface TerminalPaneSeed {
   isColdRestore?: boolean;
 }
 
+export interface TerminalRuntimeOptions {
+  /**
+   * Keep this pane on xterm's DOM renderer instead of loading the WebGL addon.
+   * Used by the global terminal: its canvas lives inside a CSS-transformed
+   * slide container, and WKWebView composites a WebGL canvas under a transform
+   * unreliably (gradual glyph corruption while the pane just sits there).
+   * Ignored when the pane's runtime already exists (options only apply at
+   * construction).
+   */
+  disableWebgl?: boolean;
+}
+
 type FocusHandler = (ptyId: string) => void;
 type ErrorHandler = (message: string | null) => void;
 type BellHandler = (ptyId: string) => void;
@@ -181,12 +193,17 @@ const RUNTIME_SUSPEND_GRACE_MS = 300;
 let ptyOutputListenerStarted = false;
 
 /**
- * A WebGL addon should be (re)loaded only when the pane has none yet and is
- * currently visible. Keeping this a pure predicate makes the "don't double-load
- * on repeated reveals" contract testable without a live GPU context.
+ * A WebGL addon should be (re)loaded only when the pane allows the GPU
+ * renderer, has none yet, and is currently visible. Keeping this a pure
+ * predicate makes the "don't double-load on repeated reveals" contract
+ * testable without a live GPU context.
  */
-export function shouldLoadWebglAddon(hasLoadedWebgl: boolean, visible: boolean): boolean {
-  return !hasLoadedWebgl && visible;
+export function shouldLoadWebglAddon(
+  hasLoadedWebgl: boolean,
+  visible: boolean,
+  webglDisabled = false,
+): boolean {
+  return !webglDisabled && !hasLoadedWebgl && visible;
 }
 
 /**
@@ -381,11 +398,15 @@ export function primeTerminalPane(paneId: string, seed: TerminalPaneSeed) {
   });
 }
 
-export function acquireTerminalRuntime(paneId: string, theme: TerminalTheme | null) {
+export function acquireTerminalRuntime(
+  paneId: string,
+  theme: TerminalTheme | null,
+  options?: TerminalRuntimeOptions,
+) {
   ensurePtyOutputListener();
   let runtime = runtimes.get(paneId);
   if (!runtime) {
-    runtime = new TerminalPaneRuntime(paneId, paneSeeds.get(paneId), theme);
+    runtime = new TerminalPaneRuntime(paneId, paneSeeds.get(paneId), theme, options);
     paneSeeds.delete(paneId);
     runtimes.set(paneId, runtime);
   }
@@ -518,6 +539,10 @@ class TerminalPaneRuntime {
   private refCount = 0;
   private hasLoadedWebgl = false;
   private webglAddon: WebglAddon | null = null;
+  // Panes that opt out of the GPU renderer stay on xterm's DOM renderer for
+  // their lifetime (e.g. the global terminal, whose WebGL canvas sits inside a
+  // transformed slide container that WKWebView composites unreliably).
+  private readonly webglDisabled: boolean;
   private readonly webglLatch = new WebglRenderLatch();
   // Off-screen panes suspend their WebGL context; term.write keeps flowing into
   // xterm's DOM renderer fallback so scrollback stays current while hidden.
@@ -606,8 +631,14 @@ class TerminalPaneRuntime {
     },
   });
 
-  constructor(paneId: string, seed: TerminalPaneSeed | undefined, theme: TerminalTheme | null) {
+  constructor(
+    paneId: string,
+    seed: TerminalPaneSeed | undefined,
+    theme: TerminalTheme | null,
+    options?: TerminalRuntimeOptions,
+  ) {
     this.paneId = paneId;
+    this.webglDisabled = options?.disableWebgl ?? false;
     this.ptyId = seed?.ptyId ?? "";
     this.launchCwd = seed?.launchCwd;
     this.initialScrollback = seed?.initialScrollback ?? "";
@@ -1348,7 +1379,7 @@ class TerminalPaneRuntime {
   }
 
   private loadWebglAddon(): boolean {
-    if (!shouldLoadWebglAddon(this.hasLoadedWebgl, this.visible)) {
+    if (!shouldLoadWebglAddon(this.hasLoadedWebgl, this.visible, this.webglDisabled)) {
       return false;
     }
 

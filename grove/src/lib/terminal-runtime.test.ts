@@ -182,6 +182,12 @@ describe("shouldLoadWebglAddon", () => {
   it("does not load while the pane is hidden", () => {
     expect(shouldLoadWebglAddon(false, false)).toBe(false);
   });
+
+  it("never loads for a webgl-disabled pane, even when visible", () => {
+    // The global terminal opts out of the GPU renderer (WKWebView composites a
+    // WebGL canvas under its transformed slide container unreliably).
+    expect(shouldLoadWebglAddon(false, true, true)).toBe(false);
+  });
 });
 
 describe("shouldSuspendWebglAddon", () => {

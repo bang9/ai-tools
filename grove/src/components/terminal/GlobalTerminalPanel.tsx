@@ -37,9 +37,14 @@ const TerminalTabContent = memo(function TerminalTabContent({
     const isMirror = Boolean(tab.mirrorPtyId);
     let runtime: ReturnType<typeof acquireTerminalRuntime> | null;
     if (isMirror) {
+      // Mirror tabs adopt the source pane's existing runtime — renderer choice
+      // stays with the owning worktree pane.
       runtime = mirrorSession ? acquireTerminalRuntime(mirrorSession.paneId, theme) : null;
     } else {
-      runtime = acquireTerminalRuntime(tab.paneId, theme);
+      // Global terminal panes stay on the DOM renderer: their canvas sits in a
+      // CSS-transformed slide container, which WKWebView composites unreliably
+      // for WebGL (gradual glyph corruption while the pane idles).
+      runtime = acquireTerminalRuntime(tab.paneId, theme, { disableWebgl: true });
     }
     if (!runtime) return;
 
