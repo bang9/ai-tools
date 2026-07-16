@@ -60,6 +60,7 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
     ref,
   ) {
     const allotmentRef = useRef<AllotmentHandle | null>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
     const isDraggingRef = useRef(false);
     const pendingRatiosRef = useRef<number[] | null>(null);
     const resetPendingRef = useRef(false);
@@ -81,6 +82,12 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
       [],
     );
 
+    const defaultSizesRef = useRef<number[] | undefined>(defaultSizes);
+
+    useLayoutEffect(() => {
+      defaultSizesRef.current = defaultSizes;
+    }, [defaultSizes]);
+
     useLayoutEffect(() => {
       if (isDraggingRef.current || !allotmentRef.current) return;
       if (!defaultSizes || defaultSizes.length === 0) return;
@@ -89,6 +96,37 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
       allotmentRef.current.resize(defaultSizes);
       appliedRatiosRef.current = ratioSignature;
     }, [defaultSizes, ratioSignature]);
+
+    // Re-apply the committed ratios whenever the container itself is resized
+    // (window resize, fullscreen toggle, neighboring panel collapse). Allotment
+    // clamps panes to their px minSize when the container is small, and its
+    // proportional relayout carries that clamped distribution forward even
+    // after space frees up — without this, ratios saved in a large window never
+    // reappear once the group has mounted in a small one.
+    useEffect(() => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      let frame: number | null = null;
+      const observer = new ResizeObserver(() => {
+        if (frame !== null) return;
+        // rAF so the re-apply runs after Allotment's own proportional relayout
+        // for the same resize, and so a continuous window drag coalesces.
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          if (isDraggingRef.current) return;
+          const sizes = defaultSizesRef.current;
+          if (!sizes || sizes.length === 0) return;
+          allotmentRef.current?.resize(sizes);
+        });
+      });
+      observer.observe(container);
+
+      return () => {
+        observer.disconnect();
+        if (frame !== null) cancelAnimationFrame(frame);
+      };
+    }, []);
 
     const clearResetPending = useCallback(() => {
       if (resetClearTimerRef.current !== null) {
@@ -178,6 +216,7 @@ const ResizablePanelGroupBase = forwardRef<AllotmentHandle, ResizablePanelGroupP
 
     return (
       <div
+        ref={containerRef}
         className={cn("h-full w-full", className)}
         onDoubleClickCapture={handleSashDoubleClickCapture}
       >

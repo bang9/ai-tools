@@ -15,6 +15,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DEV_PERMISSION_COMMANDS, handleDevPermissionCommand } from "./dev-permissions";
+import { loadWindowState, trackWindowState } from "./window-state";
 
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
@@ -792,9 +793,13 @@ async function loadRenderer(mainWindow: BrowserWindow) {
 }
 
 function createMainWindow() {
+  // Tauri parity: restore the previous window frame (tauri-plugin-window-state
+  // on the Tauri side). Panel ratio restore depends on this — see window-state.ts.
+  const windowState = loadWindowState();
   const mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 960,
+    width: windowState.bounds?.width ?? 1440,
+    height: windowState.bounds?.height ?? 960,
+    ...(windowState.bounds ? { x: windowState.bounds.x, y: windowState.bounds.y } : {}),
     minWidth: 1024,
     minHeight: 720,
     titleBarStyle: "hiddenInset",
@@ -835,6 +840,14 @@ function createMainWindow() {
   mainWindow.on("closed", () => {
     closeBrowserViewsForWindow(mainWindow);
   });
+
+  if (windowState.maximized) {
+    mainWindow.maximize();
+  }
+  if (windowState.fullscreen) {
+    mainWindow.setFullScreen(true);
+  }
+  trackWindowState(mainWindow);
 
   void loadRenderer(mainWindow);
   return mainWindow;

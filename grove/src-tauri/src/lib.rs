@@ -798,6 +798,11 @@ pub fn run() {
         .manage(browser::BrowserState::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Restore window size/position/fullscreen across launches. Without this
+        // the app always opens at the tauri.conf.json 1200x800 default, where the
+        // px-based pane minSizes clamp the restored panel ratios (see
+        // resizable-panel-group.tsx).
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             // Why: advertise the real app version as TERM_PROGRAM_VERSION in spawned
             // terminals. Set before any PTY create so panes never fall back.
