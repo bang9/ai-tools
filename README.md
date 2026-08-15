@@ -1,3 +1,5 @@
+
+
 # ai-tools
 
 A collection of tools for Claude Code to operate more efficiently.
@@ -44,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/bang9/ai-tools/main/vaultkey/instal
 
 ### [claude-irc](./claude-irc)
 
-IRC-inspired inter-session communication for Claude Code agents. Enable multiple sessions on the same machine to exchange messages, share context, and coordinate in real-time.
+IRC-inspired inter-session communication for Claude Code agents. Enables multiple sessions on the same machine to exchange messages, share context, and coordinate in real-time.
 
 #### Installation
 
